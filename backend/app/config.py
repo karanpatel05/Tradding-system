@@ -44,19 +44,15 @@ class Settings(BaseSettings):
     # docker-compose overrides this with a Postgres URL.
     database_url: str = f"sqlite+aiosqlite:///{_BASE_DIR / 'trading.db'}"
 
-    # --- Tastytrade OAuth ---
-    # The OAuth *client/provider secret*. Optional at boot (see module docstring).
-    # The refresh token is NOT configured here — the user enters it in the UI.
-    tastytrade_provider_secret: str | None = None
-    # Use the Tastytrade certification (sandbox) environment when True.
-    tastytrade_is_test: bool = False
-
-    # --- Massive (Polygon) historical data ---
-    # ALL historical/backtest market data comes from Massive (Polygon REST). Live
-    # quotes/streaming/accounts/orders stay on Tastytrade. Key is optional at boot
-    # (validated with a warning) so the app still starts without it.
-    massive_api_key: str | None = None
-    massive_base_url: str = "https://api.polygon.io"
+    # --- Interactive Brokers (IB Gateway, paper trading) ---
+    # Single backend for live quotes/streaming/accounts/orders AND forward-refresh
+    # historical bars, via ib_async against a running IB Gateway. "Authenticated"
+    # means the Gateway is connected. Bulk backtests still read cached data_cache/*.
+    ibkr_host: str = "127.0.0.1"
+    ibkr_port: int = 4002            # paper Gateway (TWS paper = 7497)
+    ibkr_client_id: int = 1
+    ibkr_account: str = ""           # blank -> first managed account
+    ibkr_market_data_type: int = 1   # 1=live, 2=frozen, 3=delayed, 4=delayed-frozen
 
     # --- Historical data cache ---
     # Candle history (daily + 5-min) is cached to local disk after the first pull
@@ -182,14 +178,6 @@ class Settings(BaseSettings):
     @property
     def watchlist_symbols(self) -> list[str]:
         return [s.strip().upper() for s in self.watchlist.split(",") if s.strip()]
-
-    @property
-    def oauth_configured(self) -> bool:
-        return bool(self.tastytrade_provider_secret)
-
-    @property
-    def massive_configured(self) -> bool:
-        return bool(self.massive_api_key)
 
 
 @lru_cache
