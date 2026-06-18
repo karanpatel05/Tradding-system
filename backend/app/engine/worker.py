@@ -260,7 +260,7 @@ async def _open_bracket(strategy, symbol, action, state, bars, engine) -> dict |
     entry_ms = bar.get("time")
     trade_id = await _open_trade(strategy.key, symbol, action.side, sizing.quantity,
                                  action.price, entry_ms, action.stop, action.target,
-                                 broker_order_id=order.get("complex_order_id"))
+                                 broker_order_id=order.get("parent_order_id"))
     await log_event(
         f"ENTER {action.side} {symbol} x{sizing.quantity} @ {action.price:.2f} "
         f"(risk ${sizing.risk_amount:.0f}; bracket stop {action.stop:.2f}/target "
@@ -270,7 +270,7 @@ async def _open_bracket(strategy, symbol, action, state, bars, engine) -> dict |
               "capital_used": sizing.notional, "risk": engine.snapshot(), "order": order},
     )
     return {"qty": sizing.quantity, "trade_id": trade_id,
-            "broker_id": order.get("complex_order_id"), "entry_ms": entry_ms,
+            "broker_id": order.get("parent_order_id"), "entry_ms": entry_ms,
             "last_1m_ms": entry_ms or 0, "last_5m_ms": None}
 
 
