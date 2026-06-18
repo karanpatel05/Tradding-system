@@ -1,56 +1,46 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
 
-// API connection tab: shows broker connection status and the stored OAuth secret
-// + refresh token in editable fields. Saving re-runs the login (which builds the
-// session and persists the credentials to the server's local 0600 store), so the
-// connection survives restarts. Secret/token are masked by default with a reveal.
+// IBKR connection tab: shows the IB Gateway connection config (host/port/clientId/
+// account) read from the server, a live Connected/Disconnected badge, and
+// Connect / Disconnect buttons. There are no secrets to enter — authentication
+// happens in IBKR's own Gateway software; this just opens/closes the local socket.
 export default function ApiTab({ onChange }) {
   const [info, setInfo] = useState(null);
-  const [secret, setSecret] = useState("");
-  const [token, setToken] = useState("");
-  const [showSecret, setShowSecret] = useState(false);
-  const [showToken, setShowToken] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState(null);
   const [err, setErr] = useState(null);
 
   const load = async () => {
     try {
-      const c = await api.getCredentials();
-      setInfo(c);
-      setSecret(c.provider_secret || "");
-      setToken(c.refresh_token || "");
+      setInfo(await api.authStatus());
     } catch (e) {
       setErr(e.message);
     }
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    const id = setInterval(load, 5000); // keep the badge live
+    return () => clearInterval(id);
+  }, []);
 
-  const save = async () => {
-    setMsg(null); setErr(null); setBusy(true);
+  const connect = async () => {
+    setErr(null); setBusy(true);
     try {
-      const res = await api.saveCredentials(secret, token.trim());
-      // Saved either way — values are persisted locally even if the connect failed.
+      const res = await api.connect();
       setInfo(res);
-      if (res.provider_secret) setSecret(res.provider_secret);
-      if (res.refresh_token) setToken(res.refresh_token);
-      if (res.connected) setMsg("Saved & connected — credentials stored locally and reused on restart.");
-      else setErr(res.detail || "Saved locally, but not connected yet.");
+      if (!res.connected) setErr(res.detail || "Could not connect to IB Gateway.");
       onChange?.();
     } catch (e) {
-      setErr(e.message || "Save failed");
+      setErr(e.message || "Connect failed");
     } finally {
       setBusy(false);
     }
   };
 
   const disconnect = async () => {
-    setMsg(null); setErr(null); setBusy(true);
+    setErr(null); setBusy(true);
     try {
-      await api.logout();
-      setMsg("Disconnected.");
-      await load();
+      setInfo(await api.disconnect());
       onChange?.();
     } catch (e) {
       setErr(e.message);
@@ -65,65 +55,56 @@ export default function ApiTab({ onChange }) {
     <div className="api-page">
       <section className="card">
         <div className="card-head">
-          <h1>API Connection</h1>
+          <h1>IBKR Connection</h1>
           <span className={`mode-badge ${connected ? "live" : "disabled"}`}>
             {connected ? "Connected" : "Disconnected"}
           </span>
         </div>
-        <p className="muted">Connect the dashboard to your Tastytrade account via OAuth.</p>
+        <p className="muted">
+          Connect the dashboard to your local IB Gateway (paper trading). Log in to the
+          Gateway in IBKR's own software first, then connect here.
+        </p>
         <div className="deploy-grid" style={{ marginTop: 12 }}>
-          <div><div className="stat-label">Broker</div><div className="stat-value">Tastytrade</div></div>
+          <div><div className="stat-label">Broker</div><div className="stat-value">Interactive Brokers</div></div>
           <div>
             <div className="stat-label">Status</div>
             <div className={`stat-value ${connected ? "pos" : "neg"}`}>{connected ? "Connected" : "Not connected"}</div>
           </div>
           <div>
-            <div className="stat-label">OAuth secret</div>
-            <div className="stat-value">{info?.oauth_configured ? "Set" : "Missing"}</div>
+            <div className="stat-label">Gateway</div>
+            <div className="stat-value">{info ? `${info.host}:${info.port}` : "—"}</div>
           </div>
           <div>
-            <div className="stat-label">Accounts</div>
-            <div className="stat-sub">{info?.accounts?.length ? info.accounts.join(", ") : "—"}</div>
+            <div className="stat-label">Client ID</div>
+            <div className="stat-value">{info?.client_id ?? "—"}</div>
+          </div>
+          <div>
+            <div className="stat-label">Account</div>
+            <div className="stat-sub">{info?.accounts?.length ? info.accounts.join(", ") : (info?.account || "—")}</div>
           </div>
         </div>
       </section>
 
       <section className="card">
-        <h2>Credentials</h2>
+        <h2>Connection</h2>
         <p className="muted small">
-          Stored locally on the server (<code>.session_store.json</code>, owner-only) and reused on
-          restart. Edit a field and Save to update. Saving re-connects with the new values.
+          Gateway host/port/clientId are configured server-side via <code>IBKR_HOST</code>,
+          <code>IBKR_PORT</code> (4002 = paper Gateway) and <code>IBKR_CLIENT_ID</code>. No
+          credentials are stored by this app — the Gateway holds your login.
         </p>
 
-        <label className="label" style={{ marginTop: 12 }}>OAuth client secret (Secret ID)</label>
-        <div className="cred-row">
-          <input className="input" type={showSecret ? "text" : "password"} value={secret}
-            onChange={(e) => setSecret(e.target.value)} placeholder="OAuth client secret"
-            autoComplete="off" disabled={busy} />
-          <button className="btn" type="button" onClick={() => setShowSecret((s) => !s)}>
-            {showSecret ? "Hide" : "Show"}
-          </button>
-        </div>
-
-        <label className="label" style={{ marginTop: 12 }}>Refresh token</label>
-        <div className="cred-row">
-          <input className="input" type={showToken ? "text" : "password"} value={token}
-            onChange={(e) => setToken(e.target.value)} placeholder="Tastytrade refresh token"
-            autoComplete="off" disabled={busy} />
-          <button className="btn" type="button" onClick={() => setShowToken((s) => !s)}>
-            {showToken ? "Hide" : "Show"}
-          </button>
-        </div>
-
         {err && <div className="banner error">{err}</div>}
-        {msg && <div className="banner ok">{msg}</div>}
 
         <div className="cred-row" style={{ marginTop: 14 }}>
-          <button className="btn primary" disabled={busy || token.trim().length < 8} onClick={save}>
-            {busy ? "Saving…" : "Save & Connect"}
-          </button>
+          {!connected && (
+            <button className="btn primary" disabled={busy} onClick={connect}>
+              {busy ? "Connecting…" : "Connect"}
+            </button>
+          )}
           {connected && (
-            <button className="btn danger" disabled={busy} onClick={disconnect}>Disconnect</button>
+            <button className="btn danger" disabled={busy} onClick={disconnect}>
+              {busy ? "Disconnecting…" : "Disconnect"}
+            </button>
           )}
         </div>
       </section>

@@ -32,7 +32,7 @@ export default function App() {
     try {
       setAuth(await api.authStatus());
     } catch {
-      setAuth({ authenticated: false, oauth_configured: false });
+      setAuth({ connected: false });
     }
   }, []);
 
@@ -40,8 +40,8 @@ export default function App() {
     refresh();
   }, [refresh]);
 
-  // The entire app is gated: connect the live feed only once authenticated.
-  const { snapshot, connected } = useSnapshot(auth?.authenticated);
+  // Connect the live feed only once the IBKR Gateway is connected.
+  const { snapshot, connected } = useSnapshot(auth?.connected);
 
   if (auth === null) {
     return <div className="boot">Loading…</div>;
@@ -50,8 +50,8 @@ export default function App() {
   // No hard gate: the app always lands on the Dashboard. Connecting the broker
   // happens in the API tab; unauthenticated views degrade gracefully (no live
   // feed, placeholder market data) until credentials are saved there.
-  const logout = async () => {
-    await api.logout().catch(() => {});
+  const disconnect = async () => {
+    await api.disconnect().catch(() => {});
     refresh();
   };
 
@@ -79,12 +79,12 @@ export default function App() {
         <div className="sidebar-foot">
           <div className="feed-state">
             <span className={connected ? "dot live" : "dot"} />
-            <span className="muted small">{connected ? "Live feed" : auth.authenticated ? "Connecting…" : "Not connected"}</span>
+            <span className="muted small">{connected ? "Live feed" : auth.connected ? "Connecting…" : "Not connected"}</span>
           </div>
-          {auth.authenticated ? (
-            <button className="btn ghost full" onClick={logout}>Sign out</button>
+          {auth.connected ? (
+            <button className="btn ghost full" onClick={disconnect}>Disconnect</button>
           ) : (
-            <button className="btn ghost full" onClick={() => setTab("API")}>Connect API</button>
+            <button className="btn ghost full" onClick={() => setTab("API")}>Connect IBKR</button>
           )}
         </div>
       </aside>

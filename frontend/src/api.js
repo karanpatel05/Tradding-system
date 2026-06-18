@@ -27,29 +27,10 @@ async function request(path, options = {}) {
 
 export const api = {
   base: API_BASE,
+  // IBKR Gateway connection state: {connected, host, port, client_id, account, accounts, detail}.
   authStatus: () => request("/api/auth/status"),
-  login: (refreshToken, providerSecret) =>
-    request("/api/auth/login", {
-      method: "POST",
-      body: JSON.stringify({
-        refresh_token: refreshToken,
-        // Omit when empty so the server falls back to its configured secret.
-        provider_secret: providerSecret?.trim() ? providerSecret.trim() : undefined,
-      }),
-    }),
-  logout: () => request("/api/auth/logout", { method: "POST" }),
-  // Current connection + stored credentials for the API settings tab.
-  getCredentials: () => request("/api/auth/credentials"),
-  // Persist secret + refresh token locally AND try to connect. Saves even when the
-  // connection fails (so values aren't lost on reload); returns {connected, detail, ...}.
-  saveCredentials: (providerSecret, refreshToken) =>
-    request("/api/auth/credentials", {
-      method: "POST",
-      body: JSON.stringify({
-        refresh_token: refreshToken,
-        provider_secret: providerSecret?.trim() ? providerSecret.trim() : undefined,
-      }),
-    }),
+  connect: () => request("/api/auth/connect", { method: "POST" }),
+  disconnect: () => request("/api/auth/disconnect", { method: "POST" }),
 
   marketStatus: () => request("/api/market/status"),
   marketOverview: () => request("/api/market/overview"),
