@@ -1,3 +1,1 @@
-"""Multi-Strategy Automated Trading System (Tastytrade) — backend package."""
-
-__version__ = "0.1.0"
+"""Multi-Strategy Automated Trading System (Interactive Brokers) — backend package."""

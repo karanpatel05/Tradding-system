@@ -26,7 +26,7 @@ from app.services.market_stream import market_stream
 from app.strategies.registry import list_strategies
 from app.db.base import session_scope
 from app.db.models import StrategyState, TradeRecord
-from app.tastytrade.client import get_client
+from app.ibkr.account import get_positions
 
 logger = logging.getLogger("trading.ws")
 
@@ -76,16 +76,8 @@ async def _positions_snapshot() -> list[dict]:
     if not session_manager.is_authenticated():
         return []
     try:
-        client = get_client()
-        out = []
-        for account in await client.get_accounts():
-            for pos in await client.get_positions(account):
-                out.append({
-                    "account": account.account_number,
-                    "symbol": getattr(pos, "symbol", None),
-                    "quantity": float(getattr(pos, "quantity", 0) or 0),
-                })
-        return out
+        return [{"account": p.account, "symbol": p.symbol, "quantity": float(p.quantity)}
+                for p in await get_positions()]
     except Exception as exc:  # noqa: BLE001
         logger.debug("WS positions fetch failed: %s", exc)
         return []

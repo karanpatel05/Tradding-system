@@ -150,7 +150,8 @@ async def position_detail(key: str) -> dict:
     live = None
     if session_manager.is_authenticated():
         try:
-            q = (await get_client().get_quotes([symbol], timeout=3.0)).get(symbol, {})
+            from app.ibkr.market import get_quotes
+            q = (await get_quotes([symbol], timeout=3.0)).get(symbol, {})
             live = q.get("last")
             if live is None and q.get("bid") is not None and q.get("ask") is not None:
                 live = round((q["bid"] + q["ask"]) / 2, 4)

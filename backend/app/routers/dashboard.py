@@ -16,8 +16,8 @@ from app.auth.manager import session_manager
 from app.engine.execution import flatten_all
 from app.engine.manager import engine_manager
 from app.engine.worker import close_open_trades
+from app.ibkr.account import get_positions
 from app.services.market import get_market_overview, get_market_status
-from app.tastytrade.client import get_client
 
 logger = logging.getLogger("trading.dashboard")
 
@@ -39,20 +39,18 @@ async def market_overview() -> dict:
 async def positions() -> dict:
     """Live view of all open positions across accounts. Degrades gracefully."""
     if not session_manager.is_authenticated():
-        return {"positions": [], "note": "Not authenticated."}
-    client = get_client()
+        return {"positions": [], "note": "Not connected to IBKR."}
     out: list[dict] = []
     try:
-        for account in await client.get_accounts():
-            for pos in await client.get_positions(account):
-                out.append({
-                    "account": account.account_number,
-                    "symbol": getattr(pos, "symbol", None),
-                    "quantity": _num(getattr(pos, "quantity", None)),
-                    "instrument_type": str(getattr(pos, "instrument_type", "") or ""),
-                    "average_open_price": _num(getattr(pos, "average_open_price", None)),
-                    "close_price": _num(getattr(pos, "close_price", None)),
-                })
+        for p in await get_positions():
+            out.append({
+                "account": p.account,
+                "symbol": p.symbol,
+                "quantity": _num(p.quantity),
+                "instrument_type": p.instrument_type,
+                "average_open_price": _num(p.avg_price),
+                "close_price": None,
+            })
     except Exception as exc:  # noqa: BLE001
         logger.warning("Position fetch failed: %s", exc)
         return {"positions": [], "note": "Position feed temporarily unavailable."}
