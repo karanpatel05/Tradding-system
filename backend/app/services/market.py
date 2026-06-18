@@ -1,9 +1,13 @@
 """Market status + overview.
 
 Market open/closed is computed locally from the US/Eastern clock and the NYSE
-holiday calendar — it needs no auth and is always available. The overview (index
-quotes, weekly performance) pulls live data from DXFeed when authenticated and
+holiday calendar — it needs no connection and is always available. The overview
+(index quotes, weekly performance) pulls live data from IBKR when connected and
 **degrades gracefully** to an "unavailable" state otherwise.
+
+NOTE: IBKR market data for cash indices needs index-data entitlements, so the
+overview uses liquid **ETF proxies** (SPY/QQQ/DIA/IWM/VIXY) via ordinary stock
+quotes. Values track the indices but are ETF prices, not cash-index levels.
 """
 
 from __future__ import annotations
@@ -15,7 +19,7 @@ from time import monotonic
 from zoneinfo import ZoneInfo
 
 from app.auth.manager import session_manager
-from app.tastytrade.client import get_client
+from app.ibkr.market import get_quotes
 
 logger = logging.getLogger("trading.market")
 
@@ -33,47 +37,34 @@ NYSE_HOLIDAYS_2026 = {
     date(2026, 11, 26), date(2026, 12, 25),
 }
 
-# Cash-index streamer symbols used for the market overview. These are the real
-# index levels (not ETF proxies). ``featured`` marks the headline ticker; ``kind``
-# distinguishes a volatility gauge (VIX) from a price index so the UI can format it
-# differently (no "$", inverted risk colouring is the UI's call).
-#
-# SPX and VIX are the reliable anchors. The Dow is the awkward one: the DJIA is a
-# proprietary index and its DXFeed streamer symbol varies by entitlement, so the
-# Dow entry lists several ``candidates`` and we use the first that actually streams
-# a correct-magnitude level (``min_level`` rejects e.g. DJX, which is DJIA/100).
+# Liquid ETF proxies for the market overview (IBKR stock quotes). ``featured`` marks
+# the headline ticker; ``kind`` distinguishes a volatility gauge from a price index
+# so the UI can format it differently.
 INDICES = [
-    {"symbol": "SPX", "name": "S&P 500", "kind": "index", "featured": True},
-    {"symbol": "NDX", "name": "Nasdaq 100", "kind": "index"},
-    {"symbol": "DJI", "name": "Dow Jones", "kind": "index",
-     "candidates": ["DJI", "INDU", "DJIA", "$DJI", ".DJI", "DJX.XO"],
-     "min_level": 1000},
-    {"symbol": "RUT", "name": "Russell 2000", "kind": "index"},
-    {"symbol": "VIX", "name": "Volatility", "kind": "volatility"},
+    {"symbol": "SPY", "name": "S&P 500", "kind": "index", "featured": True},
+    {"symbol": "QQQ", "name": "Nasdaq 100", "kind": "index"},
+    {"symbol": "DIA", "name": "Dow Jones", "kind": "index"},
+    {"symbol": "IWM", "name": "Russell 2000", "kind": "index"},
+    {"symbol": "VIXY", "name": "Volatility", "kind": "volatility"},
 ]
-
-
-def _candidates(ix: dict) -> list[str]:
-    """Streamer symbols to try for an index, in preference order."""
-    return ix.get("candidates") or [ix["symbol"]]
-
-
-def _resolve(ix: dict, quotes: dict[str, dict]) -> tuple[str, dict]:
-    """Pick the first candidate that returned a usable level (>= ``min_level``).
-
-    Returns the chosen streamer symbol and its quote dict. Falls back to the
-    primary symbol's (possibly empty) quote when nothing qualifies."""
-    floor = ix.get("min_level", 0)
-    for cand in _candidates(ix):
-        q = quotes.get(cand) or {}
-        if q.get("last") is not None and q["last"] >= floor:
-            return cand, q
-    return ix["symbol"], quotes.get(ix["symbol"], {})
 
 # Fields surfaced per index when no live data is available (keeps the JSON shape
 # stable so the UI renders placeholders rather than crashing).
 _NULL_QUOTE = {"last": None, "change": None, "change_pct": None,
                "week_change_pct": None, "prev_close": None}
+
+
+def index_row(ix: dict, quote: dict | None, week_change: float | None = None) -> dict:
+    """Build one overview row from a normalized IBKR quote ({last, close, ...}).
+    Day change is derived from last vs the prior close the ticker carries."""
+    last = (quote or {}).get("last")
+    prev = (quote or {}).get("close")
+    change = round(last - prev, 4) if last is not None and prev not in (None, 0) else None
+    change_pct = round(change / prev, 4) if change is not None and prev else None
+    return {**ix, "last": last, "change": change, "change_pct": change_pct,
+            "prev_close": prev, "day_volume": (quote or {}).get("day_volume"),
+            "week_change_pct": week_change if week_change is not None
+            else cached_week_change(ix["symbol"])}
 
 
 def _is_trading_day(d: date) -> bool:
@@ -113,19 +104,14 @@ async def get_market_overview() -> dict:
     base = {"status": status, "indices": [], "data_available": False, "note": None}
 
     if not session_manager.is_authenticated():
-        base["note"] = "Live market data requires authentication."
+        base["note"] = "Live market data requires an IBKR Gateway connection."
         base["indices"] = [{**ix, **_NULL_QUOTE} for ix in INDICES]
         return base
 
-    # Fetch quotes and weekly performance **concurrently** (they hit independent
-    # DXLink streams) so first paint is bounded by the slower of the two, not their
-    # sum. Quotes use a short timeout: when the market is open an index Trade lands
-    # in well under a second, and the only reason to wait longer is the dead Dow
-    # candidate symbols that never report — which we don't want to wait on.
-    fetch = [s for ix in INDICES for s in _candidates(ix)]
+    symbols = [ix["symbol"] for ix in INDICES]
     quotes, week_changes = await asyncio.gather(
-        get_client().get_quotes(fetch, timeout=2.5),
-        _weekly_changes(fetch),
+        get_quotes(symbols, timeout=2.5),
+        _weekly_changes(symbols),
         return_exceptions=True,
     )
     if isinstance(quotes, Exception):  # overview must never 500
@@ -137,24 +123,9 @@ async def get_market_overview() -> dict:
         logger.warning("Weekly change fetch failed: %s", week_changes)
         week_changes = {}
 
-    # Resolve each index to the candidate that actually streamed a usable level.
-    resolved = [(ix, *_resolve(ix, quotes)) for ix in INDICES]
-
-    indices = []
-    for ix, sym, q in resolved:
-        indices.append({
-            **ix,
-            "symbol": sym,  # the symbol that actually resolved (may differ from default)
-            "last": q.get("last"),
-            "change": q.get("change"),
-            "change_pct": q.get("change_pct"),
-            "prev_close": q.get("prev_close"),
-            "day_volume": q.get("day_volume"),
-            "week_change_pct": week_changes.get(sym),
-        })
+    indices = [index_row(ix, quotes.get(ix["symbol"]), week_changes.get(ix["symbol"]))
+               for ix in INDICES]
     base["indices"] = indices
-    # "Available" only if at least one index actually returned a level — a board
-    # of all-nulls (e.g. feed outage) should still read as degraded.
     base["data_available"] = any(ix["last"] is not None for ix in indices)
     if not base["data_available"]:
         base["note"] = "Index feed returned no data (markets may be closed)."
@@ -163,18 +134,14 @@ async def get_market_overview() -> dict:
 
 # Weekly % change moves only on the daily close, so it's cached to keep it off the
 # hot path — the dashboard polls every 15s and we don't want to re-pull two weeks
-# of candles (and re-probe the dead Dow candidates) each time.
+# of candles each time.
 _WEEKLY_TTL = 600.0  # seconds
 _weekly_cache: dict[str, tuple[float | None, float]] = {}
-# Each candle fetch opens its own (expensive) DXLink connection, so cap how many
-# run at once — opening one per symbol in parallel risks the per-session connection
-# limit. Weekly is off the hot path (cached), so a small cap costs nothing visible.
 _WEEKLY_CONCURRENCY = asyncio.Semaphore(3)
 
 
 def cached_week_change(sym: str) -> float | None:
     """Synchronous read of the cached weekly % for a symbol (None if absent/stale).
-
     Used by the live stream's snapshot builder, which must not block on the feed."""
     cached = _weekly_cache.get(sym)
     if cached and monotonic() - cached[1] < _WEEKLY_TTL:
