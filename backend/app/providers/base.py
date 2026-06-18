@@ -1,11 +1,11 @@
 """Data-provider abstraction.
 
-The system splits market data across providers:
-  • HISTORICAL / BACKTEST  → Massive (Polygon REST)  — see ``massive.py``
-  • LIVE quotes / stream / accounts / positions / orders → Tastytrade (existing
-    ``tastytrade/client.py``; wrapped by ``tastytrade_live.py``)
+Market data comes from Interactive Brokers (IB Gateway via ib_async):
+  • HISTORICAL forward-refresh / scanner → ``providers/ibkr_historical.py``
+    (bulk backtests read cached ``data_cache/*.json`` directly, not a live provider)
+  • LIVE quotes / stream / accounts / positions / orders → ``app/ibkr/`` + ``engine/execution.py``
 
-``HistoricalDataProvider`` is the seam: swapping historical sources later is a
+``HistoricalDataProvider`` is the seam: swapping historical sources is a
 config/factory change, not a rewrite of every caller. Bars are normalized to one
 shape so everything downstream (indicators, scanner, backtest, cache) is provider-
 agnostic.
@@ -23,10 +23,6 @@ TIMEFRAMES = ("1m", "5m", "15m", "1d")
 
 class ProviderError(RuntimeError):
     """Base class for provider failures."""
-
-
-class MassiveNotConfigured(ProviderError):
-    """Raised when a Massive historical request is attempted without an API key."""
 
 
 # A normalized bar: {"time": int(ms, UTC), "open","high","low","close","volume": float, "symbol": str}

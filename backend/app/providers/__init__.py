@@ -1,25 +1,16 @@
-"""Provider factory. Historical/backtest data is routed here; live data stays on
-the Tastytrade client. Swapping the historical source later is a change in this
-one place."""
+"""Provider factory. Historical/forward-refresh data comes from IBKR; bulk
+backtests read cached files directly via history_cache."""
 
 from __future__ import annotations
 
 from functools import lru_cache
 
-from app.config import get_settings
-from app.providers.base import HistoricalDataProvider, MassiveNotConfigured, ProviderError
-from app.providers.massive import MassiveHistoricalProvider
+from app.providers.base import HistoricalDataProvider, ProviderError
+from app.providers.ibkr_historical import IBKRHistoricalProvider
 
-__all__ = [
-    "get_historical_provider",
-    "HistoricalDataProvider",
-    "MassiveNotConfigured",
-    "ProviderError",
-]
+__all__ = ["get_historical_provider", "HistoricalDataProvider", "ProviderError"]
 
 
 @lru_cache
 def get_historical_provider() -> HistoricalDataProvider:
-    """The configured historical-data provider (Massive)."""
-    s = get_settings()
-    return MassiveHistoricalProvider(s.massive_api_key, s.massive_base_url)
+    return IBKRHistoricalProvider()
