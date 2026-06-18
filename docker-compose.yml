@@ -1,0 +1,51 @@
+# Full stack: Postgres + FastAPI backend + React frontend (nginx).
+#
+# Usage:
+#   export TASTYTRADE_PROVIDER_SECRET=your_oauth_client_secret
+#   docker compose up --build
+# Then open http://localhost:5173 and sign in with your refresh token.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: trading
+      POSTGRES_PASSWORD: trading
+      POSTGRES_DB: trading
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trading"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql+asyncpg://trading:trading@postgres:5432/trading
+      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+      # The OAuth client secret. Refresh token is entered in the UI, not here.
+      TASTYTRADE_PROVIDER_SECRET: ${TASTYTRADE_PROVIDER_SECRET:-}
+      TASTYTRADE_IS_TEST: ${TASTYTRADE_IS_TEST:-false}
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE: http://localhost:8000
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+
+volumes:
+  pgdata:

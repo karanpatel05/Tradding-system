@@ -1,0 +1,125 @@
+import { useEffect, useMemo, useState } from "react";
+import { api } from "../api.js";
+
+const iso = (d) => d.toISOString().slice(0, 10);
+const fmt = (n) => (n >= 0 ? "+" : "") + n.toLocaleString(undefined, { maximumFractionDigits: 0 });
+
+export default function CalendarTab() {
+  const [month, setMonth] = useState(() => {
+    const d = new Date();
+    return new Date(d.getFullYear(), d.getMonth(), 1);
+  });
+  const [days, setDays] = useState({});
+  const [selected, setSelected] = useState(null);
+  const [detail, setDetail] = useState(null);
+
+  const range = useMemo(() => {
+    const start = new Date(month.getFullYear(), month.getMonth(), 1);
+    const end = new Date(month.getFullYear(), month.getMonth() + 1, 0);
+    return { start: iso(start), end: iso(end) };
+  }, [month]);
+
+  useEffect(() => {
+    api.calendar(range.start, range.end).then((d) => {
+      const map = {};
+      (d.days || []).forEach((row) => (map[row.date] = row));
+      setDays(map);
+    }).catch(() => setDays({}));
+  }, [range.start, range.end]);
+
+  useEffect(() => {
+    if (selected) api.dayDetail(selected).then(setDetail).catch(() => setDetail(null));
+  }, [selected]);
+
+  const firstDow = month.getDay();
+  const daysInMonth = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < firstDow; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  const monthLabel = month.toLocaleString(undefined, { month: "long", year: "numeric" });
+  const shift = (n) => setMonth(new Date(month.getFullYear(), month.getMonth() + n, 1));
+
+  return (
+    <div className="calendar-tab">
+      <div className="row between center">
+        <h1>Journal</h1>
+        <div className="row gap center">
+          <button className="btn ghost" onClick={() => shift(-1)}>‹</button>
+          <span className="month-label">{monthLabel}</span>
+          <button className="btn ghost" onClick={() => shift(1)}>›</button>
+        </div>
+      </div>
+
+      <div className="calendar-grid">
+        {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
+          <div className="cal-dow" key={d}>{d}</div>
+        ))}
+        {cells.map((d, i) => {
+          if (!d) return <div key={i} className="cal-cell empty" />;
+          const dateStr = iso(new Date(month.getFullYear(), month.getMonth(), d));
+          const row = days[dateStr];
+          const pnl = row?.realized_pnl ?? 0;
+          const cls = !row ? "" : pnl > 0 ? "pos" : pnl < 0 ? "neg" : "flat";
+          return (
+            <div
+              key={i}
+              className={`cal-cell ${cls} ${row ? "has-data" : ""}`}
+              onClick={() => row && setSelected(dateStr)}
+            >
+              <div className="cal-day">{d}</div>
+              {row && (
+                <>
+                  <div className="cal-pnl">${fmt(pnl)}</div>
+                  <div className="cal-trades">
+                    {row.trade_count} trades
+                    {row.open_count > 0 && <span className="cal-open"> · {row.open_count} open</span>}
+                  </div>
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {selected && detail && (
+        <div className="card day-detail">
+          <div className="row between center">
+            <h2>{selected}</h2>
+            <button className="btn ghost" onClick={() => { setSelected(null); setDetail(null); }}>✕</button>
+          </div>
+          <div className={`big-pnl ${detail.realized_pnl >= 0 ? "pos" : "neg"}`}>
+            ${detail.realized_pnl.toLocaleString()}
+          </div>
+          <h4>Trades ({detail.trades.length})</h4>
+          {detail.trades.length === 0 ? <div className="muted">No trades.</div> : (
+            <table className="table">
+              <thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Return</th><th>Status</th></tr></thead>
+              <tbody>
+                {detail.trades.map((t) => (
+                  <tr key={t.id}>
+                    <td>{t.symbol}</td><td>{t.side}</td><td>{t.quantity}</td>
+                    <td>{t.entry_price ?? "—"}</td><td>{t.exit_price ?? "—"}</td>
+                    <td className={t.pnl == null ? "" : t.pnl >= 0 ? "pos" : "neg"}>{t.pnl != null ? `$${t.pnl.toFixed(2)}` : "—"}</td>
+                    <td>{t.return_pct != null ? `${(t.return_pct * 100).toFixed(2)}%` : "—"}</td>
+                    <td><span className={`pill tiny ${t.status === "open" ? "live" : "idle"}`}>{t.status}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          <h4>Log ({detail.logs.length})</h4>
+          <div className="log-list">
+            {detail.logs.map((l) => (
+              <div className="log-line" key={l.id}>
+                <span className="muted small">{l.ts?.slice(11, 19)}</span>
+                <span className={`pill tiny ${l.category}`}>{l.category}</span>
+                <span>{l.message}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

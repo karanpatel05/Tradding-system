@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.env
+trading.db
+.session_store.json
+data_cache/
+.venv/
+node_modules/
+dist/
+*.log

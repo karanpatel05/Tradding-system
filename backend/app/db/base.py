@@ -1,0 +1,93 @@
+"""Async SQLAlchemy engine, session factory, and base class.
+
+Supports both SQLite (default, zero-infra local dev) and PostgreSQL (compose /
+production) transparently via ``settings.database_url``.
+"""
+
+from __future__ import annotations
+
+import contextlib
+from collections.abc import AsyncIterator
+
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.orm import DeclarativeBase
+
+from app.config import get_settings
+
+settings = get_settings()
+
+# SQLite needs check_same_thread disabled for async use; Postgres ignores it.
+_connect_args: dict = {}
+if settings.database_url.startswith("sqlite"):
+    _connect_args = {"check_same_thread": False}
+
+engine = create_async_engine(
+    settings.database_url,
+    echo=False,
+    future=True,
+    connect_args=_connect_args,
+)
+
+SessionLocal = async_sessionmaker(
+    bind=engine,
+    expire_on_commit=False,
+    class_=AsyncSession,
+)
+
+
+class Base(DeclarativeBase):
+    """Declarative base for all ORM models."""
+
+
+async def init_db() -> None:
+    """Create all tables. Imports models for their side effect of registering
+    them on ``Base.metadata`` before ``create_all`` runs."""
+    import app.db.models  # noqa: F401  (registers models on Base.metadata)
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_ensure_added_columns)
+
+
+def _ensure_added_columns(conn) -> None:
+    """Minimal additive migration: ``create_all`` never alters existing tables, so
+    add columns introduced after a table was first created. Idempotent; safe on
+    SQLite and Postgres."""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(conn)
+    tables = set(insp.get_table_names())
+    if "trades" in tables:
+        existing = {c["name"] for c in insp.get_columns("trades")}
+        for col in ("stop", "target"):
+            if col not in existing:
+                conn.execute(text(f"ALTER TABLE trades ADD COLUMN {col} FLOAT"))
+        if "broker_order_id" not in existing:
+            conn.execute(text("ALTER TABLE trades ADD COLUMN broker_order_id VARCHAR(64)"))
+    if "strategy_state" in tables:
+        cols = {c["name"] for c in insp.get_columns("strategy_state")}
+        if "direction" not in cols:
+            conn.execute(text(
+                "ALTER TABLE strategy_state ADD COLUMN direction VARCHAR(8) DEFAULT 'both'"))
+
+
+async def get_session() -> AsyncIterator[AsyncSession]:
+    """FastAPI dependency yielding a request-scoped session."""
+    async with SessionLocal() as session:
+        yield session
+
+
+@contextlib.asynccontextmanager
+async def session_scope() -> AsyncIterator[AsyncSession]:
+    """Standalone session context for background workers (no FastAPI request)."""
+    async with SessionLocal() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
