@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     history_cache_dir: str = str(_BASE_DIR / "data_cache")
     history_cache_ttl_hours: float = 12.0
 
+    # When set (the desktop bundle sets FRONTEND_DIST), the API also serves the built
+    # React app from this directory at "/" with SPA fallback. Empty in dev (Vite serves UI).
+    frontend_dist: str = ""
+
     # --- Session persistence ---
     # When True, the login refresh token + app session id are written to
     # ``session_store_path`` (0600) so the session survives a server restart and
