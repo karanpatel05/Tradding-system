@@ -30,8 +30,10 @@ class IBKRHistoricalProvider(HistoricalDataProvider):
         ib = await get_gateway().get_ib()
         bar_size = _TF_TO_IB[timeframe]
         duration = self._duration(start, timeframe)
+        contract = stock(symbol)
+        await ib.qualifyContractsAsync(contract)
         bars = await ib.reqHistoricalDataAsync(
-            stock(symbol), endDateTime="", durationStr=duration, barSizeSetting=bar_size,
+            contract, endDateTime="", durationStr=duration, barSizeSetting=bar_size,
             whatToShow="TRADES", useRTH=True, formatDate=2)
         return [normalize_bar(b, symbol.upper()) for b in bars]
 

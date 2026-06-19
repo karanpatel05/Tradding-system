@@ -22,6 +22,8 @@ def normalize_ticker(t) -> dict:
 async def get_quotes(symbols: list[str], timeout: float = 3.0) -> dict[str, dict]:
     ib = await get_gateway().get_ib()
     contracts = {sym: stock(sym) for sym in symbols}
+    # reqMktData needs a qualified contract (conId) — otherwise ib_async can't hash it.
+    await ib.qualifyContractsAsync(*contracts.values())
     tickers = {sym: ib.reqMktData(contracts[sym], "", False, False) for sym in symbols}
     await asyncio.sleep(timeout)   # let ticks arrive
     out = {sym: normalize_ticker(t) for sym, t in tickers.items()}

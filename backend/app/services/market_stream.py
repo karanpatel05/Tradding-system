@@ -86,7 +86,10 @@ class MarketStream:
                 return  # nothing to stream; a future WS connect restarts us
             try:
                 ib = await get_gateway().get_ib()
-                self._tickers = {sym: ib.reqMktData(stock(sym), "", False, False)
+                contracts = {sym: stock(sym) for sym in _SYMBOLS}
+                # reqMktData needs qualified contracts (conId) to be hashable.
+                await ib.qualifyContractsAsync(*contracts.values())
+                self._tickers = {sym: ib.reqMktData(contracts[sym], "", False, False)
                                  for sym in _SYMBOLS}
                 self._connected = True
                 backoff = 1.0
@@ -100,7 +103,7 @@ class MarketStream:
                     warm.cancel()
                     for sym in _SYMBOLS:
                         try:
-                            ib.cancelMktData(stock(sym))
+                            ib.cancelMktData(contracts[sym])
                         except Exception:  # noqa: BLE001
                             pass
             except asyncio.CancelledError:
