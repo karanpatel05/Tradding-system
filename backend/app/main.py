@@ -83,11 +83,6 @@ app.include_router(logs_router)
 app.include_router(strategies_router)
 app.include_router(ws_router)
 
-# Serve the built React app same-origin in the packaged desktop build (no-op in dev).
-# Registered LAST so its SPA catch-all never shadows the API/WS routers above.
-from app.static import mount_frontend
-mount_frontend(app, settings.frontend_dist)
-
 
 @app.get("/health", tags=["system"])
 async def health() -> dict:
@@ -104,3 +99,10 @@ async def health() -> dict:
 async def me() -> dict:
     """Gated probe — verifies the auth gate works end to end."""
     return {"authenticated": True}
+
+
+# Serve the built React app same-origin in the packaged desktop build (no-op in dev).
+# Registered LAST so its SPA catch-all never shadows ANY API/WS/system route above.
+from app.static import mount_frontend  # noqa: E402
+
+mount_frontend(app, settings.frontend_dist)
