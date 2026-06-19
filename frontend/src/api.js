@@ -165,5 +165,10 @@ export const api = {
 };
 
 export function wsUrl() {
+  // Packaged build uses VITE_API_BASE="" (same-origin) -> derive from the page.
+  if (!API_BASE) {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    return `${proto}://${location.host}/ws`;
+  }
   return API_BASE.replace(/^http/, "ws") + "/ws";
 }
