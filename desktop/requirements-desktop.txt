@@ -1,0 +1,3 @@
+# Desktop packaging (build/run-time only; not needed for the web app)
+pywebview>=5.0
+pyinstaller>=6.0
