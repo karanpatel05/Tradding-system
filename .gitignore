@@ -5,3 +5,5 @@ data_cache/
 *.db
 .session_store.json
 .env
+desktop/build/
+desktop/dist/
