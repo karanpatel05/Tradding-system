@@ -38,6 +38,8 @@ export default function App() {
 
   useEffect(() => {
     refresh();
+    const id = setInterval(refresh, 5000); // keep connection state live across the app
+    return () => clearInterval(id);
   }, [refresh]);
 
   // Connect the live feed only once the IBKR Gateway is connected.
