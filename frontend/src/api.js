@@ -2,7 +2,11 @@
 // "include") so the server-side auth gate sees it. The session token itself is
 // never exposed to JS — only the opaque HttpOnly cookie the browser holds.
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+// Vite dev server (port 5173) must reach the API on :8000; a production build is
+// served by the backend itself (packaged desktop app), so it's same-origin ("").
+// `import.meta.env.DEV` is statically replaced at build time, so the dev URL is
+// dead-code-eliminated from the bundle.
+const API_BASE = import.meta.env.DEV ? "http://localhost:8000" : "";
 
 async function request(path, options = {}) {
   const res = await fetch(`${API_BASE}${path}`, {
