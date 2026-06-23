@@ -27,6 +27,7 @@ export default function App() {
   const [auth, setAuth] = useState(null); // null = loading
   const [tab, setTab] = useState("Dashboard");
   const [focusKey, setFocusKey] = useState(null); // strategy to open from the dashboard
+  const [connecting, setConnecting] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -55,6 +56,21 @@ export default function App() {
   const disconnect = async () => {
     await api.disconnect().catch(() => {});
     refresh();
+  };
+
+  // Connect directly from the sidebar. Only fall back to the API tab if the
+  // connection fails, so the user can read the error detail there.
+  const connect = async () => {
+    setConnecting(true);
+    try {
+      const res = await api.connect();
+      if (!res?.connected) setTab("API");
+    } catch {
+      setTab("API");
+    } finally {
+      setConnecting(false);
+      refresh();
+    }
   };
 
   return (
@@ -86,7 +102,9 @@ export default function App() {
           {auth.connected ? (
             <button className="btn ghost full" onClick={disconnect}>Disconnect</button>
           ) : (
-            <button className="btn ghost full" onClick={() => setTab("API")}>Connect IBKR</button>
+            <button className="btn ghost full" disabled={connecting} onClick={connect}>
+              {connecting ? "Connecting…" : "Connect IBKR"}
+            </button>
           )}
         </div>
       </aside>
