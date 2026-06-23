@@ -40,3 +40,40 @@ async def get_positions(account: str | None = None) -> list[NormalizedPosition]:
     if account:
         out = [p for p in out if p.account == account]
     return [p for p in out if p.quantity != 0]
+
+
+_ACCOUNT_TAGS = {
+    "NetLiquidation": "net_liquidation", "TotalCashValue": "total_cash",
+    "BuyingPower": "buying_power", "AvailableFunds": "available_funds",
+    "GrossPositionValue": "gross_position_value", "UnrealizedPnL": "unrealized_pnl",
+    "RealizedPnL": "realized_pnl", "InitMarginReq": "init_margin",
+    "MaintMarginReq": "maint_margin",
+}
+
+
+def normalize_account_summary(values) -> dict:
+    """IBKR accountSummary rows -> normalized {key: float|None} + account/currency."""
+    out: dict = {key: None for key in _ACCOUNT_TAGS.values()}
+    out["account"] = None
+    out["currency"] = None
+    for v in values:
+        if out["account"] is None:
+            out["account"] = getattr(v, "account", None) or None
+        if out["currency"] is None and getattr(v, "currency", ""):
+            out["currency"] = v.currency
+        key = _ACCOUNT_TAGS.get(getattr(v, "tag", None))
+        if key is not None:
+            try:
+                out[key] = float(v.value)
+            except (TypeError, ValueError):
+                pass
+    return out
+
+
+async def get_account_summary(account: str | None = None) -> dict:
+    """Full IBKR account summary, normalized. Returns {} when not connected."""
+    if not get_gateway().is_connected():
+        return {}
+    ib = await get_gateway().get_ib()
+    rows = await ib.accountSummaryAsync(account or "")
+    return normalize_account_summary(rows)
