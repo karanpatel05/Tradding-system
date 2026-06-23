@@ -16,13 +16,13 @@ from app.strategies.base import BaseStrategy, ComingSoonStrategy
 
 settings = get_settings()
 
-# Ordered registry of the 5 strategy slots, all "Coming Soon" until their rules are
-# implemented. (The 9/15 EMA crossover was removed as a live strategy; its package
-# remains for backtest/research use, just no longer registered here. To make a slot
-# live, register a ready BaseStrategy subclass under that key.)
+# Strategy slots, all "Coming Soon" until their rules are implemented. The 9/15 EMA
+# crossover (slot strategy_1) was removed entirely — its package remains for
+# backtest/research use, just no longer registered or listed. To make a slot live,
+# register a ready BaseStrategy subclass under its key.
 _STRATEGIES: dict[str, BaseStrategy] = {
     f"strategy_{i}": ComingSoonStrategy(key=f"strategy_{i}", name=f"Strategy {i}")
-    for i in range(1, settings.max_strategies + 1)
+    for i in range(2, settings.max_strategies + 1)
 }
 
 

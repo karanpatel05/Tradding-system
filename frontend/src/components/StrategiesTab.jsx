@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
 import StrategyDetail from "./StrategyDetail.jsx";
-import CrossoverPage from "./CrossoverPage.jsx";
 
 export default function StrategiesTab({ focusKey, onFocusHandled }) {
   const [strategies, setStrategies] = useState([]);
@@ -19,11 +18,7 @@ export default function StrategiesTab({ focusKey, onFocusHandled }) {
 
   if (selected) {
     const onBack = () => { setSelected(null); load(); };
-    // The live multi-position crossover has its own full strategy page; others use
-    // the generic Coming-Soon detail.
-    return selected === "strategy_1"
-      ? <CrossoverPage keyName={selected} onBack={onBack} />
-      : <StrategyDetail keyName={selected} onBack={onBack} />;
+    return <StrategyDetail keyName={selected} onBack={onBack} />;
   }
 
   return (
