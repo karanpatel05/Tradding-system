@@ -13,20 +13,17 @@ from app.config import get_settings
 from app.db.base import session_scope
 from app.db.models import StrategyState
 from app.strategies.base import BaseStrategy, ComingSoonStrategy
-from app.strategies.ema_crossover import EmaCrossoverStrategy
 
 settings = get_settings()
 
-# Ordered registry of the 5 strategies. strategy_1 is the live multi-position 9/15
-# EMA *crossover* (it replaced the old single-position scalper; the scalper package
-# survives only for its shared indicators). The rest remain "Coming Soon" until
-# their rules are implemented.
+# Ordered registry of the 5 strategy slots, all "Coming Soon" until their rules are
+# implemented. (The 9/15 EMA crossover was removed as a live strategy; its package
+# remains for backtest/research use, just no longer registered here. To make a slot
+# live, register a ready BaseStrategy subclass under that key.)
 _STRATEGIES: dict[str, BaseStrategy] = {
     f"strategy_{i}": ComingSoonStrategy(key=f"strategy_{i}", name=f"Strategy {i}")
-    for i in range(2, settings.max_strategies + 1)
+    for i in range(1, settings.max_strategies + 1)
 }
-_xover = EmaCrossoverStrategy()
-_STRATEGIES = {_xover.key: _xover, **_STRATEGIES}
 
 
 def list_strategies() -> list[BaseStrategy]:
@@ -51,7 +48,9 @@ async def seed_strategy_state() -> None:
                     key=strat.key, name=strat.name, ready=strat.ready, status="idle",
                 ))
             else:
-                # Sync the ready flag in case code changed.
+                # Sync the ready flag + name in case code changed (e.g. a strategy
+                # was removed and its slot reverted to a Coming Soon placeholder).
                 state = await session.get(StrategyState, strat.key)
-                if state and state.ready != strat.ready:
+                if state and (state.ready != strat.ready or state.name != strat.name):
                     state.ready = strat.ready
+                    state.name = strat.name
