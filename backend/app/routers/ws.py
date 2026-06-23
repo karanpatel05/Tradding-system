@@ -26,7 +26,7 @@ from app.services.market_stream import market_stream
 from app.strategies.registry import list_strategies
 from app.db.base import session_scope
 from app.db.models import StrategyState, TradeRecord
-from app.ibkr.account import get_positions
+from app.ibkr.account import get_account_summary, get_positions
 
 logger = logging.getLogger("trading.ws")
 
@@ -83,6 +83,16 @@ async def _positions_snapshot() -> list[dict]:
         return []
 
 
+async def _account_snapshot() -> dict:
+    if not session_manager.is_authenticated():
+        return {}
+    try:
+        return await get_account_summary()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("WS account fetch failed: %s", exc)
+        return {}
+
+
 @router.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket) -> None:
     cookie = websocket.cookies.get(APP_SESSION_COOKIE)
@@ -97,12 +107,14 @@ async def ws_endpoint(websocket: WebSocket) -> None:
 
     tick = 0
     broker_positions: list[dict] = []
+    broker_account: dict = {}
     try:
         while True:
             # Broker positions hit the API, so refresh them only every Nth tick;
             # strategy-tracked (incl. paper) positions are cheap DB reads each tick.
             if tick % POSITIONS_EVERY == 0:
                 broker_positions = await _positions_snapshot()
+                broker_account = await _account_snapshot()
             strat_positions = await _strategy_positions_snapshot()
             strat_symbols = {p["symbol"] for p in strat_positions}
             # Strategy positions first; add any broker positions not already tracked
@@ -116,6 +128,7 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                 "market_overview": market_stream.overview(),  # live, from the stream cache
                 "strategies": await _strategies_snapshot(),
                 "positions": positions,
+                "account": broker_account,
             })
             tick += 1
             await asyncio.sleep(PUSH_INTERVAL)

@@ -16,7 +16,7 @@ from app.auth.manager import session_manager
 from app.engine.execution import flatten_all
 from app.engine.manager import engine_manager
 from app.engine.worker import close_open_trades
-from app.ibkr.account import get_positions
+from app.ibkr.account import get_account_summary, get_positions
 from app.services.market import get_market_overview, get_market_status
 
 logger = logging.getLogger("trading.dashboard")
@@ -55,6 +55,18 @@ async def positions() -> dict:
         logger.warning("Position fetch failed: %s", exc)
         return {"positions": [], "note": "Position feed temporarily unavailable."}
     return {"positions": out, "note": None}
+
+
+@router.get("/account", dependencies=[Depends(require_auth)])
+async def account() -> dict:
+    """IBKR account summary (balances/PnL/margin). Degrades gracefully."""
+    if not session_manager.is_authenticated():
+        return {"account": {}, "note": "Not connected to IBKR."}
+    try:
+        return {"account": await get_account_summary(), "note": None}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Account summary fetch failed: %s", exc)
+        return {"account": {}, "note": "Account feed temporarily unavailable."}
 
 
 @router.post("/kill", dependencies=[Depends(require_auth)])
