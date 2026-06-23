@@ -28,6 +28,9 @@ export default function Dashboard({ snapshot, onOpenStrategy }) {
   const active = strategies.filter((s) => s.running);
   const activeAlloc = active.reduce((sum, s) => sum + (s.capital_allocation || 0), 0);
   const session = snapshot?.market_status?.session;
+  const acct = snapshot?.account;
+  const hasAcct = acct && Object.keys(acct).length > 0;
+  const pnlTone = (v) => (v === null || v === undefined ? "" : v >= 0 ? "pos" : "neg");
 
   return (
     <div className="dashboard">
@@ -53,6 +56,28 @@ export default function Dashboard({ snapshot, onOpenStrategy }) {
       </div>
 
       <MarketOverview snapshot={snapshot} />
+
+      <section className="card">
+        <div className="card-head">
+          <h2>Account</h2>
+          <span className="muted small">{acct?.account || "IBKR"}{acct?.currency ? ` · ${acct.currency}` : ""}</span>
+        </div>
+        {hasAcct ? (
+          <div className="stat-strip">
+            <Stat label="Net Liquidation" value={`$${fmt(acct.net_liquidation, 0)}`} />
+            <Stat label="Cash" value={`$${fmt(acct.total_cash, 0)}`} />
+            <Stat label="Buying Power" value={`$${fmt(acct.buying_power, 0)}`} />
+            <Stat label="Available Funds" value={`$${fmt(acct.available_funds, 0)}`} />
+            <Stat label="Position Value" value={`$${fmt(acct.gross_position_value, 0)}`} />
+            <Stat label="Unrealized P&L" value={`$${fmt(acct.unrealized_pnl)}`} tone={pnlTone(acct.unrealized_pnl)} />
+            <Stat label="Realized P&L" value={`$${fmt(acct.realized_pnl)}`} tone={pnlTone(acct.realized_pnl)} />
+            <Stat label="Init Margin" value={`$${fmt(acct.init_margin, 0)}`} />
+            <Stat label="Maint Margin" value={`$${fmt(acct.maint_margin, 0)}`} />
+          </div>
+        ) : (
+          <p className="muted small" style={{ marginTop: 12 }}>Connect IBKR to see account balances.</p>
+        )}
+      </section>
 
       <div className="grid-2">
         <section className="card">

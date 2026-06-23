@@ -36,6 +36,7 @@ export const api = {
   connect: () => request("/api/auth/connect", { method: "POST" }),
   disconnect: () => request("/api/auth/disconnect", { method: "POST" }),
 
+  account: () => request("/api/account"),
   marketStatus: () => request("/api/market/status"),
   marketOverview: () => request("/api/market/overview"),
   positions: () => request("/api/positions"),
