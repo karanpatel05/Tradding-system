@@ -13,17 +13,20 @@ from app.config import get_settings
 from app.db.base import session_scope
 from app.db.models import StrategyState
 from app.strategies.base import BaseStrategy, ComingSoonStrategy
+from app.strategies.triple_calendar.strategy_class import TripleCalendarStrategy
 
 settings = get_settings()
 
-# Strategy slots, all "Coming Soon" until their rules are implemented. The 9/15 EMA
-# crossover (slot strategy_1) was removed entirely — its package remains for
-# backtest/research use, just no longer registered or listed. To make a slot live,
-# register a ready BaseStrategy subclass under its key.
+# Strategy slots. slot strategy_2 is the live Triple Calendar (options); the rest are
+# "Coming Soon" placeholders. The 9/15 EMA crossover (slot strategy_1) was removed
+# entirely — its package remains for backtest/research use, just no longer registered.
+# To make a slot live, register a ready BaseStrategy subclass under its key.
 _STRATEGIES: dict[str, BaseStrategy] = {
     f"strategy_{i}": ComingSoonStrategy(key=f"strategy_{i}", name=f"Strategy {i}")
     for i in range(2, settings.max_strategies + 1)
 }
+_tc = TripleCalendarStrategy()
+_STRATEGIES[_tc.key] = _tc
 
 
 def list_strategies() -> list[BaseStrategy]:

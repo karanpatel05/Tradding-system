@@ -74,6 +74,11 @@ class Settings(BaseSettings):
         default=None, validation_alias=AliasChoices("POLYGON_API_KEY", "MASSIVE_API_KEY"))
     polygon_base_url: str = "https://api.polygon.io"
 
+    # --- Triple Calendar (options strategy, live) ---
+    tc_underlying: str = "QQQ"
+    tc_event_dates: str = ""                 # comma-separated ISO dates (FOMC/CPI)
+    tc_manage_interval_seconds: int = 300
+
     # --- Session persistence ---
     # When True, the login refresh token + app session id are written to
     # ``session_store_path`` (0600) so the session survives a server restart and
