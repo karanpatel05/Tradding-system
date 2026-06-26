@@ -1,9 +1,24 @@
-"""IBKR contract helpers. One place that builds the Stock contracts used across
-market data, history, and execution so routing (SMART/USD) stays consistent."""
+"""IBKR contract helpers. One place that builds the contracts used across market
+data, history, and execution so routing (SMART/USD) stays consistent."""
 from __future__ import annotations
 
-from ib_async import Stock
+from datetime import date
+
+from ib_async import ComboLeg, Contract, Option, Stock
 
 
 def stock(symbol: str) -> Stock:
     return Stock(symbol.upper(), "SMART", "USD")
+
+
+def option(underlying: str, expiry: date, strike: float, right: str) -> Option:
+    return Option(underlying.upper(), expiry.strftime("%Y%m%d"), float(strike),
+                  right.upper(), "SMART")
+
+
+def combo(underlying: str, legs: list[tuple[int, str]]) -> Contract:
+    """BAG combo from (conId, action) legs (ratio 1 each)."""
+    c = Contract(symbol=underlying.upper(), secType="BAG", currency="USD", exchange="SMART")
+    c.comboLegs = [ComboLeg(conId=cid, ratio=1, action=act, exchange="SMART")
+                   for cid, act in legs]
+    return c
