@@ -94,3 +94,22 @@ class JournalNote(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
+
+
+class OptionPositionRecord(Base):
+    """A live multi-leg options position (e.g. Triple Calendar), JSON-serialized so a
+    restart can resume management. One open record per strategy at a time."""
+
+    __tablename__ = "option_positions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    strategy_key: Mapped[str] = mapped_column(String(32), index=True)
+    underlying: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(8), default="open")  # open | closed
+    paper: Mapped[bool] = mapped_column(Boolean, default=True)
+    entry_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    exit_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    net_debit: Mapped[float] = mapped_column(Float, default=0.0)
+    pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    calendars: Mapped[list] = mapped_column(JSON, default=list)   # [{strike, sell, buy}]
+    order_ids: Mapped[list] = mapped_column(JSON, default=list)
