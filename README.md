@@ -55,6 +55,20 @@ npm install
 npm run dev   # http://localhost:5173  (talks to backend on :8000)
 ```
 
+## Run as a web app (browser)
+
+One command builds the React UI and serves it together with the API from a single
+uvicorn process, then opens it in your browser — no native window, no separate dev server:
+
+```bash
+./scripts/run_web.sh          # serves http://127.0.0.1:8765 and opens it
+```
+
+Same backend as the Mac desktop app (`desktop/`), just a different run mode. It binds to
+`127.0.0.1` (local machine only). For LAN access change `--host` to `0.0.0.0` in the script —
+**local network only; do not expose to the internet without adding real auth + TLS** (see
+`docs/superpowers/specs/2026-06-26-web-app-migration-design.md`).
+
 ## Run the full stack (Docker)
 
 ```bash
