@@ -150,8 +150,7 @@ async def flatten_all() -> str:
         if qty <= 0:
             continue
         if p.instrument_type != "Equity":
-            failures.append(f"{p.symbol} ({p.instrument_type}: cannot auto-flatten)")
-            continue
+            continue  # options/combos closed in the raw-contract loop below
         action = "SELL" if p.quantity > 0 else "BUY"
         if not s.enable_live_orders:
             logger.warning("[FLATTEN-PAPER] would %s %s x%d — ENABLE_LIVE_ORDERS off",
@@ -168,6 +167,28 @@ async def flatten_all() -> str:
             logger.error("Flatten failed for %s: %r", p.symbol, exc)
             failures.append(f"{p.symbol} ({exc})")
 
+    # Close non-equity (option/combo) positions via their raw IBKR contracts (the
+    # normalized view can't rebuild an option contract; the raw position has its conId).
+    for rp in ib.positions():
+        if getattr(rp.contract, "secType", "STK") == "STK" or not rp.position:
+            continue
+        qy = abs(int(rp.position))
+        act = "SELL" if rp.position > 0 else "BUY"
+        label = rp.contract.localSymbol or rp.contract.symbol
+        if not s.enable_live_orders:
+            logger.warning("[FLATTEN-PAPER] would %s option %s x%d — ENABLE_LIVE_ORDERS off",
+                           act, label, qy)
+            failures.append(f"{label} (paper: not transmitted)")
+            continue
+        try:
+            await ib.qualifyContractsAsync(rp.contract)
+            ib.placeOrder(rp.contract, MarketOrder(act, qy))
+            logger.warning("[FLATTEN-LIVE] %s option %s x%d", act, label, qy)
+            closed.append(f"{label} x{qy}")
+        except Exception as exc:  # noqa: BLE001 — attempt every position
+            logger.error("Flatten failed for option %s: %r", label, exc)
+            failures.append(f"{label} option ({exc})")
+
     note = f"cancelled {cancelled} resting order(s); " if cancelled else ""
     if total == 0 and not failures:
         return f"{note}No open positions." if note else "No open positions."
@@ -175,3 +196,33 @@ async def flatten_all() -> str:
         raise RuntimeError(f"Flatten incomplete: {note}closed {len(closed)}/{total} "
                            f"[{', '.join(closed) or 'none'}]; not flat: {', '.join(failures)}")
     return f"{note}Flattened {total} position(s): {', '.join(closed)}"
+
+
+async def submit_combo_order(underlying: str, legs: list[dict], *, net_price: float | None = None,
+                             action: str = "BUY", reason: str = "") -> dict:
+    """Place a multi-leg options combo (BAG). Each leg = {expiry(date), strike, right, action}.
+    GATE: ENABLE_LIVE_ORDERS off -> log + return transmitted:False (paper)."""
+    if not legs:
+        return {"transmitted": False, "detail": "no legs"}
+    s = get_settings()
+    if not s.enable_live_orders:
+        logger.warning("[PAPER] COMBO %s %s x%d legs net~%s (%s) — ENABLE_LIVE_ORDERS off",
+                       action, underlying, len(legs), net_price, reason)
+        return {"transmitted": False, "paper": True, "legs": len(legs),
+                "detail": f"paper combo {action} {underlying} {len(legs)} legs"}
+    from ib_async import LimitOrder, MarketOrder
+
+    from app.ibkr.contracts import combo, option
+    ib = await get_gateway().get_ib()
+    leg_ids: list[tuple[int, str]] = []
+    for spec in legs:
+        c = option(underlying, spec["expiry"], spec["strike"], spec["right"])
+        await ib.qualifyContractsAsync(c)
+        leg_ids.append((c.conId, spec["action"]))
+    bag = combo(underlying, leg_ids)
+    order = LimitOrder(action, 1, net_price) if net_price is not None else MarketOrder(action, 1)
+    trade = ib.placeOrder(bag, order)
+    logger.warning("[LIVE COMBO] %s %s %d legs net %s (%s)", action, underlying, len(legs),
+                   net_price, reason)
+    return {"transmitted": True, "legs": len(legs), "order_id": trade.order.orderId,
+            "detail": f"LIVE combo {action} {underlying} {len(legs)} legs"}
