@@ -35,8 +35,17 @@ async def main() -> int:
     else:
         print(f"Entry: {len(entry_legs(pos))} legs across "
               f"{sorted({c.strike for c in pos.calendars})}, net debit {pos.net_debit:.2f}")
-        input("Press Enter to flatten (only acts live)...")
-        print("flatten:", await flatten_all())
+        from app.config import get_settings
+        if get_settings().enable_live_orders:
+            input("Press Enter to place + flatten the paper combo...")
+            from app.engine.execution import submit_combo_order
+            print("entry:", await submit_combo_order(params.underlying, entry_legs(pos),
+                                                      net_price=round(pos.net_debit, 2), reason="smoke"))
+            input("Press Enter to flatten...")
+            print("flatten:", await flatten_all())
+        else:
+            print("(paper mode — ENABLE_LIVE_ORDERS off, no orders placed; "
+                  "set ENABLE_LIVE_ORDERS=1 to place + flatten a real paper combo)")
     get_gateway().disconnect()
     return 0
 
