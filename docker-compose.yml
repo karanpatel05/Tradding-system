@@ -1,19 +1,24 @@
-# Full stack: Postgres + FastAPI backend + React frontend (nginx).
+# Hosted stack: Postgres + FastAPI (serves the UI same-origin) + Caddy (TLS + Basic Auth).
+#
+# IMPORTANT: IB Gateway is a GUI app and CANNOT be containerized. Run it on the HOST
+# (paper, API enabled, port 4002); the backend reaches it via host.docker.internal.
+#
+# SECURITY: the backend is NOT published to the host — only Caddy is, with Basic Auth +
+# TLS. There is no per-user login in the app, so this proxy auth is the only thing between
+# the internet and live trading. Never expose the backend port directly.
 #
 # Usage:
-#   export TASTYTRADE_PROVIDER_SECRET=your_oauth_client_secret
+#   cp deploy/.env.example .env     # then edit (SITE_ADDRESS, BASIC_AUTH_*, APP_SECRET_KEY)
 #   docker compose up --build
-# Then open http://localhost:5173 and sign in with your refresh token.
+#   open https://localhost          # self-signed cert by default ('tls internal')
 
 services:
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: trading
-      POSTGRES_PASSWORD: trading
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trading}
       POSTGRES_DB: trading
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -23,29 +28,41 @@ services:
       retries: 5
 
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      ENVIRONMENT: development
-      DATABASE_URL: postgresql+asyncpg://trading:trading@postgres:5432/trading
-      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
-      # The OAuth client secret. Refresh token is entered in the UI, not here.
-      TASTYTRADE_PROVIDER_SECRET: ${TASTYTRADE_PROVIDER_SECRET:-}
-      TASTYTRADE_IS_TEST: ${TASTYTRADE_IS_TEST:-false}
-    ports:
-      - "8000:8000"
+      ENVIRONMENT: production
+      DATABASE_URL: postgresql+asyncpg://trading:${POSTGRES_PASSWORD:-trading}@postgres:5432/trading
+      APP_SECRET_KEY: ${APP_SECRET_KEY:?set APP_SECRET_KEY in .env}
+      # IB Gateway runs on the HOST, not in Docker:
+      IBKR_HOST: ${IBKR_HOST:-host.docker.internal}
+      IBKR_PORT: ${IBKR_PORT:-4002}
+      IBKR_CLIENT_ID: ${IBKR_CLIENT_ID:-1}
+      POLYGON_API_KEY: ${POLYGON_API_KEY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # Linux: reach the host's IB Gateway
+    expose:
+      - "8000"   # internal network only — reached via Caddy, never published to the host
 
-  frontend:
-    build:
-      context: ./frontend
-      args:
-        VITE_API_BASE: http://localhost:8000
+  caddy:
+    image: caddy:2-alpine
     depends_on:
       - backend
     ports:
-      - "5173:80"
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER:?set BASIC_AUTH_USER in .env}
+      BASIC_AUTH_HASH: ${BASIC_AUTH_HASH:?set BASIC_AUTH_HASH in .env (caddy hash-password)}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
 
 volumes:
   pgdata:
+  caddydata:

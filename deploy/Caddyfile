@@ -1,0 +1,16 @@
+# Reverse proxy: TLS + Basic Auth in front of the FastAPI backend, which serves the
+# API, the same-origin React UI, and the WebSocket (Caddy upgrades WS automatically).
+# Values are env-substituted from the compose file / .env at container start.
+
+{$SITE_ADDRESS} {
+	# Self-signed cert for localhost/LAN. For a real public domain, DELETE this line
+	# so Caddy auto-provisions a Let's Encrypt certificate for {$SITE_ADDRESS}.
+	tls internal
+
+	# The only access control in front of live trading — keep these credentials strong.
+	basic_auth {
+		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+	}
+
+	reverse_proxy backend:8000
+}

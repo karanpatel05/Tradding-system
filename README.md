@@ -1,20 +1,22 @@
-# Multi-Strategy Automated Trading System (Tastytrade)
+# Multi-Strategy Automated Trading System (Interactive Brokers)
 
-Production-grade scaffold for running up to 5 trading strategies concurrently against
-the Tastytrade API. Strategy logic is added later — the engine, auth, dashboard, journal,
-and backtest framework are built so real rules drop in without rewriting anything.
+Runs trading strategies (equities + options) against Interactive Brokers via IB Gateway
+(ib_async). Includes a live engine, dashboard, journal, backtests, an options data layer
+(Polygon), and a Triple Calendar options strategy. Runs as a Mac desktop app, a local web
+app, or a hosted Docker stack.
 
 ## Architecture
 
 ```
-backend/   FastAPI + async SQLAlchemy + tastytrade SDK (REST + DXLink)
+backend/   FastAPI + async SQLAlchemy + ib_async (IB Gateway)
   app/
-    config.py            env-driven settings (provider_secret optional at boot)
-    auth/                OAuth session manager (server-side), app gate, routes
-    tastytrade/          SDK wrapper: OAuth, accounts, positions, quotes, candles
-    engine/              kill-switch task registry, per-strategy workers, flatten stub
-    strategies/          BaseStrategy + registry of Strategy 1–5 ("Coming Soon")
-    backtest/            pure-Python metrics + historical runner (max DXFeed history)
+    config.py            env-driven settings (IBKR host/port/clientId, Polygon key)
+    auth/                connection-state auth (authenticated == IB Gateway connected)
+    ibkr/                gateway, contracts (stock/option/combo), market data, accounts
+    options/             Polygon options data provider (chains + aggregates)
+    engine/              kill-switch task registry, per-strategy workers, execution (equity + combo)
+    strategies/          BaseStrategy + registry; triple_calendar (live options strategy)
+    backtest/            pure-Python metrics + historical runner
     services/            market status/overview, logging + journal/calendar
     routers/             dashboard, strategies, journal, websocket
     db/                  models + async engine (SQLite dev / Postgres prod)
@@ -25,11 +27,10 @@ docker-compose.yml       postgres + backend + frontend
 
 ## Key guarantees
 
-- **Auth gates the whole app** — every REST route and the WebSocket push channel check the
-  session cookie. The Tastytrade refresh/session tokens stay server-side; the browser only
-  holds an opaque HttpOnly cookie. The OAuth client secret can be set server-side
-  (`TASTYTRADE_PROVIDER_SECRET`) **or** entered in the auth panel — either way it's used only
-  on the server and never returned to the browser.
+- **Auth == IBKR Gateway connection** — "authenticated" means the local IB Gateway is
+  connected; the gated REST/WebSocket routes pass while it is. There is **no per-user login**.
+  This is fine for a local desktop/browser tool, but anything network-exposed MUST sit behind
+  the Docker stack's Caddy Basic Auth + TLS (see the hosted section below).
 - **"Coming Soon" is enforced server-side** — activation, capital allocation, and backtest are
   rejected with `409` for not-ready strategies. The UI hiding is cosmetic only.
 - **Kill switch is real** — cancels every tracked async worker (even if flatten throws), is
@@ -38,12 +39,12 @@ docker-compose.yml       postgres + backend + frontend
 
 ## Run locally (no Docker)
 
-Backend (boots with zero infra — SQLite + auth panel shows even without OAuth configured):
+Backend (boots with zero infra — SQLite; connects to IBKR from the API tab / `/api/auth/connect`):
 
 ```bash
 cd backend
 ../.venv/bin/pip install -r requirements.txt
-# optional: export TASTYTRADE_PROVIDER_SECRET=... to enable real login
+# Run IB Gateway (paper, API enabled, port 4002) separately, then:
 ../.venv/bin/python -m uvicorn app.main:app --port 8000
 ```
 
@@ -69,13 +70,25 @@ Same backend as the Mac desktop app (`desktop/`), just a different run mode. It 
 **local network only; do not expose to the internet without adding real auth + TLS** (see
 `docs/superpowers/specs/2026-06-26-web-app-migration-design.md`).
 
-## Run the full stack (Docker)
+## Run the full stack (Docker, hosted)
+
+Postgres + FastAPI (serves the UI same-origin) + Caddy (TLS + Basic Auth). One image
+builds the React UI and serves it with the API — no separate frontend container.
 
 ```bash
-export TASTYTRADE_PROVIDER_SECRET=your_oauth_client_secret
+cp deploy/.env.example .env     # set SITE_ADDRESS, BASIC_AUTH_USER/HASH, APP_SECRET_KEY
 docker compose up --build
-# open http://localhost:5173
+# open https://localhost          (self-signed cert by default; accept it)
 ```
+
+**IB Gateway is NOT containerized** (it's a GUI app) — run it on the host (paper, API
+enabled, port 4002); the backend reaches it via `host.docker.internal`.
+
+**Security:** the app has no per-user login (auth == "is the IBKR Gateway connected?"), so
+the Caddy **Basic Auth + TLS** layer is the only thing protecting live trading. The backend
+port is never published to the host. Do not bypass the proxy or expose the backend directly.
+Set a strong `BASIC_AUTH_HASH` (`caddy hash-password`) and a real `APP_SECRET_KEY`. See
+`docs/superpowers/specs/2026-06-26-web-app-migration-design.md`.
 
 ## Tests
 
