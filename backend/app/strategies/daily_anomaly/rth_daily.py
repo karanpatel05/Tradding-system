@@ -1,6 +1,6 @@
 """Aggregate intraday bars into clean Regular-Trading-Hours (RTH) daily bars.
 
-No Massive daily cache exists, and raw intraday bars include pre/post-market prints
+No daily cache exists, and raw intraday bars include pre/post-market prints
 (04:00, 18:00, ...). For daily strategies we want the *session* OHLC: open = the
 09:30 print, close = the 16:00 print, high/low over RTH only. This drops extended
 hours so 'overnight' (close->next open) means the real RTH gap.

@@ -42,7 +42,6 @@ services:
       IBKR_HOST: ${IBKR_HOST:-host.docker.internal}
       IBKR_PORT: ${IBKR_PORT:-4002}
       IBKR_CLIENT_ID: ${IBKR_CLIENT_ID:-1}
-      POLYGON_API_KEY: ${POLYGON_API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"   # Linux: reach the host's IB Gateway
     expose:

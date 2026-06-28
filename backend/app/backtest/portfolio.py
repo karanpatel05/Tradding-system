@@ -58,7 +58,7 @@ def _group_1m_by_5m(bars_5m: list[dict], bars_1m: list[dict]) -> dict[int, list[
     """Map each 5m bar's start time → the 1m bars inside its [t, t+5m) window.
 
     Alignment-agnostic (keyed on each 5m bar's own start time, half-open window), so
-    it's correct whether Polygon aligns 5m to the epoch or the session. Both inputs
+    it's correct whether the feed aligns 5m to the epoch or the session. Both inputs
     must be ascending by time. A window with no 1m bars maps to ``[]`` — the caller
     then falls back to the 5m stop/target so stops are never silently skipped."""
     out: dict[int, list[dict]] = {}

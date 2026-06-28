@@ -119,7 +119,7 @@ class EmaScalperStrategy(BaseStrategy):
 
     # --- scanner ---------------------------------------------------------
     async def _fetch_daily(self, symbol: str) -> list[dict]:
-        # Historical data comes from Massive (cached to disk, namespaced by source).
+        # Historical data comes from IBKR (cached to disk, namespaced by source).
         provider = get_historical_provider()
         return await history_cache.get_or_fetch(
             symbol, "1d",

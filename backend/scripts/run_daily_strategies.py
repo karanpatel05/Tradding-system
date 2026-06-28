@@ -21,7 +21,7 @@ from app.strategies.daily_anomaly.donchian import simulate_donchian
 from app.strategies.daily_anomaly.overnight import overnight_returns, portfolio_returns
 from app.strategies.daily_anomaly.rth_daily import to_rth_daily
 
-_SOURCE = "massive"
+_SOURCE = "ibkr"
 _BOUNDARY = "2025-06-05"
 _N_GRID = [10, 20, 55]
 _K_GRID = [1.5, 2.0, 3.0]

@@ -14,7 +14,6 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # The backend package root (…/backend). Persistence paths are anchored here so the
@@ -64,15 +63,9 @@ class Settings(BaseSettings):
     history_cache_dir: str = str(_BASE_DIR / "data_cache")
     history_cache_ttl_hours: float = 12.0
 
-    # When set (the desktop bundle sets FRONTEND_DIST), the API also serves the built
+    # When set (the web/hosted run mode sets FRONTEND_DIST), the API also serves the built
     # React app from this directory at "/" with SPA fallback. Empty in dev (Vite serves UI).
     frontend_dist: str = ""
-
-    # Polygon — OPTIONS market data only (stocks come from IBKR). Reuses the existing
-    # MASSIVE_API_KEY value already in backend/.env unless POLYGON_API_KEY is set.
-    polygon_api_key: str | None = Field(
-        default=None, validation_alias=AliasChoices("POLYGON_API_KEY", "MASSIVE_API_KEY"))
-    polygon_base_url: str = "https://api.polygon.io"
 
     # --- Triple Calendar (options strategy, live) ---
     tc_underlying: str = "QQQ"

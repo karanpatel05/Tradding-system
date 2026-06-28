@@ -23,8 +23,8 @@ _SYMS = {"SPY": 1.5, "QQQ": 1.8}
 
 
 def _rth_bars(symbol: str) -> list[dict]:
-    """Load 15m massive bars, keep RTH only, attach ET 'date' for eod logic."""
-    entry = history_cache.load(symbol, "15m", source="massive")
+    """Load 15m bars, keep RTH only, attach ET 'date' for eod logic."""
+    entry = history_cache.load(symbol, "15m", source="ibkr")
     if not entry:
         return []
     out = []

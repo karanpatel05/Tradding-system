@@ -27,7 +27,7 @@ from app.services import history_cache
 from app.strategies.daily_anomaly.rth_daily import to_rth_daily
 from scripts.run_daily_strategies import _period, _summary_returns
 
-_SOURCE = "massive"
+_SOURCE = "ibkr"
 _TARGET_CAGR = 0.30
 _MARGIN_RATE = 0.07   # annual financing on the borrowed (L-1) portion
 

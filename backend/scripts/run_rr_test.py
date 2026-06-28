@@ -19,7 +19,7 @@ from app.strategies.rr_test.bracket import (donchian_signals, ema_cross_signals,
                                             rsi2_signals, run_bracket)
 from scripts.run_daily_strategies import _period
 
-_SOURCE = "massive"
+_SOURCE = "ibkr"
 
 
 def _load_daily(symbol: str) -> list[dict]:

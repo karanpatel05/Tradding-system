@@ -22,7 +22,7 @@ from app.strategies.daily_anomaly.rth_daily import to_rth_daily
 from app.strategies.mean_reversion.rsi2 import simulate_rsi2
 from scripts.run_daily_strategies import _leg_returns, _period, _profit_factor, _summary_returns
 
-_SOURCE = "massive"
+_SOURCE = "ibkr"
 
 
 def _load_daily(symbol: str) -> list[dict]:

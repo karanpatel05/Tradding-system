@@ -20,7 +20,7 @@ _RISK_DOLLARS = 20.0  # 1% of $2,000 per trade
 
 
 def _hourly(symbol: str, interval: str) -> list[dict]:
-    entry = history_cache.load(symbol, interval, source="massive")
+    entry = history_cache.load(symbol, interval, source="ibkr")
     return aggregate_hourly(entry.get("bars", [])) if entry else []
 
 

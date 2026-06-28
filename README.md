@@ -1,19 +1,18 @@
 # Multi-Strategy Automated Trading System (Interactive Brokers)
 
 Runs trading strategies (equities + options) against Interactive Brokers via IB Gateway
-(ib_async). Includes a live engine, dashboard, journal, backtests, an options data layer
-(Polygon), and a Triple Calendar options strategy. Runs as a Mac desktop app, a local web
-app, or a hosted Docker stack.
+(ib_async) — the single source for all market data. Includes a live engine, dashboard,
+journal, equity backtests, and a live Triple Calendar options strategy. Runs as a local
+web app or a hosted Docker stack.
 
 ## Architecture
 
 ```
 backend/   FastAPI + async SQLAlchemy + ib_async (IB Gateway)
   app/
-    config.py            env-driven settings (IBKR host/port/clientId, Polygon key)
+    config.py            env-driven settings (IBKR host/port/clientId)
     auth/                connection-state auth (authenticated == IB Gateway connected)
     ibkr/                gateway, contracts (stock/option/combo), market data, accounts
-    options/             Polygon options data provider (chains + aggregates)
     engine/              kill-switch task registry, per-strategy workers, execution (equity + combo)
     strategies/          BaseStrategy + registry; triple_calendar (live options strategy)
     backtest/            pure-Python metrics + historical runner
@@ -29,7 +28,7 @@ docker-compose.yml       postgres + backend + frontend
 
 - **Auth == IBKR Gateway connection** — "authenticated" means the local IB Gateway is
   connected; the gated REST/WebSocket routes pass while it is. There is **no per-user login**.
-  This is fine for a local desktop/browser tool, but anything network-exposed MUST sit behind
+  This is fine for a local browser tool, but anything network-exposed MUST sit behind
   the Docker stack's Caddy Basic Auth + TLS (see the hosted section below).
 - **"Coming Soon" is enforced server-side** — activation, capital allocation, and backtest are
   rejected with `409` for not-ready strategies. The UI hiding is cosmetic only.
@@ -65,8 +64,8 @@ uvicorn process, then opens it in your browser — no native window, no separate
 ./scripts/run_web.sh          # serves http://127.0.0.1:8765 and opens it
 ```
 
-Same backend as the Mac desktop app (`desktop/`), just a different run mode. It binds to
-`127.0.0.1` (local machine only). For LAN access change `--host` to `0.0.0.0` in the script —
+It binds to `127.0.0.1` (local machine only). For LAN access change `--host` to `0.0.0.0`
+in the script —
 **local network only; do not expose to the internet without adding real auth + TLS** (see
 `docs/superpowers/specs/2026-06-26-web-app-migration-design.md`).
 

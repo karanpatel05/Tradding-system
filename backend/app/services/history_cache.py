@@ -44,7 +44,7 @@ def _dir() -> Path:
 
 def _path(symbol: str, interval: str, source: str = "") -> Path:
     # Namespace by data source so bars from a different provider never shadow
-    # each other (e.g. legacy DXFeed bars vs Massive).
+    # each other (e.g. legacy bars vs IBKR).
     stem = f"{source}__{symbol}__{interval}" if source else f"{symbol}__{interval}"
     return _dir() / f"{re.sub(r'[^A-Za-z0-9_.-]', '_', stem)}.json"
 

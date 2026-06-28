@@ -8,7 +8,7 @@ the shared ``signals.decide_index`` powers both the live ``live_decision`` (late
 closed bar) and the event-driven portfolio backtest, so they can't diverge — and
 the backtest reuses the live ``RiskEngine`` for sizing parity too.
 
-Historical bars come from Massive (cached to disk); the optional 15m HTF trend
+Historical bars come from IBKR (cached to disk); the optional 15m HTF trend
 gate is computed from the same provider. Risk sizing / portfolio limits live in
 :mod:`app.engine.risk` and are applied by the worker, not here.
 """
