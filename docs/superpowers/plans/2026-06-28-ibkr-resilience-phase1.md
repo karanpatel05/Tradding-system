@@ -1547,6 +1547,266 @@ Expected: every resilience test prints `ok`; pre-existing `test_direction_risk`/
 
 ---
 
+### Task 14: Rule-driven worker persists durable state on transitions
+
+**Files:**
+- Modify: `backend/app/engine/worker.py` (`_handle_action` in the rule-driven path)
+- Test: `backend/tests/test_worker_state_writes.py`
+
+**Interfaces:**
+- Consumes: `save_state` (Task 10), `State`/`Pending`/`Position` (`ema_scalper.signals`).
+- Produces: after each handled action in `_handle_action`, the worker persists a `WorkerState`
+  snapshot — `managed_symbol=symbol`; `armed` = the pending entry as a dict
+  (`{"side","trigger","stop","target","entry_type"}`) or `None`; `open_trade_id`; `last_bar_ms`
+  = `bar.get("time")`. Only the rule-driven path is touched (the multi-position path already
+  reconstructs from the DB via `_reconstruct_positions`).
+
+> **FIRST read `app/engine/worker.py` `_handle_action` and `_run_rule_driven` end-to-end** (lines
+> ~50–166) and `ema_scalper/signals.py` `State`/`Pending`/`Position` (shown in the plan context)
+> to match field names exactly.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# backend/tests/test_worker_state_writes.py
+"""Rule-driven worker persists a WorkerState snapshot when it arms an entry.
+   Run: DATABASE_URL=sqlite+aiosqlite:///./_t_wsw.db python -m tests.test_worker_state_writes
+"""
+from __future__ import annotations
+
+import asyncio
+
+
+def _run() -> None:
+    async def _t():
+        from app.db.base import init_db
+        from app.engine import worker as W
+        from app.engine.worker_state import load_state
+        from app.strategies.ema_scalper.signals import Action, State
+
+        await init_db()
+
+        class Strat:
+            key = "strategy_1"
+
+        state = State()
+        bars = [{"time": 1700000000000, "high": 101, "low": 99, "close": 100}]
+        action = Action(kind="arm", side="long", price=101.0, stop=99.0, target=103.0,
+                        entry_type="pin")
+        # apply_action passthrough that just sets pending so persistence has something to read
+        def apply_action(a, st, idx, bar):
+            from app.strategies.ema_scalper.signals import Pending
+            st.pending = Pending(side=a.side, trigger=a.price, stop=a.stop, target=a.target,
+                                 armed_index=idx, entry_type=a.entry_type)
+
+        await W._handle_action(Strat(), "AAPL", action, state, bars, 0, None,
+                               size_position=None, submit_equity_order=None,
+                               apply_action=apply_action)
+        snap = await load_state("strategy_1")
+        assert snap is not None and snap["managed_symbol"] == "AAPL", snap
+        assert snap["armed"]["side"] == "long" and snap["armed"]["trigger"] == 101.0, snap
+        print("PASS: arm action persisted to WorkerState")
+    asyncio.run(_t())
+    print("\nALL WORKER-STATE-WRITE TESTS PASSED")
+
+
+if __name__ == "__main__":
+    _run()
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cd backend && DATABASE_URL=sqlite+aiosqlite:///./_t_wsw.db ../.venv/bin/python -m tests.test_worker_state_writes`
+Expected: FAIL — `assert snap is not None` (nothing persisted yet).
+
+- [ ] **Step 3: Implement**
+
+In `worker.py` add a helper and call it at the end of `_handle_action`, just before each `return`:
+
+```python
+async def _persist_worker_state(strategy_key, symbol, state, open_trade_id, last_bar_ms):
+    from app.engine.worker_state import save_state
+    p = state.pending
+    armed = None if p is None else {"side": p.side, "trigger": p.trigger, "stop": p.stop,
+                                    "target": p.target, "entry_type": p.entry_type}
+    await save_state(strategy_key, managed_symbol=symbol, armed=armed,
+                     open_trade_id=open_trade_id, last_bar_ms=last_bar_ms)
+```
+
+At the end of `_handle_action`, replace the bare `return open_qty, open_trade_id` paths so each
+first persists. The simplest correct approach: compute the return value, persist, then return.
+For the arm/cancel branches (which fall through to the final `return open_qty, open_trade_id`),
+add before that final return:
+
+```python
+    await _persist_worker_state(strategy.key, symbol, state, open_trade_id, bar.get("time"))
+    return open_qty, open_trade_id
+```
+
+For the `enter` branch, before `return sizing.quantity, trade_id` add:
+
+```python
+    await _persist_worker_state(strategy.key, symbol, state, trade_id, bar.get("time"))
+```
+
+For the `exit` branch, before `return 0, None` add:
+
+```python
+    await _persist_worker_state(strategy.key, symbol, state, None, bar.get("time"))
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `cd backend && DATABASE_URL=sqlite+aiosqlite:///./_t_wsw.db ../.venv/bin/python -m tests.test_worker_state_writes && rm -f _t_wsw.db`
+Expected: `ALL WORKER-STATE-WRITE TESTS PASSED`.
+
+**Regression (shared file `worker.py`):** re-run `test_engine_worker` (with the `READY` set-state
+line added in Task 12) and confirm it still passes.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/app/engine/worker.py backend/tests/test_worker_state_writes.py
+git commit -m "feat(engine): rule-driven worker persists durable state on transitions"
+```
+
+---
+
+### Task 15: Rule-driven worker rebuilds state on startup (resume mid-trade)
+
+**Files:**
+- Modify: `backend/app/engine/worker.py` (`_run_rule_driven` startup)
+- Test: `backend/tests/test_worker_state_rebuild.py`
+
+**Interfaces:**
+- Consumes: `load_state` (Task 10), open `TradeRecord` (for the position), `State`/`Pending`/
+  `Position` (`ema_scalper.signals`).
+- Produces: at `_run_rule_driven` start, if `load_state(strategy.key)` returns a snapshot,
+  rebuild `state.pending` from `armed` and `state.position` from the open `TradeRecord` named by
+  `open_trade_id`, and seed `selected`, `open_qty`, `open_trade_id`, `last_bar_ms`. The
+  **broker cross-check is already provided by Task 11's reconcile** (open `TradeRecord`s vs broker
+  positions trips SAFE_MODE before workers reach READY), so rebuild trusts the open trade.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# backend/tests/test_worker_state_rebuild.py
+"""Rule-driven startup rebuilds in-memory State from a persisted snapshot.
+   Run: DATABASE_URL=sqlite+aiosqlite:///./_t_wsr.db python -m tests.test_worker_state_rebuild
+"""
+from __future__ import annotations
+
+import asyncio
+
+
+def _run() -> None:
+    async def _t():
+        from app.db.base import init_db, session_scope
+        from app.db.models import TradeRecord
+        from app.engine.worker import _rebuild_rule_state
+        from app.engine.worker_state import save_state
+
+        await init_db()
+        async with session_scope() as s:
+            tr = TradeRecord(strategy_key="strategy_1", symbol="AAPL", side="buy",
+                             quantity=10, entry_price=100.0, stop=99.0, target=103.0,
+                             status="open")
+            s.add(tr)
+            await s.flush()
+            tid = tr.id
+        await save_state("strategy_1", managed_symbol="AAPL", armed=None,
+                         open_trade_id=tid, last_bar_ms=1700000000000)
+
+        rebuilt = await _rebuild_rule_state("strategy_1")
+        assert rebuilt is not None, "expected a rebuilt snapshot"
+        state, selected, open_qty, open_trade_id, last_bar_ms = rebuilt
+        assert selected == "AAPL" and open_qty == 10 and open_trade_id == tid, rebuilt
+        assert state.position is not None and state.position.side == "long", state.position
+        assert state.position.stop == 99.0 and state.position.target == 103.0
+        print("PASS: rebuilt open position from snapshot + trade record")
+    asyncio.run(_t())
+    print("\nALL WORKER-STATE-REBUILD TESTS PASSED")
+
+
+if __name__ == "__main__":
+    _run()
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cd backend && DATABASE_URL=sqlite+aiosqlite:///./_t_wsr.db ../.venv/bin/python -m tests.test_worker_state_rebuild`
+Expected: FAIL — `AttributeError: ... '_rebuild_rule_state'`.
+
+- [ ] **Step 3: Implement**
+
+Add to `worker.py`:
+
+```python
+async def _rebuild_rule_state(strategy_key: str):
+    """Rebuild (state, selected, open_qty, open_trade_id, last_bar_ms) from the durable
+    snapshot + the open trade. Returns None when there's nothing to resume."""
+    from app.db.base import session_scope
+    from app.db.models import TradeRecord
+    from app.strategies.ema_scalper.signals import Pending, Position, State
+
+    snap = await _load_worker_snapshot(strategy_key)
+    if snap is None:
+        return None
+    state = State()
+    selected = snap["managed_symbol"]
+    open_qty, open_trade_id = 0, snap["open_trade_id"]
+    if snap["armed"]:
+        a = snap["armed"]
+        state.pending = Pending(side=a["side"], trigger=a["trigger"], stop=a["stop"],
+                                target=a["target"], armed_index=0, entry_type=a.get("entry_type", ""))
+    if open_trade_id is not None:
+        async with session_scope() as s:
+            tr = await s.get(TradeRecord, open_trade_id)
+            if tr is not None and tr.status == "open":
+                side = "long" if (tr.side or "").lower() in ("buy", "long") else "short"
+                state.position = Position(side=side, entry=tr.entry_price or 0.0,
+                                          stop=tr.stop or 0.0, target=tr.target or 0.0,
+                                          entry_index=0)
+                open_qty = int(tr.quantity)
+    return state, selected, open_qty, open_trade_id, snap["last_bar_ms"]
+
+
+async def _load_worker_snapshot(strategy_key: str):
+    from app.engine.worker_state import load_state
+    return await load_state(strategy_key)
+```
+
+In `_run_rule_driven`, replace the initial `state = State()` / `selected = None` / `open_qty = 0`
+/ `open_trade_id = None` / `last_bar_ms = None` block with a rebuild attempt:
+
+```python
+    from app.strategies.ema_scalper.signals import State
+    rebuilt = await _rebuild_rule_state(strategy.key)
+    if rebuilt is not None:
+        state, selected, open_qty, open_trade_id, last_bar_ms = rebuilt
+        await log_event(f"Resumed state: {selected} pos={state.position is not None}",
+                        category="action", strategy_key=strategy.key)
+    else:
+        state, selected, open_qty, open_trade_id, last_bar_ms = State(), None, 0, None, None
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `cd backend && DATABASE_URL=sqlite+aiosqlite:///./_t_wsr.db ../.venv/bin/python -m tests.test_worker_state_rebuild && rm -f _t_wsr.db`
+Expected: `ALL WORKER-STATE-REBUILD TESTS PASSED`.
+
+**Regression (shared file `worker.py`):** re-run `test_engine_worker` and `test_worker_pause` and
+confirm both still pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/app/engine/worker.py backend/tests/test_worker_state_rebuild.py
+git commit -m "feat(engine): rule-driven worker resumes in-memory state on restart"
+```
+
+---
+
 ## Manual smoke (live, after the suite is green)
 
 With the paper IB Gateway connected during RTH:
@@ -1557,19 +1817,16 @@ cd backend && ../.venv/bin/python -m scripts.connect_smoke   # confirms connect+
 
 Disconnect the Gateway mid-run (or stop/restart it) and confirm the logs show: state → DISCONNECTED, reconnect attempts with backoff, then a recovery pass → READY (or SAFE_MODE with a discrepancy report if a position can't be matched).
 
-## Scope nuance — durable strategy state
+## Durable strategy state (folded into Phase 1)
 
-Task 10 lands the durable-state **persistence layer** (`WorkerState` table + store). The
-**write-on-transition hooks** (worker calls `save_state(...)` on arm/enter/exit/cancel) and the
-**rebuild + cross-check** (recovery loads `WorkerState`, restores the worker's in-memory `State`,
-and cross-checks it against reconciled broker truth) are intentionally **deferred to a fast-follow
-(Phase 1.5)**. Rationale: the in-memory `State` is strategy-specific (lives in
-`ema_scalper.signals`), so wiring it correctly is invasive, and the **safety guarantee** ("never
-trade on a wrong picture") is already met by position reconciliation (Tasks 8–9–11) + SAFE_MODE.
-On restart before the fast-follow, a worker comes up flat **but** recovery still reconciles broker
-positions against open `TradeRecord`s and trips SAFE_MODE on any mismatch — so it fails safe, it
-just doesn't auto-resume management. **Confirm with the requester** whether to fold the wiring into
-this plan or keep it as Phase 1.5.
+Per the requester, durable strategy state is **fully in Phase 1**: Task 10 lands the persistence
+layer (`WorkerState` table + store), Task 14 wires the **write-on-transition hooks** (the
+rule-driven worker persists on arm/enter/exit/cancel), and Task 15 wires the **rebuild on startup**
+(resume mid-trade). The **broker cross-check** is provided by Task 11's reconcile — open
+`TradeRecord`s are reconciled against broker positions and trip SAFE_MODE before any worker reaches
+READY, so the rebuild trusts the open trade. Only the **rule-driven** path (e.g. `strategy_1`
+scalper) needs this; the **multi-position** crossover already reconstructs from the DB via
+`_reconstruct_positions`.
 
 ## Architectural note — `get_ib()` lazy reconnect (Phase 2)
 
