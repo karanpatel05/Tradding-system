@@ -43,13 +43,21 @@ async def submit_equity_order(symbol: str, intent: str, quantity: int, *, reason
                        action, symbol, quantity, reason)
         return {"transmitted": False, "paper": True,
                 "detail": f"paper {action} {symbol} x{quantity}"}
+    from app.engine.order_store import mark_perm_id, record_intent
+    ref = await record_intent("", symbol, intent, quantity)  # durable BEFORE transmit
     ib = await get_gateway().get_ib()
     contract = stock(symbol)
     await ib.qualifyContractsAsync(contract)
-    trade = ib.placeOrder(contract, MarketOrder(action, quantity))
-    logger.warning("[LIVE] %s %s x%d (%s)", action, symbol, quantity, reason)
-    return {"transmitted": True, "detail": f"LIVE {action} {symbol} x{quantity}",
-            "order_id": trade.order.orderId}
+    order = MarketOrder(action, quantity)
+    order.orderRef = ref
+    trade = ib.placeOrder(contract, order)
+    perm = getattr(getattr(trade, "order", None), "permId", None)
+    if perm:
+        await mark_perm_id(ref, str(perm))
+    logger.warning("[LIVE] %s %s x%d (%s) ref=%s", action, symbol, quantity, reason, ref)
+    return {"transmitted": True, "ref": ref,
+            "detail": f"LIVE {action} {symbol} x{quantity}",
+            "order_id": getattr(trade.order, "orderId", None)}
 
 
 async def submit_bracket_order(symbol: str, side: str, quantity: int, entry_price: float,
