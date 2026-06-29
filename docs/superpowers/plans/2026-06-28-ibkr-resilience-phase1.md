@@ -23,6 +23,12 @@
 
 ### Task 0: Verify ib_async surface (spike, no production code)
 
+> **Pre-validated 2026-06-28 against ib_async 2.1.0:** all of `disconnectedEvent`,
+> `connectedEvent`, `errorEvent`, `reqCurrentTimeAsync`, `reqAllOpenOrdersAsync`,
+> `reqExecutionsAsync`, `reqPositionsAsync`, `positions`, `ExecutionFilter.time`, and
+> `Order.orderRef` are present. You may skip the spike unless the installed version changed;
+> the steps below remain for that case.
+
 **Files:**
 - Create: `backend/scripts/ib_surface_check.py` (throwaway spike; deleted at end of task)
 
@@ -570,6 +576,9 @@ In `execution.py`, at the very top of both `submit_equity_order` and `submit_bra
 Run: `cd backend && DATABASE_URL=sqlite+aiosqlite:///./_t_safe.db ../.venv/bin/python -m tests.test_safe_mode && rm -f _t_safe.db`
 Expected: `ALL SAFE-MODE TESTS PASSED`.
 
+**Regression (shared file `execution.py`):** also run the existing execution test —
+`cd backend && DATABASE_URL=sqlite+aiosqlite:///./_t.db ../.venv/bin/python -m tests.test_execution_ibkr && rm -f _t.db` — and confirm it still passes (the safe-mode gate must not break paper/live submission when safe mode is off).
+
 - [ ] **Step 5: Commit**
 
 ```bash
@@ -825,6 +834,9 @@ Add `"ref": ref` to the returned dict on the transmitted path:
 
 Run: `cd backend && DATABASE_URL=sqlite+aiosqlite:///./_t_idem.db ENABLE_LIVE_ORDERS=1 ../.venv/bin/python -m tests.test_submit_idempotent && rm -f _t_idem.db`
 Expected: `ALL SUBMIT-IDEMPOTENT TESTS PASSED`.
+
+**Regression (shared file `execution.py`):** also re-run
+`DATABASE_URL=sqlite+aiosqlite:///./_t.db ../.venv/bin/python -m tests.test_execution_ibkr && rm -f _t.db` and confirm it still passes.
 
 - [ ] **Step 5: Commit**
 
@@ -1377,6 +1389,8 @@ Expected: FAIL — worker scans anyway (`scanned['n'] > 0`).
 
 - [ ] **Step 3: Implement**
 
+**FIRST read `app/engine/worker.py` in full — especially `_run_multi_position`, whose body is not shown here.** Match its actual loop structure (it may not be a bare `while True:` and may name its status helper differently); apply the guard to match.
+
 At the top of `worker.py` add:
 
 ```python
@@ -1396,12 +1410,17 @@ In `_run_rule_driven`'s `while True:` loop, make the first lines:
                 continue
 ```
 
-Add the same guard as the first lines inside the multi-position loop (`_run_multi_position`). (Use the existing `_set_status` helper already in this module.)
+Add the same guard as the first lines inside the multi-position loop (`_run_multi_position`), matching its real structure. (Use the existing `_set_status` helper already in this module.)
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd backend && DATABASE_URL=sqlite+aiosqlite:///./_t_wp.db ../.venv/bin/python -m tests.test_worker_pause && rm -f _t_wp.db`
 Expected: `ALL WORKER-PAUSE TESTS PASSED`.
+
+**Regression (shared file `worker.py`):** the existing `test_engine_worker` sets no connection
+state, so add `get_gateway().set_state(ConnState.READY)` near the top of that test's `_run()` (it
+asserts the worker scans), then run `DATABASE_URL=sqlite+aiosqlite:///./_t.db ../.venv/bin/python -m tests.test_engine_worker && rm -f _t.db` and confirm it still passes. Commit that one-line test
+update with this task.
 
 - [ ] **Step 5: Commit**
 
@@ -1551,6 +1570,17 @@ On restart before the fast-follow, a worker comes up flat **but** recovery still
 positions against open `TradeRecord`s and trips SAFE_MODE on any mismatch — so it fails safe, it
 just doesn't auto-resume management. **Confirm with the requester** whether to fold the wiring into
 this plan or keep it as Phase 1.5.
+
+## Architectural note — `get_ib()` lazy reconnect (Phase 2)
+
+`Gateway.get_ib()` still lazily auto-reconnects for any caller (`market.py`, `account.py`,
+`execution.py`). After Phase 1 that means a caller can reconnect the socket *without* running
+the recovery sequence — producing "connected but state ≠ READY" and a possible race with
+`supervise()`'s reconnect. The Phase 1 safety guarantee still holds (workers are gated on READY
+in Task 12; orders are gated by safe-mode in Task 5), so this is **not urgent** — but a
+professional connection model routes *all* reconnects through the supervisor + recovery. Track
+as a Phase 2 item: make `get_ib()` on a dead socket request a supervised recovery rather than a
+bare reconnect.
 
 ## Out of scope (Phase 2 — separate plan)
 
