@@ -25,7 +25,8 @@ class LivePriceSource:
         ib.cancelMktData(c)
         return q["price"]
 
-    async def achain(self, underlying: str, expiry) -> list[float]:
+    async def achain(self, underlying: str) -> list[float]:
+        # Strikes are returned across all expirations by reqSecDefOptParams; no per-expiry arg.
         ib = await get_gateway().get_ib()
         u = stock(underlying)
         await ib.qualifyContractsAsync(u)
