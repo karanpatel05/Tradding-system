@@ -38,5 +38,13 @@ async def run_recovery(ib, gateway) -> bool:
                         category="system")
         return False
     gateway.set_state(ConnState.READY)
+    _schedule_backfill()
     await log_event("Recovery clean — READY", category="system")
     return True
+
+
+def _schedule_backfill() -> None:
+    import asyncio
+
+    from app.services.backfill import backfill_active
+    asyncio.create_task(backfill_active())
