@@ -6,6 +6,7 @@ always render. Routers are mounted incrementally per build slice.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -39,6 +40,15 @@ async def lifespan(app: FastAPI):
         "or POST /api/auth/connect. App boots without a live connection.",
         settings.ibkr_host, settings.ibkr_port, settings.ibkr_client_id,
     )
+    # Best-effort connect + recovery sequence (reconcile broker truth → READY/SAFE_MODE).
+    # Boot even if the Gateway is down: workers stay paused until the supervisor reaches READY.
+    from app.ibkr.gateway import get_gateway
+    gw = get_gateway()
+    try:
+        await gw.connect_and_recover()
+    except Exception:  # noqa: BLE001 — boot even if the Gateway is down
+        logger.warning("IBKR not connected at startup; workers stay paused until READY")
+    asyncio.create_task(gw.supervise())
     await _resume_active_workers()
     yield
     logger.info("Shutting down")
