@@ -29,6 +29,9 @@ async def _run() -> None:
     settings.scan_interval_seconds = 0          # tight loop
     settings.watchlist = "AAA"                  # single-symbol watchlist for the test
 
+    from app.ibkr.gateway import ConnState, get_gateway
+    get_gateway().set_state(ConnState.READY)    # workers only act when READY
+
     await init_db()
     async with session_scope() as s:
         s.add(StrategyState(key="mp_test", name="MP Test", ready=True, status="idle",

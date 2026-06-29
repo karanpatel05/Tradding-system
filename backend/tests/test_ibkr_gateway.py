@@ -3,9 +3,17 @@ import pytest
 from app.ibkr import gateway as gw
 
 
+class _FakeEvent:
+    def __iadd__(self, h):
+        return self
+
+
 class _FakeIB:
     def __init__(self):
         self._conn = False
+        # connect() now wires disconnect/error handlers on the IB object.
+        self.disconnectedEvent = _FakeEvent()
+        self.errorEvent = _FakeEvent()
 
     def isConnected(self):
         return self._conn

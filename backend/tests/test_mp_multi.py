@@ -32,6 +32,9 @@ async def _run() -> None:
     # $2500 pool caps it to 25 sh — that cap is the thing under test.
     alloc = 5000.0
 
+    from app.ibkr.gateway import ConnState, get_gateway
+    get_gateway().set_state(ConnState.READY)    # workers only act when READY
+
     await init_db()
     async with session_scope() as s:
         s.add(StrategyState(key="mpm", name="MPM", ready=True, status="idle",
