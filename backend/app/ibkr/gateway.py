@@ -143,12 +143,17 @@ class Gateway:
     async def supervise(self, interval: float = 15.0) -> None:
         while True:
             await asyncio.sleep(interval)
-            if self.state is ConnState.DISCONNECTED:
-                await self.reconnect_loop()
-                from app.engine.recovery import run_recovery
-                await run_recovery(self._ib, self)
-            elif self.is_connected():
-                await self.heartbeat_once()
+            await self._supervise_tick()
+
+    async def _supervise_tick(self) -> None:
+        from app.engine.recovery import run_recovery  # lazy: avoid import cycle
+        if self.state is ConnState.DISCONNECTED:
+            await self.reconnect_loop()
+            await run_recovery(self._ib, self)
+        elif self.is_connected() and self.state is ConnState.CONNECTED:
+            await run_recovery(self._ib, self)  # reconnected without recovery → drive to READY
+        elif self.is_connected():
+            await self.heartbeat_once()
 
 
 _gateway = Gateway()
