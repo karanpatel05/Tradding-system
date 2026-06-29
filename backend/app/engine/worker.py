@@ -60,11 +60,13 @@ async def _run_rule_driven(strategy: BaseStrategy) -> None:
     from app.engine.universe import get_universe
     from app.strategies.ema_scalper.signals import State, apply_action
 
-    state = State()
-    selected: str | None = None
-    open_qty = 0
-    open_trade_id: int | None = None
-    last_bar_ms: int | None = None
+    rebuilt = await _rebuild_rule_state(strategy.key)
+    if rebuilt is not None:
+        state, selected, open_qty, open_trade_id, last_bar_ms = rebuilt
+        await log_event(f"Resumed state: {selected} pos={state.position is not None}",
+                        category="action", strategy_key=strategy.key)
+    else:
+        state, selected, open_qty, open_trade_id, last_bar_ms = State(), None, 0, None, None
 
     await log_event("Worker started (rule-driven)", category="action", strategy_key=strategy.key)
     try:
@@ -139,6 +141,7 @@ async def _handle_action(strategy, symbol, action, state, bars, open_qty, open_t
                 level="warning", category="decision", strategy_key=strategy.key, symbol=symbol,
                 data={"allocation": alloc, "entry": action.price, "reason": sizing.rejection},
             )
+            await _persist_worker_state(strategy.key, symbol, state, None, bar.get("time"))
             return 0, None
         intent = "enter_long" if action.side == "long" else "enter_short"
         order = await submit_equity_order(symbol, intent, sizing.quantity, reason="entry")
@@ -153,6 +156,7 @@ async def _handle_action(strategy, symbol, action, state, bars, open_qty, open_t
             data={"qty": sizing.quantity, "entry_type": action.entry_type, "stop": action.stop,
                   "target": action.target, "capital_used": sizing.notional, "order": order},
         )
+        await _persist_worker_state(strategy.key, symbol, state, trade_id, bar.get("time"))
         return sizing.quantity, trade_id
 
     elif action.kind == "exit" and state.position is not None:
@@ -171,9 +175,55 @@ async def _handle_action(strategy, symbol, action, state, bars, open_qty, open_t
             category="trade", strategy_key=strategy.key, symbol=symbol,
             data={"reason": action.reason, "pnl": pnl, "order": order},
         )
+        await _persist_worker_state(strategy.key, symbol, state, None, bar.get("time"))
         return 0, None
 
+    await _persist_worker_state(strategy.key, symbol, state, open_trade_id, bar.get("time"))
     return open_qty, open_trade_id
+
+
+async def _persist_worker_state(strategy_key, symbol, state, open_trade_id, last_bar_ms) -> None:
+    """Persist the rule-driven worker's working memory so a restart resumes mid-trade."""
+    from app.engine.worker_state import save_state
+    p = state.pending
+    armed = None if p is None else {"side": p.side, "trigger": p.trigger, "stop": p.stop,
+                                    "target": p.target, "entry_type": p.entry_type}
+    await save_state(strategy_key, managed_symbol=symbol, armed=armed,
+                     open_trade_id=open_trade_id, last_bar_ms=last_bar_ms)
+
+
+async def _load_worker_snapshot(strategy_key: str):
+    from app.engine.worker_state import load_state
+    return await load_state(strategy_key)
+
+
+async def _rebuild_rule_state(strategy_key: str):
+    """Rebuild (state, selected, open_qty, open_trade_id, last_bar_ms) from the durable
+    snapshot + the open trade. Returns None when there's nothing to resume."""
+    from app.db.base import session_scope
+    from app.db.models import TradeRecord
+    from app.strategies.ema_scalper.signals import Pending, Position, State
+
+    snap = await _load_worker_snapshot(strategy_key)
+    if snap is None:
+        return None
+    state = State()
+    selected = snap["managed_symbol"]
+    open_qty, open_trade_id = 0, snap["open_trade_id"]
+    if snap["armed"]:
+        a = snap["armed"]
+        state.pending = Pending(side=a["side"], trigger=a["trigger"], stop=a["stop"],
+                                target=a["target"], armed_index=0, entry_type=a.get("entry_type", ""))
+    if open_trade_id is not None:
+        async with session_scope() as s:
+            tr = await s.get(TradeRecord, open_trade_id)
+            if tr is not None and tr.status == "open":
+                side = "long" if (tr.side or "").lower() in ("buy", "long") else "short"
+                state.position = Position(side=side, entry=tr.entry_price or 0.0,
+                                          stop=tr.stop or 0.0, target=tr.target or 0.0,
+                                          entry_index=0)
+                open_qty = int(tr.quantity)
+    return state, selected, open_qty, open_trade_id, snap["last_bar_ms"]
 
 
 # ========================= multi-position loop ===========================
