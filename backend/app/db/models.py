@@ -113,3 +113,49 @@ class OptionPositionRecord(Base):
     pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
     calendars: Mapped[list] = mapped_column(JSON, default=list)   # [{strike, sell, buy}]
     order_ids: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class SystemFlag(Base):
+    """Tiny key/value flags for engine-wide state (e.g. safe_mode)."""
+
+    __tablename__ = "system_flags"
+
+    key: Mapped[str] = mapped_column(String(32), primary_key=True)
+    on: Mapped[bool] = mapped_column(Boolean, default=False)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
+class OrderIntent(Base):
+    """Durable record of an order we intend to / did transmit, written BEFORE
+    transmit so a reconnect dedupes by ref/permId instead of resubmitting."""
+
+    __tablename__ = "order_intents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    client_order_ref: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    strategy_key: Mapped[str] = mapped_column(String(32), index=True)
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    intent: Mapped[str] = mapped_column(String(16))      # enter_long | exit_long | ...
+    quantity: Mapped[int] = mapped_column(Integer, default=0)
+    perm_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # submitting | working | filled | cancelled | rejected
+    status: Mapped[str] = mapped_column(String(12), default="submitting")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class WorkerState(Base):
+    """Durable snapshot of a worker's in-memory State so a restart resumes mid-trade."""
+
+    __tablename__ = "worker_state"
+
+    strategy_key: Mapped[str] = mapped_column(String(32), primary_key=True)
+    managed_symbol: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    armed: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    open_trade_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_bar_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )

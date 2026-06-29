@@ -6,6 +6,8 @@ from app.engine import execution
 
 @pytest.mark.asyncio
 async def test_equity_order_paper_mode_does_not_transmit(monkeypatch):
+    from app.db.base import init_db
+    await init_db()  # submit now reads the persisted safe_mode flag
     monkeypatch.setenv("ENABLE_LIVE_ORDERS", "false")
     get_settings.cache_clear()
     res = await execution.submit_equity_order("NVDA", "enter_long", 10, reason="test")
@@ -15,6 +17,8 @@ async def test_equity_order_paper_mode_does_not_transmit(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_bracket_paper_mode_returns_levels(monkeypatch):
+    from app.db.base import init_db
+    await init_db()  # submit now reads the persisted safe_mode flag
     monkeypatch.setenv("ENABLE_LIVE_ORDERS", "false")
     get_settings.cache_clear()
     res = await execution.submit_bracket_order("NVDA", "long", 10, 100.0, 95.0, 110.0)

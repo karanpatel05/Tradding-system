@@ -33,6 +33,10 @@ async def submit_equity_order(symbol: str, intent: str, quantity: int, *, reason
     if quantity <= 0:
         return {"transmitted": False, "detail": f"skipped: quantity {quantity}"}
     action = intent_to_action(intent)
+    from app.engine.safe_mode import is_safe_mode
+    if await is_safe_mode():
+        return {"transmitted": False, "safe_mode": True,
+                "detail": f"blocked: SAFE_MODE ({symbol})"}
     s = get_settings()
     if not s.enable_live_orders:
         logger.warning("[PAPER] %s %s x%d (%s) — ENABLE_LIVE_ORDERS off, not transmitted",
@@ -56,6 +60,10 @@ async def submit_bracket_order(symbol: str, side: str, quantity: int, entry_pric
         return {"transmitted": False, "detail": f"skipped: quantity {quantity}"}
     if side not in ("long", "short"):
         raise ValueError(f"Unknown side: {side!r}")
+    from app.engine.safe_mode import is_safe_mode
+    if await is_safe_mode():
+        return {"transmitted": False, "safe_mode": True,
+                "detail": f"blocked: SAFE_MODE ({symbol})"}
     s = get_settings()
     if not s.enable_live_orders:
         logger.warning("[PAPER] BRACKET %s %s x%d entry~%.2f stop %.2f target %.2f (%s) — "
