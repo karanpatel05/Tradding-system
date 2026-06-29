@@ -210,6 +210,14 @@ class EmaCrossoverStrategy(BaseStrategy):
     def __init__(self) -> None:
         self.params = EmaCrossoverParams.from_settings()
 
+    # --- resilience hooks ------------------------------------------------
+    def bar_interval(self) -> str:
+        return "5m"
+
+    def backfill_specs(self, selected_symbol: str | None) -> list[tuple[str, str]]:
+        from app.config import get_settings
+        return [(s, "5m") for s in get_settings().watchlist_symbols]
+
     # --- data ------------------------------------------------------------
     async def fetch_intraday(self, symbol: str) -> list[dict]:
         interval = self.params.candle_interval

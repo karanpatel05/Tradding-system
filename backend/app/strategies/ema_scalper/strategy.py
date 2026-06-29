@@ -117,6 +117,13 @@ class EmaScalperStrategy(BaseStrategy):
     def __init__(self) -> None:
         self.params = EmaScalperParams.from_settings()
 
+    # --- resilience hooks ------------------------------------------------
+    def bar_interval(self) -> str:
+        return self.params.candle_interval
+
+    def backfill_specs(self, selected_symbol: str | None) -> list[tuple[str, str]]:
+        return [(selected_symbol, self.params.candle_interval)] if selected_symbol else []
+
     # --- scanner ---------------------------------------------------------
     async def _fetch_daily(self, symbol: str) -> list[dict]:
         # Historical data comes from IBKR (cached to disk, namespaced by source).

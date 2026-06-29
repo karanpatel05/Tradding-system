@@ -66,6 +66,15 @@ class BaseStrategy(ABC):
         candidates = await self.scan(universe)
         return candidates[0] if candidates else None
 
+    # --- resilience hooks (data gap gate + proactive backfill) ------------
+    def bar_interval(self) -> str:
+        """Candle interval the live loop acts on (for the data gap gate)."""
+        return "5m"
+
+    def backfill_specs(self, selected_symbol: str | None) -> list[tuple[str, str]]:
+        """(symbol, interval) pairs to force-refresh after a reconnect. Default: none."""
+        return []
+
 
 class ComingSoonStrategy(BaseStrategy):
     """Placeholder used for the 5 not-yet-implemented strategies. Its scan raises,
