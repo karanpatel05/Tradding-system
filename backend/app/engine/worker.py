@@ -37,6 +37,17 @@ def _trading_allowed() -> bool:
     return get_gateway().state is ConnState.READY
 
 
+async def _entry_blocked_by_gap(strategy, bars) -> bool:
+    """True when the market is open and the symbol's series is missing its latest bar."""
+    import time
+
+    from app.services.backfill import interval_seconds, is_stale
+    from app.services.market import get_market_status
+    secs = interval_seconds(strategy.bar_interval())
+    return is_stale(bars, secs, int(time.time() * 1000),
+                    market_open=get_market_status()["is_open"])
+
+
 async def run_strategy(strategy: BaseStrategy) -> None:
     # Options strategies (e.g. Triple Calendar) run their own multi-leg live loop.
     if getattr(strategy, "is_options", False):
@@ -92,8 +103,14 @@ async def _run_rule_driven(strategy: BaseStrategy) -> None:
                 if selected:
                     action, bars = await strategy.live_decision(selected, state)
                     cur_ms = bars[-1].get("time") if bars else None
+                    # Gate ENTRIES on a stale series (exits/cancels are never gated).
+                    blocked = (action is not None and action.kind in ("arm", "enter")
+                               and await _entry_blocked_by_gap(strategy, bars))
+                    if blocked:
+                        logger.debug("entry gated (awaiting backfill) %s", selected)
                     # Act once per freshly-closed bar (avoid re-acting same bar).
-                    if action is not None and action.kind != "none" and cur_ms != last_bar_ms:
+                    if (action is not None and action.kind != "none"
+                            and cur_ms != last_bar_ms and not blocked):
                         last_bar_ms = cur_ms
                         open_qty, open_trade_id = await _handle_action(
                             strategy, selected, action, state, bars,
@@ -283,9 +300,10 @@ async def _run_multi_position(strategy: BaseStrategy) -> None:
                                                    track.get(symbol, {}), action, bars)
                             track.pop(symbol, None)
                     else:
-                        # Flat → bracketed entry, once per fresh 5m bar.
+                        # Flat → bracketed entry, once per fresh 5m bar. Gate on a stale series.
                         if (action and action.kind == "enter"
-                                and cur_ms != last_entry_ms.get(symbol)):
+                                and cur_ms != last_entry_ms.get(symbol)
+                                and not await _entry_blocked_by_gap(strategy, bars)):
                             last_entry_ms[symbol] = cur_ms
                             t = await _open_bracket(strategy, symbol, action, state, bars, engine)
                             if t:

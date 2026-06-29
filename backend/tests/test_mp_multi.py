@@ -34,6 +34,8 @@ async def _run() -> None:
 
     from app.ibkr.gateway import ConnState, get_gateway
     get_gateway().set_state(ConnState.READY)    # workers only act when READY
+    import app.services.market as _mkt
+    _mkt.get_market_status = lambda: {"is_open": False}  # closed → gap gate is pass-through
 
     await init_db()
     async with session_scope() as s:
