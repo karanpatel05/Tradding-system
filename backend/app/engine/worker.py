@@ -24,11 +24,17 @@ from zoneinfo import ZoneInfo
 from app.config import get_settings
 from app.db.base import session_scope
 from app.db.models import StrategyState, TradeRecord
+from app.ibkr.gateway import ConnState, get_gateway
 from app.services.journal import log_event
 from app.strategies.base import BaseStrategy
 
 logger = logging.getLogger("trading.worker")
 settings = get_settings()
+
+
+def _trading_allowed() -> bool:
+    """Workers act only when the connection is READY (recovery passed, not safe-mode)."""
+    return get_gateway().state is ConnState.READY
 
 
 async def run_strategy(strategy: BaseStrategy) -> None:
@@ -63,6 +69,10 @@ async def _run_rule_driven(strategy: BaseStrategy) -> None:
     await log_event("Worker started (rule-driven)", category="action", strategy_key=strategy.key)
     try:
         while True:
+            if not _trading_allowed():
+                await _set_status(strategy.key, "paused")
+                await asyncio.sleep(settings.scan_interval_seconds)
+                continue
             await _set_status(strategy.key, "scanning")
             try:
                 # Only pick a new symbol while flat; hold the symbol once in a trade.
@@ -195,6 +205,10 @@ async def _run_multi_position(strategy: BaseStrategy) -> None:
     )
     try:
         while True:
+            if not _trading_allowed():
+                await _set_status(strategy.key, "paused")
+                await asyncio.sleep(settings.scan_interval_seconds)
+                continue
             await _set_status(strategy.key, "scanning")
             engine.equity = await _allocation(strategy.key)  # allocation can change live
             direction = await _direction(strategy.key)       # long/short/both, live-editable
@@ -351,6 +365,10 @@ async def _run_generic(strategy: BaseStrategy) -> None:
     await log_event("Worker started", category="action", strategy_key=strategy.key)
     try:
         while True:
+            if not _trading_allowed():
+                await _set_status(strategy.key, "paused")
+                await asyncio.sleep(settings.scan_interval_seconds)
+                continue
             await _set_status(strategy.key, "scanning")
             try:
                 best = await strategy.select_best(await get_universe())

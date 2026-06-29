@@ -13,9 +13,11 @@ async def _run() -> None:
     from app.db.models import StrategyState
     from app.engine.manager import engine_manager
     from app.engine.worker import run_strategy
+    from app.ibkr.gateway import ConnState, get_gateway
     from app.strategies.base import BaseStrategy, Candidate
 
     get_settings().scan_interval_seconds = 0  # tight loop for the test
+    get_gateway().set_state(ConnState.READY)  # workers only act when READY
 
     await init_db()
     async with session_scope() as s:
