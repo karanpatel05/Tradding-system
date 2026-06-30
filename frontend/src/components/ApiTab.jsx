@@ -50,14 +50,19 @@ export default function ApiTab({ onChange }) {
   };
 
   const connected = !!info?.connected;
+  const state = info?.conn_state || (connected ? "connected" : "disconnected");
+  const STATE_LABEL = { disconnected: "Disconnected", connecting: "Connecting…",
+    connected: "Connected", recovering: "Recovering…", ready: "Ready", safe_mode: "SAFE MODE" };
+  const STATE_CLASS = { ready: "live", connected: "live", recovering: "warn",
+    connecting: "warn", safe_mode: "danger", disconnected: "disabled" };
 
   return (
     <div className="api-page">
       <section className="card">
         <div className="card-head">
           <h1>IBKR Connection</h1>
-          <span className={`mode-badge ${connected ? "live" : "disabled"}`}>
-            {connected ? "Connected" : "Disconnected"}
+          <span className={`mode-badge ${STATE_CLASS[state] || "disabled"}`}>
+            {STATE_LABEL[state] || state}
           </span>
         </div>
         <p className="muted">

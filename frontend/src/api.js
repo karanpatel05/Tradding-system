@@ -35,6 +35,7 @@ export const api = {
   authStatus: () => request("/api/auth/status"),
   connect: () => request("/api/auth/connect", { method: "POST" }),
   disconnect: () => request("/api/auth/disconnect", { method: "POST" }),
+  resume: () => request("/api/system/resume", { method: "POST" }),
 
   account: () => request("/api/account"),
   marketStatus: () => request("/api/market/status"),
