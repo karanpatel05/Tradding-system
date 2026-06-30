@@ -5,6 +5,7 @@ import Dashboard from "./components/Dashboard.jsx";
 import StrategiesTab from "./components/StrategiesTab.jsx";
 import CalendarTab from "./components/CalendarTab.jsx";
 import ApiTab from "./components/ApiTab.jsx";
+import SafeModeBanner from "./components/SafeModeBanner.jsx";
 
 // Minimal stroke icons — keeps the sidebar crisp without an icon dependency.
 const Icon = ({ name }) => {
@@ -74,7 +75,9 @@ export default function App() {
   };
 
   return (
-    <div className="layout">
+    <>
+      <SafeModeBanner auth={auth} onResume={refresh} />
+      <div className="layout">
       <aside className="sidebar">
         <div className="brand">
           <span className="brand-mark">⚡</span>
@@ -123,5 +126,6 @@ export default function App() {
         {tab === "API" && <ApiTab onChange={refresh} />}
       </main>
     </div>
+    </>
   );
 }
