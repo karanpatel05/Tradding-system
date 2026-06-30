@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api.js";
 import { useSnapshot } from "./hooks/useWebSocket.js";
 import Dashboard from "./components/Dashboard.jsx";
@@ -6,6 +6,7 @@ import StrategiesTab from "./components/StrategiesTab.jsx";
 import CalendarTab from "./components/CalendarTab.jsx";
 import ApiTab from "./components/ApiTab.jsx";
 import SafeModeBanner from "./components/SafeModeBanner.jsx";
+import ConnectionBanner from "./components/ConnectionBanner.jsx";
 
 // Minimal stroke icons — keeps the sidebar crisp without an icon dependency.
 const Icon = ({ name }) => {
@@ -44,6 +45,18 @@ export default function App() {
     return () => clearInterval(id);
   }, [refresh]);
 
+  // Auto-connect once on page load if not already connected. The backend supervisor
+  // keeps retrying after this, so the frontend never loops connect().
+  const kickedRef = useRef(false);
+  useEffect(() => {
+    if (kickedRef.current || auth === null) return;
+    const ready = auth.conn_state === "ready" || auth.conn_state === "connected" || auth.connected;
+    if (!ready) {
+      kickedRef.current = true;
+      api.connect().catch(() => {}).finally(refresh);
+    }
+  }, [auth, refresh]);
+
   // Connect the live feed only once the IBKR Gateway is connected.
   const { snapshot, connected } = useSnapshot(auth?.connected);
 
@@ -72,6 +85,7 @@ export default function App() {
   return (
     <>
       <SafeModeBanner auth={auth} onResume={refresh} />
+      <ConnectionBanner auth={auth} />
       <div className="layout">
       <aside className="sidebar">
         <div className="brand">
