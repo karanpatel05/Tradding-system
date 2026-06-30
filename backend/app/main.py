@@ -20,6 +20,7 @@ from app.db import init_db
 from app.routers.dashboard import router as dashboard_router
 from app.routers.journal import logs_router, router as journal_router
 from app.routers.strategies import router as strategies_router
+from app.routers.system import router as system_router
 from app.routers.ws import router as ws_router
 from app.strategies.registry import seed_strategy_state
 
@@ -91,6 +92,7 @@ app.include_router(dashboard_router)
 app.include_router(journal_router)
 app.include_router(logs_router)
 app.include_router(strategies_router)
+app.include_router(system_router)
 app.include_router(ws_router)
 
 
