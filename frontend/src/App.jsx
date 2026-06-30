@@ -54,11 +54,6 @@ export default function App() {
   // No hard gate: the app always lands on the Dashboard. Connecting the broker
   // happens in the API tab; unauthenticated views degrade gracefully (no live
   // feed, placeholder market data) until credentials are saved there.
-  const disconnect = async () => {
-    await api.disconnect().catch(() => {});
-    refresh();
-  };
-
   // Connect directly from the sidebar. Only fall back to the API tab if the
   // connection fails, so the user can read the error detail there.
   const connect = async () => {
@@ -102,9 +97,7 @@ export default function App() {
             <span className={connected ? "dot live" : "dot"} />
             <span className="muted small">{connected ? "Live feed" : auth.connected ? "Connecting…" : "Not connected"}</span>
           </div>
-          {auth.connected ? (
-            <button className="btn ghost full" onClick={disconnect}>Disconnect</button>
-          ) : (
+          {!auth.connected && (
             <button className="btn ghost full" disabled={connecting} onClick={connect}>
               {connecting ? "Connecting…" : "Connect IBKR"}
             </button>

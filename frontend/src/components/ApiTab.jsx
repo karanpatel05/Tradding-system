@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { api } from "../api.js";
 
 // IBKR connection tab: shows the IB Gateway connection config (host/port/clientId/
-// account) read from the server, a live Connected/Disconnected badge, and
-// Connect / Disconnect buttons. There are no secrets to enter — authentication
+// account) read from the server, a live connection-state badge, and a Connect
+// button (no manual Disconnect — the system is always-connect). No secrets to enter:
 // happens in IBKR's own Gateway software; this just opens/closes the local socket.
 export default function ApiTab({ onChange }) {
   const [info, setInfo] = useState(null);
@@ -37,17 +37,6 @@ export default function ApiTab({ onChange }) {
     }
   };
 
-  const disconnect = async () => {
-    setErr(null); setBusy(true);
-    try {
-      setInfo(await api.disconnect());
-      onChange?.();
-    } catch (e) {
-      setErr(e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const connected = !!info?.connected;
   const state = info?.conn_state || (connected ? "connected" : "disconnected");
@@ -104,11 +93,6 @@ export default function ApiTab({ onChange }) {
           {!connected && (
             <button className="btn primary" disabled={busy} onClick={connect}>
               {busy ? "Connecting…" : "Connect"}
-            </button>
-          )}
-          {connected && (
-            <button className="btn danger" disabled={busy} onClick={disconnect}>
-              {busy ? "Disconnecting…" : "Disconnect"}
             </button>
           )}
         </div>
