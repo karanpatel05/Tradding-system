@@ -27,9 +27,26 @@ class ConnectionStatus(BaseModel):
     account: str
     accounts: list[str] = []
     detail: str | None = None
+    conn_state: str = "disconnected"
+    safe_mode: bool = False
+    safe_mode_reason: str | None = None
+
+
+async def _safe_mode_info() -> tuple[bool, str | None]:
+    from app.db.base import session_scope
+    from app.db.models import SystemFlag
+    try:
+        async with session_scope() as s:
+            row = await s.get(SystemFlag, "safe_mode")
+            if row and row.on:
+                return True, row.reason or None
+    except Exception:  # noqa: BLE001 — a status read must never 500 the badge
+        logger.exception("safe-mode status read failed")
+    return False, None
 
 
 async def _status(detail: str | None = None) -> ConnectionStatus:
+    from app.ibkr.gateway import get_gateway
     s = get_settings()
     accounts: list[str] = []
     if session_manager.is_authenticated():
@@ -37,10 +54,12 @@ async def _status(detail: str | None = None) -> ConnectionStatus:
             accounts = await get_accounts()
         except Exception:  # don't let a transient data error flip the view
             logger.exception("Failed to list IBKR accounts for status")
+    sm_on, sm_reason = await _safe_mode_info()
     return ConnectionStatus(
         connected=session_manager.is_authenticated(),
         host=s.ibkr_host, port=s.ibkr_port, client_id=s.ibkr_client_id,
         account=s.ibkr_account, accounts=accounts, detail=detail,
+        conn_state=get_gateway().state.value, safe_mode=sm_on, safe_mode_reason=sm_reason,
     )
 
 
