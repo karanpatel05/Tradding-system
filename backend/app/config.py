@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     ibkr_client_id: int = 1
     ibkr_account: str = ""           # blank -> first managed account
     ibkr_market_data_type: int = 1   # 1=live, 2=frozen, 3=delayed, 4=delayed-frozen
+    ibkr_reconnect_interval_seconds: int = 5   # fixed reconnect retry cadence (always-connect)
+    ibkr_account_settle_seconds: float = 2.0   # wait after reconnect before reconciling (data re-sync)
 
     # --- Historical data cache ---
     # Candle history (daily + 5-min) is cached to local disk after the first pull

@@ -1,4 +1,4 @@
-"""Backoff schedule is bounded/exponential; reconnect loop retries then connects.
+"""Reconnect loop retries at a fixed interval until connected.
    Run: python -m tests.test_reconnect_backoff
 """
 from __future__ import annotations
@@ -7,15 +7,14 @@ import asyncio
 
 
 def _run() -> None:
+    from app.config import get_settings
     from app.ibkr.gateway import Gateway
 
-    gw = Gateway()
-    assert gw.backoff_schedule(0) == 1.0, gw.backoff_schedule(0)
-    assert gw.backoff_schedule(3) == 8.0
-    assert gw.backoff_schedule(10) == 60.0          # capped
-    print("PASS: backoff schedule bounded + exponential")
+    assert not hasattr(Gateway, "backoff_schedule"), "exponential backoff_schedule should be gone"
 
     async def _loop_test():
+        get_settings().ibkr_reconnect_interval_seconds = 0   # no real waiting in the test
+        gw = Gateway()
         calls = {"n": 0}
         async def fake_connect():
             calls["n"] += 1
@@ -23,12 +22,10 @@ def _run() -> None:
                 raise ConnectionError("nope")
             return object()
         gw.connect = fake_connect          # type: ignore[assignment]
-        gw.backoff_schedule = lambda a: 0.0  # type: ignore[assignment]  # no real waiting
         await gw.reconnect_loop(max_attempts=5)
         assert calls["n"] == 3, calls
     asyncio.run(_loop_test())
-    print("PASS: reconnect loop retries until connected")
-
+    print("PASS: reconnect loop retries at fixed interval until connected")
     print("\nALL RECONNECT TESTS PASSED")
 
 

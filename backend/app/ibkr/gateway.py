@@ -108,11 +108,8 @@ class Gateway:
             self._ib.disconnect()
 
     # --- reconnect + heartbeat ------------------------------------------
-    @staticmethod
-    def backoff_schedule(attempt: int) -> float:
-        return min(60.0, float(2 ** attempt))
-
     async def reconnect_loop(self, max_attempts: int | None = None) -> None:
+        interval = get_settings().ibkr_reconnect_interval_seconds
         attempt = 0
         while max_attempts is None or attempt < max_attempts:
             try:
@@ -120,7 +117,7 @@ class Gateway:
                 await self.connect()
                 return
             except Exception:  # noqa: BLE001 — keep retrying through any connect failure
-                delay = self.backoff_schedule(attempt) + random.uniform(0, 0.5)
+                delay = interval + random.uniform(0, 0.5)
                 logger.warning("reconnect attempt %d failed; retrying in %.1fs", attempt, delay)
                 await asyncio.sleep(delay)
                 attempt += 1
