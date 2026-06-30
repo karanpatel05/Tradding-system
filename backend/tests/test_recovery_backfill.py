@@ -13,6 +13,8 @@ def _run() -> None:
         from app.ibkr.gateway import ConnState, Gateway
 
         await init_db()
+        from app.config import get_settings
+        get_settings().ibkr_account_settle_seconds = 0  # no settle wait in tests
         scheduled = {"n": 0}
         recovery._schedule_backfill = lambda: scheduled.__setitem__("n", scheduled["n"] + 1)  # type: ignore[assignment]
 

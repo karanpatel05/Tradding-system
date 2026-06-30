@@ -15,6 +15,8 @@ def _run() -> None:
         from app.services import alerts
 
         await init_db()
+        from app.config import get_settings
+        get_settings().ibkr_account_settle_seconds = 0  # no settle wait in tests
         seen = []
         async def cap(kind, msg, data): seen.append(kind)
         alerts.register_channel(cap)

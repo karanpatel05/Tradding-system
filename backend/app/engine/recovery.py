@@ -26,8 +26,31 @@ async def local_open_positions() -> dict[str, int]:
     return {k: v for k, v in out.items() if v != 0}
 
 
+async def _await_account_ready(ib) -> None:
+    """Wait for a (re)connected Gateway's account data to re-sync before reconciling, so a
+    nightly-restart's brief empty-positions window doesn't look like a real mismatch."""
+    import asyncio
+
+    from app.config import get_settings
+    waited = 0.0
+    while waited < 10.0:
+        try:
+            # A stub IB without managedAccounts is treated as "ready" (don't wait 10s in tests).
+            accts = ib.managedAccounts() if hasattr(ib, "managedAccounts") else ["_"]
+            if accts:
+                break
+        except Exception:  # noqa: BLE001 — not ready yet
+            pass
+        await asyncio.sleep(0.2)
+        waited += 0.2
+    settle = get_settings().ibkr_account_settle_seconds
+    if settle:
+        await asyncio.sleep(settle)
+
+
 async def run_recovery(ib, gateway) -> bool:
     gateway.set_state(ConnState.RECOVERING)
+    await _await_account_ready(ib)
     snap = await fetch_snapshot(ib)
     result = reconcile(snap["positions"], await local_open_positions())
     if not result.ok:

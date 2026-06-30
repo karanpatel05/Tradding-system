@@ -14,6 +14,8 @@ def _run() -> None:
         from app.ibkr.gateway import ConnState, Gateway
 
         await init_db()
+        from app.config import get_settings
+        get_settings().ibkr_account_settle_seconds = 0  # no settle wait in tests
 
         class C:
             def __init__(self, sym): self.symbol = sym; self.secType = "STK"
