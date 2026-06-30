@@ -23,9 +23,16 @@ echo "==> Starting web app at $URL  (Ctrl-C to stop)"
 ( for _ in $(seq 1 30); do curl -s -m1 "$URL/health" >/dev/null 2>&1 && break; sleep 1; done
   command -v open >/dev/null 2>&1 && open "$URL" ) &
 
+# IBKR Gateway runs on the LOCAL host for a web/dev run. Default to 127.0.0.1 so a
+# repo-root `.env` written for Docker (IBKR_HOST=host.docker.internal) doesn't shadow
+# local runs — uvicorn loads that root .env since it starts from the repo root. Still
+# overridable: `IBKR_HOST=... ./scripts/run_web.sh`.
 FRONTEND_DIST="$ROOT/frontend/dist" \
   DATABASE_URL="${DATABASE_URL:-sqlite+aiosqlite:///$ROOT/backend/trading.db}" \
   HISTORY_CACHE_DIR="${HISTORY_CACHE_DIR:-$ROOT/backend/data_cache}" \
+  IBKR_HOST="${IBKR_HOST:-127.0.0.1}" \
+  IBKR_PORT="${IBKR_PORT:-4002}" \
+  IBKR_CLIENT_ID="${IBKR_CLIENT_ID:-3}" \
   "$ROOT/.venv/bin/uvicorn" app.main:app \
     --host 127.0.0.1 \
     --port 8765 \
