@@ -36,6 +36,8 @@ async def run_recovery(ib, gateway) -> bool:
         gateway.set_state(ConnState.SAFE_MODE)
         await log_event(f"SAFE MODE on recovery: {reason}", level="error",
                         category="system")
+        from app.services.alerts import send_alert
+        await send_alert("safe_mode", reason, {"discrepancies": result.discrepancies})
         return False
     gateway.set_state(ConnState.READY)
     _schedule_backfill()

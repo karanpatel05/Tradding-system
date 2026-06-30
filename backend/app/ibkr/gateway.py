@@ -70,6 +70,8 @@ class Gateway:
 
     def _on_disconnect(self, *_) -> None:
         self.set_state(ConnState.DISCONNECTED)
+        from app.services.alerts import fire_alert
+        fire_alert("disconnect", "IBKR Gateway disconnected")
 
     def _on_error(self, reqId, code, msg, *_) -> None:
         if code == 1100:
@@ -122,6 +124,10 @@ class Gateway:
                 logger.warning("reconnect attempt %d failed; retrying in %.1fs", attempt, delay)
                 await asyncio.sleep(delay)
                 attempt += 1
+                if attempt == 5:
+                    from app.services.alerts import fire_alert
+                    fire_alert("reconnect_failed",
+                               f"reconnect still failing after {attempt} attempts")
 
     async def heartbeat_once(self, timeout: float = 5.0) -> bool:
         if self._ib is None:
