@@ -19,9 +19,12 @@ fi
 
 URL="http://127.0.0.1:8765"
 echo "==> Starting web app at $URL  (Ctrl-C to stop)"
-# Open the browser once the server is up (best-effort, backgrounded).
-( for _ in $(seq 1 30); do curl -s -m1 "$URL/health" >/dev/null 2>&1 && break; sleep 1; done
-  command -v open >/dev/null 2>&1 && open "$URL" ) &
+# Open the browser once the server is up (best-effort, backgrounded). Set RUN_WEB_OPEN=0
+# to run quietly without opening a browser (the auto-start LaunchAgent uses this).
+if [[ "${RUN_WEB_OPEN:-1}" != "0" ]]; then
+  ( for _ in $(seq 1 30); do curl -s -m1 "$URL/health" >/dev/null 2>&1 && break; sleep 1; done
+    command -v open >/dev/null 2>&1 && open "$URL" ) &
+fi
 
 # IBKR Gateway runs on the LOCAL host for a web/dev run. Default to 127.0.0.1 so a
 # repo-root `.env` written for Docker (IBKR_HOST=host.docker.internal) doesn't shadow
