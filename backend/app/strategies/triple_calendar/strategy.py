@@ -59,15 +59,15 @@ def decide_entry(day: date, source, params, events: list[date], vix: float | Non
 
 
 def manage(position: Position, day: date, source, params) -> tuple[str, dict]:
-    """Return ('exit'|'adjust'|'hold', info). Order: profit target, time stop, breach."""
+    """Return ('exit'|'adjust'|'hold', info). Order: profit target, stop-loss, breach."""
     value = position_value(source, position, day)
     if value is not None and position.net_debit > 0:
         pnl_pct = (value - position.net_debit) / position.net_debit
         if pnl_pct >= params.profit_target:
             return "exit", {"reason": "target", "value": value, "pnl_pct": pnl_pct}
+        if pnl_pct <= -params.stop_loss_pct:
+            return "exit", {"reason": "stop_loss", "value": value, "pnl_pct": pnl_pct}
     sell_expiry = position.calendars[0].sell_expiry
-    if (sell_expiry - day).days <= params.time_stop_dte:
-        return "exit", {"reason": "time_stop", "value": value}
     spot = source.underlying_close(position.underlying, day)
     if spot is not None:
         side = breached(position, spot)

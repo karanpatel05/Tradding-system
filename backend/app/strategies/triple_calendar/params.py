@@ -14,7 +14,7 @@ class TripleCalendarParams:
     em_buffer: float = 5.0          # added to expected move before placing outer strikes
     manual_nudge: float = 0.0       # optional $ to widen outer strikes (toward S/R)
     profit_target: float = 0.10     # close at +10% of net debit
-    time_stop_dte: int = 7          # close when sell leg hits this DTE
+    stop_loss_pct: float = 0.25     # close at -25% of net debit
     vix_threshold: float = 13.0     # below this, scale size down (don't skip)
     vix_scale: float = 0.5
     max_calendars: int = 4
