@@ -2,9 +2,16 @@
 and dashboard already consume (.symbol/.quantity/.quantity_direction/.instrument_type)."""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 from app.ibkr.gateway import get_gateway
+
+# Serialize account-summary requests: ib_async opens a fresh reqAccountSummary subscription
+# whenever its cache is cold (e.g. just after a reconnect). Concurrent callers (the /api/account
+# endpoint + the WebSocket snapshot) would each open one, exceeding IBKR's limit (error 322).
+# The lock lets the first caller populate the cache so the rest read it without re-subscribing.
+_summary_lock = asyncio.Lock()
 
 _SECTYPE_TO_INSTRUMENT = {"STK": "Equity"}
 
@@ -75,5 +82,6 @@ async def get_account_summary(account: str | None = None) -> dict:
     if not get_gateway().is_connected():
         return {}
     ib = await get_gateway().get_ib()
-    rows = await ib.accountSummaryAsync(account or "")
+    async with _summary_lock:
+        rows = await ib.accountSummaryAsync(account or "")
     return normalize_account_summary(rows)
