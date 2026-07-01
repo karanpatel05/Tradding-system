@@ -1,5 +1,6 @@
-"""The Triple Calendar live loop must not act (enter/manage) while the connection is not
-READY — so it pauses during disconnect/recovery/SAFE_MODE just like the equity workers.
+"""The Triple Calendar live loop only acts when the connection is READY AND the regular
+market session is open — so it pauses during disconnect/recovery/SAFE_MODE and outside RTH
+(no entering/managing on stale pre/post-market quotes).
    Run: DATABASE_URL=sqlite+aiosqlite:///./_t_tg.db python -m tests.test_tc_ready_gate
 """
 from __future__ import annotations
@@ -25,7 +26,8 @@ def _run() -> None:
 
         strat = strategy_class.TripleCalendarStrategy()
 
-        async def _spin(state):
+        async def _spin(state, market_open):
+            strategy_class.get_market_status = lambda: {"is_open": market_open}  # type: ignore[assignment]
             get_gateway().set_state(state)
             calls["n"] = 0
             task = asyncio.create_task(strat.run_live())
@@ -37,11 +39,11 @@ def _run() -> None:
                 pass
             return calls["n"]
 
-        acted_disconnected = await _spin(ConnState.DISCONNECTED)
-        assert acted_disconnected == 0, f"acted while not READY ({acted_disconnected} ticks)"
-        acted_ready = await _spin(ConnState.READY)
-        assert acted_ready > 0, "did not act while READY"
-        print(f"PASS: TC loop gated on READY (not-ready ticks=0, ready ticks={acted_ready})")
+        assert await _spin(ConnState.DISCONNECTED, True) == 0, "acted while not READY"
+        assert await _spin(ConnState.READY, False) == 0, "acted while market closed"
+        acted = await _spin(ConnState.READY, True)
+        assert acted > 0, "did not act while READY + market open"
+        print(f"PASS: TC loop gated on READY + market-open (ready+open ticks={acted})")
     asyncio.run(_t())
     print("\nALL TC-READY-GATE TESTS PASSED")
 

@@ -8,6 +8,7 @@ from datetime import date, datetime
 from app.config import get_settings
 from app.ibkr.gateway import ConnState, get_gateway
 from app.services.journal import log_event
+from app.services.market import get_market_status
 from app.strategies.base import BaseStrategy
 from app.strategies.triple_calendar.legs import (atm_strike, expected_move, outer_strikes,
                                                  snap, target_expiry)
@@ -96,8 +97,10 @@ class TripleCalendarStrategy(BaseStrategy):
         await log_event("Triple Calendar live loop started", category="action",
                         strategy_key=self.key)
         while True:
-            # Pause unless the connection is READY (recovery passed, not SAFE_MODE / disconnected).
-            if get_gateway().state is not ConnState.READY:
+            # Pause unless the connection is READY (recovery passed, not SAFE_MODE / disconnected)
+            # AND the regular market session is open — don't enter/manage on stale pre/post-market
+            # quotes (calendars are multi-day holds; pausing overnight is fine).
+            if get_gateway().state is not ConnState.READY or not get_market_status()["is_open"]:
                 await asyncio.sleep(get_settings().tc_manage_interval_seconds)
                 continue
             try:
