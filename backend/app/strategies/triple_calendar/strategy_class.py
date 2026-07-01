@@ -78,9 +78,9 @@ class TripleCalendarStrategy(BaseStrategy):
     description = "Delta-neutral, +vega three-calendar spread on a configured underlying."
     rules = ["Sell 21DTE / buy 28DTE calendars at lower/ATM/upper strikes",
              "Outer strikes from the ATM straddle expected move + buffer",
-             "Close at +10% of net debit or at 7 DTE; add calendars on a strike breach"]
+             "Close at +10% of net debit or -25% stop-loss; add calendars on a strike breach"]
     entry_logic = "Three calendars around ATM; widths from the expected move."
-    exit_logic = "10% debit target / 7-DTE time stop / breach adjustments."
+    exit_logic = "10% debit target / -25% stop-loss / breach adjustments."
     selection_criteria = "Single configured underlying (default QQQ)."
 
     async def scan(self, universe):  # not a stock-picker
