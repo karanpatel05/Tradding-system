@@ -6,6 +6,7 @@ import asyncio
 from datetime import date, datetime
 
 from app.config import get_settings
+from app.ibkr.gateway import ConnState, get_gateway
 from app.services.journal import log_event
 from app.strategies.base import BaseStrategy
 from app.strategies.triple_calendar.legs import (atm_strike, expected_move, outer_strikes,
@@ -95,6 +96,10 @@ class TripleCalendarStrategy(BaseStrategy):
         await log_event("Triple Calendar live loop started", category="action",
                         strategy_key=self.key)
         while True:
+            # Pause unless the connection is READY (recovery passed, not SAFE_MODE / disconnected).
+            if get_gateway().state is not ConnState.READY:
+                await asyncio.sleep(get_settings().tc_manage_interval_seconds)
+                continue
             try:
                 today = datetime.now().date()
                 spot = await src.aunderlying(params.underlying)
