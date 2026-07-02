@@ -38,6 +38,9 @@ cat > "$PLIST" <<PLIST
     <key>IBKR_HOST</key><string>127.0.0.1</string>
     <key>IBKR_PORT</key><string>4002</string>
     <key>IBKR_CLIENT_ID</key><string>3</string>
+    <!-- PAPER account (port 4002): transmit orders to IBKR's paper simulator for realistic
+         fills. This is the master order gate — only enable it while pointed at a PAPER Gateway. -->
+    <key>ENABLE_LIVE_ORDERS</key><string>1</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
