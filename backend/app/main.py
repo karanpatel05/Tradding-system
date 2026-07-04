@@ -17,6 +17,7 @@ from app.auth.gate import require_auth
 from app.auth.routes import router as auth_router
 from app.config import get_settings
 from app.db import init_db
+from app.routers.builder import router as builder_router
 from app.routers.dashboard import router as dashboard_router
 from app.routers.journal import logs_router, router as journal_router
 from app.routers.strategies import router as strategies_router
@@ -90,6 +91,7 @@ app.add_middleware(
 
 
 app.include_router(auth_router)
+app.include_router(builder_router)
 app.include_router(dashboard_router)
 app.include_router(journal_router)
 app.include_router(logs_router)
