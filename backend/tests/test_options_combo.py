@@ -41,7 +41,7 @@ def test_curve_and_stats():
     assert curve[0]["pnl"] < 0 < curve[-1]["pnl"]     # loss below, profit above
     stats = curve_stats(curve)
     assert stats["max_profit"] > 0 and stats["max_loss"] < 0
-    assert any(98 <= be <= 104 for be in stats["breakevens"])  # BE near 102 (100+2 debit)
+    assert stats["breakevens"] == [102.0]   # exactly one breakeven at 100 + $2 debit
 
 
 def test_exit_check_debit_only():

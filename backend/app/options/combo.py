@@ -59,7 +59,7 @@ def curve_stats(curve: list[dict]) -> dict:
     pnls = [p["pnl"] for p in curve]
     breakevens = []
     for a, b in zip(curve, curve[1:]):
-        if (a["pnl"] <= 0 <= b["pnl"]) or (a["pnl"] >= 0 >= b["pnl"]):
+        if (a["pnl"] < 0 <= b["pnl"]) or (a["pnl"] > 0 >= b["pnl"]):
             if b["pnl"] != a["pnl"]:
                 t = -a["pnl"] / (b["pnl"] - a["pnl"])
                 breakevens.append(round(a["price"] + t * (b["price"] - a["price"]), 2))
