@@ -17,6 +17,7 @@ class TripleCalendarParams:
     stop_loss_pct: float = 0.25     # close at -25% of net debit
     vix_threshold: float = 13.0     # below this, scale size down (don't skip)
     vix_scale: float = 0.5
+    vix_entry_max: float = 16.0      # hard gate: no entry when VIX is above this (wait for it to fall)
     max_calendars: int = 4
     allow_fifth: bool = False
     risk_free_rate: float = 0.04

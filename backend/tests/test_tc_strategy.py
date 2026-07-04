@@ -28,6 +28,19 @@ def test_decide_entry_builds_three_calendars():
     assert pos.net_debit > 0
 
 
+def test_vix_gate_skips_entry_above_ceiling():
+    """Hard VIX gate: no entry when VIX is known and above vix_entry_max (16)."""
+    src = StubSource(445.0, [float(r) for r in range(400, 491, 5)])
+    p = TripleCalendarParams()  # vix_entry_max defaults to 16.0
+    assert decide_entry(date(2026, 6, 25), src, p, events=[], vix=17.0) is None
+    # At the boundary (<= 16) and below, entry is allowed.
+    assert decide_entry(date(2026, 6, 25), src, p, events=[], vix=16.0) is not None
+    assert decide_entry(date(2026, 6, 25), src, p, events=[], vix=12.0) is not None
+    # vix=None keeps the pure layer permissive (backtest/tests unaffected); the live
+    # loop enforces fail-closed separately.
+    assert decide_entry(date(2026, 6, 25), src, p, events=[], vix=None) is not None
+
+
 def test_event_filter_blocks_entry():
     src = StubSource(445.0, [float(r) for r in range(400, 491, 5)])
     p = TripleCalendarParams()

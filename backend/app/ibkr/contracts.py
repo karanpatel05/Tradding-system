@@ -4,11 +4,16 @@ from __future__ import annotations
 
 from datetime import date
 
-from ib_async import ComboLeg, Contract, Option, Stock
+from ib_async import ComboLeg, Contract, Index, Option, Stock
 
 
 def stock(symbol: str) -> Stock:
     return Stock(symbol.upper(), "SMART", "USD")
+
+
+def index(symbol: str, exchange: str = "CBOE") -> Index:
+    """Cash index (e.g. VIX on CBOE) — used for read-only quotes, not tradable here."""
+    return Index(symbol.upper(), exchange, "USD")
 
 
 def option(underlying: str, expiry: date, strike: float, right: str) -> Option:

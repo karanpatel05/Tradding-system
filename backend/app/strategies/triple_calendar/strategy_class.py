@@ -78,10 +78,11 @@ class TripleCalendarStrategy(BaseStrategy):
     ready = True
     is_options = True
     description = "Delta-neutral, +vega three-calendar spread on a configured underlying."
-    rules = ["Sell 21DTE / buy 28DTE calendars at lower/ATM/upper strikes",
+    rules = ["Only enter when VIX ≤ 16 (wait for it to fall otherwise)",
+             "Sell 21DTE / buy 28DTE calendars at lower/ATM/upper strikes",
              "Outer strikes from the ATM straddle expected move + buffer",
              "Close at +10% of net debit or -25% stop-loss; add calendars on a strike breach"]
-    entry_logic = "Three calendars around ATM; widths from the expected move."
+    entry_logic = "Three calendars around ATM; widths from the expected move. Only when VIX ≤ 16."
     exit_logic = "10% debit target / -25% stop-loss / breach adjustments."
     selection_criteria = "Single configured underlying (default QQQ)."
 
@@ -109,10 +110,22 @@ class TripleCalendarStrategy(BaseStrategy):
                 today = datetime.now().date()
                 spot = await src.aunderlying(params.underlying)
                 if spot is not None:
-                    strikes = await src.achain(params.underlying)
-                    snapshot = await _resolve_snapshot(src, params, spot, strikes, today, position)
-                    out = await manage_step(today, snapshot, params, executor, position)
-                    position, record_id = await self._persist(out, record_id)
+                    # Only take an entry when VIX is at or below the ceiling. When flat, read
+                    # VIX and fail closed: if it can't be read, skip the entry attempt this
+                    # tick (don't enter blind). VIX isn't needed while managing an open position.
+                    vix = None
+                    proceed = True
+                    if position is None:
+                        vix = await src.avix()
+                        if vix is None:
+                            await log_event("Triple Calendar: skipping entry — VIX unavailable "
+                                            "(fail-closed)", category="decision", strategy_key=self.key)
+                            proceed = False
+                    if proceed:
+                        strikes = await src.achain(params.underlying)
+                        snapshot = await _resolve_snapshot(src, params, spot, strikes, today, position)
+                        out = await manage_step(today, snapshot, params, executor, position, vix=vix)
+                        position, record_id = await self._persist(out, record_id)
                     # Persist the live valuation the core already computed this tick so the
                     # detail page can show P&L with no extra IBKR fetch (in-memory snapshot).
                     if position is not None and record_id is not None and position.net_debit:

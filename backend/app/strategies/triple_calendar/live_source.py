@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 
-from app.ibkr.contracts import option, stock
+from app.ibkr.contracts import index, option, stock
 from app.ibkr.gateway import get_gateway
 from app.ibkr.market import get_quotes, normalize_ticker
 
@@ -14,6 +14,17 @@ from app.ibkr.market import get_quotes, normalize_ticker
 class LivePriceSource:
     async def aunderlying(self, symbol: str) -> float | None:
         return (await get_quotes([symbol]))[symbol]["price"]
+
+    async def avix(self, symbol: str = "VIX") -> float | None:
+        """Live VIX index level (CBOE). None if unavailable — the caller fails closed."""
+        ib = await get_gateway().get_ib()
+        c = index(symbol)
+        await ib.qualifyContractsAsync(c)
+        t = ib.reqMktData(c, "", False, False)
+        await asyncio.sleep(2)
+        q = normalize_ticker(t)
+        ib.cancelMktData(c)
+        return q["price"]
 
     async def aoption_mid(self, underlying: str, expiry, strike: float, right: str) -> float | None:
         ib = await get_gateway().get_ib()

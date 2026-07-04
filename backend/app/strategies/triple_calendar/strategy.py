@@ -31,6 +31,11 @@ def position_value(source, position: Position, day: date) -> float | None:
 
 def decide_entry(day: date, source, params, events: list[date], vix: float | None) -> Position | None:
     u = params.underlying
+    # Hard VIX gate: skip entry when VIX is known and above the entry ceiling — wait for it
+    # to fall to vix_entry_max or below. (vix=None is permissive here; the live loop enforces
+    # fail-closed by not attempting entry when it can't read VIX.)
+    if vix is not None and vix > params.vix_entry_max:
+        return None
     spot = source.underlying_close(u, day)
     if spot is None:
         return None
