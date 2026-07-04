@@ -42,6 +42,16 @@ async def load_open(strategy_key: str) -> Position | None:
         return _deser(rec.underlying, rec.entry_time, rec.net_debit, rec.calendars)
 
 
+async def load_open_id(strategy_key: str) -> int | None:
+    """The open position's record id, so a restart-while-holding can keep updating it
+    (adjust / exit / live valuation) instead of silently no-op'ing until re-entry."""
+    async with session_scope() as session:
+        return (await session.execute(
+            select(OptionPositionRecord.id).where(
+                OptionPositionRecord.strategy_key == strategy_key,
+                OptionPositionRecord.status == "open"))).scalars().first()
+
+
 async def update_calendars(record_id: int, pos: Position) -> None:
     async with session_scope() as session:
         rec = await session.get(OptionPositionRecord, record_id)

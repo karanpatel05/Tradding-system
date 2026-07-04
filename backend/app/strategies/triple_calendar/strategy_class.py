@@ -15,8 +15,8 @@ from app.strategies.triple_calendar.legs import (atm_strike, expected_move, oute
 from app.strategies.triple_calendar.live import manage_step
 from app.strategies.triple_calendar.live_source import LivePriceSource
 from app.strategies.triple_calendar.params import TripleCalendarParams
-from app.strategies.triple_calendar.store import (close_position, load_open, save_position,
-                                                  update_calendars, update_value)
+from app.strategies.triple_calendar.store import (close_position, load_open, load_open_id,
+                                                  save_position, update_calendars, update_value)
 
 
 def _params() -> TripleCalendarParams:
@@ -92,7 +92,9 @@ class TripleCalendarStrategy(BaseStrategy):
         params = _params()
         src = LivePriceSource()
         position = await load_open(self.key)
-        record_id = None
+        # Recover the record id too, so a restart while holding keeps updating the SAME
+        # record (adjust / exit / live valuation) instead of no-op'ing until re-entry.
+        record_id = await load_open_id(self.key) if position is not None else None
         executor = _make_executor()
         await log_event("Triple Calendar live loop started", category="action",
                         strategy_key=self.key)
