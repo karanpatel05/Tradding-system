@@ -26,9 +26,13 @@ export default function BuilderTab() {
   useEffect(() => { loadTrades(); }, []);
   useEffect(() => { const id = setInterval(loadTrades, 15000); return () => clearInterval(id); }, []);
 
-  const addLeg = () => setLegs((ls) => [...ls, emptyLeg(chain.expirations[0] || "", chain.strikes[Math.floor(chain.strikes.length / 2)] || 0)]);
-  const setLeg = (i, patch) => setLegs((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch } : l)));
-  const removeLeg = (i) => setLegs((ls) => ls.filter((_, j) => j !== i));
+  // Any change to the legs invalidates the fetched quote/payoff: net_debit is what the
+  // monitor's target/stop uses, so it must never be saved against a different leg set.
+  // Clearing it forces a re-fetch (Preview/Save are gated on netDebit != null).
+  const invalidateQuote = () => { setNetDebit(null); setPayoff(null); };
+  const addLeg = () => { setLegs((ls) => [...ls, emptyLeg(chain.expirations[0] || "", chain.strikes[Math.floor(chain.strikes.length / 2)] || 0)]); invalidateQuote(); };
+  const setLeg = (i, patch) => { setLegs((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch, mid: null } : l))); invalidateQuote(); };
+  const removeLeg = (i) => { setLegs((ls) => ls.filter((_, j) => j !== i)); invalidateQuote(); };
 
   const fetchQuotes = async () => {
     setBusy(true); setMsg(null);
