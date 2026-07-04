@@ -2,10 +2,11 @@
 (paper) only — NO orders are ever transmitted."""
 from __future__ import annotations
 
+from typing import Literal
 from datetime import date
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.options import chain as chain_mod
 from app.options import store
@@ -15,8 +16,8 @@ router = APIRouter(prefix="/api/builder", tags=["builder"])
 
 
 class Leg(BaseModel):
-    action: str  # BUY | SELL
-    right: str   # C | P
+    action: Literal["BUY", "SELL"]
+    right: Literal["C", "P"]
     strike: float
     expiry: str  # YYYY-MM-DD
     qty: int = 1
@@ -24,11 +25,11 @@ class Leg(BaseModel):
 
 class QuoteBody(BaseModel):
     underlying: str
-    legs: list[Leg]
+    legs: list[Leg] = Field(min_length=1)
 
 
 class PayoffBody(BaseModel):
-    legs: list[Leg]
+    legs: list[Leg] = Field(min_length=1)
     net_debit: float
     iv: float = 0.25
     r: float | None = None
@@ -40,7 +41,7 @@ class PayoffBody(BaseModel):
 
 class SaveBody(BaseModel):
     underlying: str
-    legs: list[Leg]
+    legs: list[Leg] = Field(min_length=1)
     net_debit: float
     iv: float = 0.25
     target_pct: float | None = None
@@ -94,7 +95,7 @@ async def payoff(body: PayoffBody) -> dict:
     r = body.r if body.r is not None else 0.04
     ev = date.fromisoformat(body.eval_date) if body.eval_date else min(
         date.fromisoformat(leg["expiry"]) for leg in legs)
-    lo, hi = (body.lo, body.hi) if body.lo and body.hi else _strike_span(legs)
+    lo, hi = (body.lo, body.hi) if body.lo is not None and body.hi is not None else _strike_span(legs)
     curve = payoff_curve(legs, body.net_debit, ev, body.iv, r, lo, hi, body.points)
     return {"curve": curve, "eval_date": ev.isoformat(), **curve_stats(curve)}
 

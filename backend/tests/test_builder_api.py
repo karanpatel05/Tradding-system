@@ -28,3 +28,19 @@ async def test_payoff_and_save_and_list():
 
     closed = await builder.close_trade_route(saved["id"])
     assert closed["status"] == "closed" and closed["exit_reason"] == "manual"
+
+
+@pytest.mark.asyncio
+async def test_empty_legs_rejected():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        builder.PayoffBody(legs=[], net_debit=2.0, iv=0.25)
+    with pytest.raises(ValidationError):
+        builder.SaveBody(underlying="QQQ", legs=[], net_debit=2.0, iv=0.25)
+
+
+@pytest.mark.asyncio
+async def test_invalid_leg_action_rejected():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        builder.Leg(action="buy", right="C", strike=100.0, expiry="2026-07-31", qty=1)
