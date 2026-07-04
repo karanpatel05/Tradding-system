@@ -73,6 +73,7 @@ class Settings(BaseSettings):
     tc_underlying: str = "QQQ"
     tc_event_dates: str = ""                 # comma-separated ISO dates (FOMC/CPI)
     tc_manage_interval_seconds: int = 300
+    builder_monitor_interval_seconds: int = 60  # options-builder paper-trade revaluation cadence
 
     # --- Session persistence ---
     # When True, the login refresh token + app session id are written to

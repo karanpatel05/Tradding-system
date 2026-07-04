@@ -51,6 +51,8 @@ async def lifespan(app: FastAPI):
         logger.warning("IBKR not connected at startup; workers stay paused until READY")
     asyncio.create_task(gw.supervise())
     await _resume_active_workers()
+    from app.options.monitor import run_builder_monitor
+    asyncio.create_task(run_builder_monitor())
     yield
     logger.info("Shutting down")
 
