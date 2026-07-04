@@ -76,6 +76,19 @@ export const api = {
   // Options-aware detail for a multi-leg strategy (Triple Calendar): legs, DTE, net
   // debit, live value/P&L, target/stop progress, breach distances + operational status.
   optionsPosition: (key) => request(`/api/strategies/${key}/options-position`),
+  // Options Strategy Builder (tracked paper trades — no orders transmitted).
+  builderChain: (underlying) => request(`/api/builder/chain?underlying=${encodeURIComponent(underlying)}`),
+  builderQuote: (underlying, legs) =>
+    request(`/api/builder/quote`, { method: "POST", body: JSON.stringify({ underlying, legs }) }),
+  builderPayoff: (body) =>
+    request(`/api/builder/payoff`, { method: "POST", body: JSON.stringify(body) }),
+  builderSaveTrade: (body) =>
+    request(`/api/builder/trades`, { method: "POST", body: JSON.stringify(body) }),
+  builderTrades: (status) =>
+    request(`/api/builder/trades${status ? `?status=${status}` : ""}`),
+  builderTrade: (id) => request(`/api/builder/trades/${id}`),
+  builderCloseTrade: (id) =>
+    request(`/api/builder/trades/${id}/close`, { method: "POST" }),
   // Streaming backtest: reads NDJSON progress lines, calls onProgress({scanned,
   // total, symbol}) as the universe is scanned, and resolves with the final result.
   backtestStream: async (key, cfg = {}, onProgress) => {
