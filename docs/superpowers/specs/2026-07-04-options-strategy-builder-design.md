@@ -79,6 +79,12 @@ close `target` when `pnl_pct >= target_pct`, `stop` when `pnl_pct <= −stop_pct
 
 Reads/quotes require the broker connection; valuation degrades gracefully when disconnected.
 
+- `GET /chain?underlying=SYM` — the underlying's option chain from
+  `reqSecDefOptParamsAsync` (SMART): `{underlying, expirations:["YYYY-MM-DD",...],
+  strikes:[float,...]}`, both sorted. Expirations come from `ch.expirations` (converted from
+  `"YYYYMMDD"`); strikes from `ch.strikes`. Powers the leg-builder dropdowns so the user picks
+  from **all available expiries** (and strikes), not free-form text. (Strikes are returned
+  across all expirations, not per-expiry — a v1 simplification, same as the existing `achain`.)
 - `POST /quote` — body `{underlying, legs}` → fetch each leg's live mid (concurrent
   `aoption_mid`), return `{legs:[{...,mid}], net_debit, missing:[...]}`. Used by "Fetch quotes".
 - `POST /payoff` — body `{legs, net_debit, iv, r?, eval_date?, lo?, hi?, points?}` →
@@ -113,8 +119,10 @@ No orders, so no kill-switch/flatten coupling is required; the task ends on app 
 `frontend/src/components/BuilderTab.jsx` + `PayoffChart.jsx` (+ small leg-row + trade-list
 subviews). Dark theme, indigo accent, Recharts (already used).
 
-1. **Build** — underlying input; a legs table (add/remove rows: BUY/SELL · C/P · strike ·
-   expiry · qty). "Fetch quotes" → per-leg mid + **net debit/credit**.
+1. **Build** — underlying input; on entry, fetch `/chain` to populate dropdowns. A legs table
+   (add/remove rows: BUY/SELL · C/P · **strike (dropdown of available strikes)** · **expiry
+   (dropdown of all available expiries)** · qty). "Fetch quotes" → per-leg mid + **net
+   debit/credit**. (A refresh control re-pulls the chain.)
 2. **Preview** — IV field (default 0.25), eval-date selector (default nearest expiry), and the
    **payoff chart** (P&L vs. underlying) with breakeven markers and a zero line. Recharts area/line.
 3. **Save** — target % and stop % inputs, then **Save trade** (persists; no transmission). A
@@ -122,8 +130,9 @@ subviews). Dark theme, indigo accent, Recharts (already used).
 4. **Tracked trades** — list of saved trades (open + closed) with live P&L, target/stop
    progress, and `stale` badge; click for detail + payoff. Open rows poll (~15s) like the TC page.
 
-`frontend/src/api.js`: `builderQuote`, `builderPayoff`, `builderSaveTrade`, `builderTrades`,
-`builderTrade`, `builderCloseTrade`. `App.jsx`: add `Builder` to `TABS` + sidebar icon.
+`frontend/src/api.js`: `builderChain`, `builderQuote`, `builderPayoff`, `builderSaveTrade`,
+`builderTrades`, `builderTrade`, `builderCloseTrade`. `App.jsx`: add `Builder` to `TABS` +
+sidebar icon.
 
 ## Testing
 
@@ -132,6 +141,8 @@ subviews). Dark theme, indigo accent, Recharts (already used).
 - **combo/payoff** (`test_options_combo.py`): `combo_value` sign/qty math; `payoff_at` for a
   vertical (clean intrinsic at expiry) and a calendar (long leg retains BS value at the near
   expiry → tent shape); breakeven/max-profit extraction.
+- **Chain** (`test_builder_chain.py`): a fake `reqSecDefOptParamsAsync` (SMART chain with
+  `expirations`/`strikes`) → `/chain` returns sorted ISO expirations + float strikes.
 - **Endpoints/monitor** (`test_builder_trades.py`): save → list returns it; `/payoff` returns a
   curve; monitor tick with a fake mid source drives a debit trade to `target` and to `stop`
   (auto-close, correct `exit_reason`/`pnl`); credit trade tracks P&L but never %-auto-closes;
