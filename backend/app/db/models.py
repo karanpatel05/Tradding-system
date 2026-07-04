@@ -121,6 +121,30 @@ class OptionPositionRecord(Base):
     valued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class BuilderPositionRecord(Base):
+    """A user-built, tracked-only (paper) multi-leg options trade. No orders are ever
+    transmitted; a monitor revalues it from live mids and paper-closes on target/stop."""
+
+    __tablename__ = "builder_positions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    underlying: Mapped[str] = mapped_column(String(16))
+    legs: Mapped[list] = mapped_column(JSON, default=list)   # canonical leg dicts
+    net_debit: Mapped[float] = mapped_column(Float, default=0.0)  # per 1x; debit>0, credit<0
+    iv: Mapped[float] = mapped_column(Float, default=0.25)   # IV used for the saved payoff
+    target_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stop_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(8), default="open")  # open | closed
+    entry_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    exit_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    exit_reason: Mapped[str | None] = mapped_column(String(8), nullable=True)  # target|stop|manual
+    pnl: Mapped[float | None] = mapped_column(Float, nullable=True)          # realized $ at close
+    last_value: Mapped[float | None] = mapped_column(Float, nullable=True)   # per 1x
+    last_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)     # $ unrealized
+    last_pnl_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    valued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class SystemFlag(Base):
     """Tiny key/value flags for engine-wide state (e.g. safe_mode)."""
 
