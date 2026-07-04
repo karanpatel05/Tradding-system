@@ -5,6 +5,7 @@ import Dashboard from "./components/Dashboard.jsx";
 import StrategiesTab from "./components/StrategiesTab.jsx";
 import CalendarTab from "./components/CalendarTab.jsx";
 import ApiTab from "./components/ApiTab.jsx";
+import BuilderTab from "./components/BuilderTab.jsx";
 import SafeModeBanner from "./components/SafeModeBanner.jsx";
 import ConnectionBanner from "./components/ConnectionBanner.jsx";
 
@@ -15,6 +16,7 @@ const Icon = ({ name }) => {
     Strategies: "M13 2L3 14h7l-1 8 10-12h-7l1-8z",
     Journal: "M7 2h10a2 2 0 012 2v16l-7-3-7 3V4a2 2 0 012-2z",
     API: "M12.65 10A6 6 0 1 0 7 14h.65l4.35 4.35V21h3v-3h3v-3h2v-5h-7.35zM7 12a2 2 0 1 1 0-4 2 2 0 0 1 0 4z",
+    Builder: "M4 4h16v4H4V4zm0 6h10v4H4v-4zm0 6h16v4H4v-4z",
   };
   return (
     <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
@@ -23,7 +25,7 @@ const Icon = ({ name }) => {
   );
 };
 
-const TABS = ["Dashboard", "Strategies", "Journal", "API"];
+const TABS = ["Dashboard", "Strategies", "Builder", "Journal", "API"];
 
 export default function App() {
   const [auth, setAuth] = useState(null); // null = loading
@@ -130,6 +132,7 @@ export default function App() {
           <StrategiesTab focusKey={focusKey} onFocusHandled={() => setFocusKey(null)} />
         )}
         {tab === "Journal" && <CalendarTab />}
+        {tab === "Builder" && <BuilderTab />}
         {tab === "API" && <ApiTab onChange={refresh} />}
       </main>
     </div>
