@@ -31,6 +31,9 @@ class BaseStrategy(ABC):
     name: str = ""
     #: Flip to True once real rules exist. Gates activation/allocation everywhere.
     ready: bool = False
+    #: True for multi-leg options strategies (e.g. Triple Calendar). The frontend uses
+    #: this to render the options-aware detail page instead of the equity layout.
+    is_options: bool = False
 
     # --- metadata (shown in the Strategy tab once ready) ------------------
     description: str = "Coming Soon"
@@ -48,6 +51,7 @@ class BaseStrategy(ABC):
             "key": self.key,
             "name": self.name,
             "ready": True,
+            "is_options": self.is_options,
             "description": self.description,
             "rules": self.rules,
             "entry_logic": self.entry_logic,

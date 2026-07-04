@@ -16,7 +16,7 @@ from app.strategies.triple_calendar.live import manage_step
 from app.strategies.triple_calendar.live_source import LivePriceSource
 from app.strategies.triple_calendar.params import TripleCalendarParams
 from app.strategies.triple_calendar.store import (close_position, load_open, save_position,
-                                                  update_calendars)
+                                                  update_calendars, update_value)
 
 
 def _params() -> TripleCalendarParams:
@@ -111,6 +111,14 @@ class TripleCalendarStrategy(BaseStrategy):
                     snapshot = await _resolve_snapshot(src, params, spot, strikes, today, position)
                     out = await manage_step(today, snapshot, params, executor, position)
                     position, record_id = await self._persist(out, record_id)
+                    # Persist the live valuation the core already computed this tick so the
+                    # detail page can show P&L with no extra IBKR fetch (in-memory snapshot).
+                    if position is not None and record_id is not None and position.net_debit:
+                        from app.strategies.triple_calendar.strategy import position_value
+                        val = position_value(snapshot, position, today)
+                        if val is not None:
+                            await update_value(record_id, val,
+                                               (val - position.net_debit) / position.net_debit, spot)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001

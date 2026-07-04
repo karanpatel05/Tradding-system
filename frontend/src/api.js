@@ -73,6 +73,9 @@ export const api = {
   backtestLast: (key) => request(`/api/strategies/${key}/backtest/last`),
   // Live detail/metrics for the strategy's open position (TP/SL/fill/live price).
   position: (key) => request(`/api/strategies/${key}/position`),
+  // Options-aware detail for a multi-leg strategy (Triple Calendar): legs, DTE, net
+  // debit, live value/P&L, target/stop progress, breach distances + operational status.
+  optionsPosition: (key) => request(`/api/strategies/${key}/options-position`),
   // Streaming backtest: reads NDJSON progress lines, calls onProgress({scanned,
   // total, symbol}) as the universe is scanned, and resolves with the final result.
   backtestStream: async (key, cfg = {}, onProgress) => {

@@ -113,6 +113,12 @@ class OptionPositionRecord(Base):
     pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
     calendars: Mapped[list] = mapped_column(JSON, default=list)   # [{strike, sell, buy}]
     order_ids: Mapped[list] = mapped_column(JSON, default=list)
+    # Live valuation, refreshed by the manage loop each tick (no extra IBKR calls — it
+    # reuses the value it already computes for target/stop). Null until first valued.
+    last_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_pnl_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_spot: Mapped[float | None] = mapped_column(Float, nullable=True)
+    valued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class SystemFlag(Base):

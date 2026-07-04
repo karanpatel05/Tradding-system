@@ -50,6 +50,18 @@ async def update_calendars(record_id: int, pos: Position) -> None:
             rec.net_debit = pos.net_debit
 
 
+async def update_value(record_id: int, value: float, pnl_pct: float, spot: float | None) -> None:
+    """Persist the live valuation the manage loop already computed this tick, so the
+    detail page can show P&L without any extra IBKR fetch."""
+    async with session_scope() as session:
+        rec = await session.get(OptionPositionRecord, record_id)
+        if rec:
+            rec.last_value = value
+            rec.last_pnl_pct = pnl_pct
+            rec.last_spot = spot
+            rec.valued_at = datetime.now(timezone.utc)
+
+
 async def close_position(record_id: int, pnl: float) -> None:
     async with session_scope() as session:
         rec = await session.get(OptionPositionRecord, record_id)

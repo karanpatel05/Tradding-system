@@ -49,6 +49,25 @@ async def _state(key: str) -> StrategyState | None:
         return await session.get(StrategyState, key)
 
 
+def _conn_ready() -> bool:
+    """True when the IBKR Gateway has fully recovered (trading-permitted state)."""
+    from app.ibkr.gateway import ConnState, get_gateway
+    try:
+        return get_gateway().state is ConnState.READY
+    except Exception:  # noqa: BLE001 — never fail the page on a gateway hiccup
+        return False
+
+
+def _market_open() -> tuple[dict, bool]:
+    """(status dict, is_open) for the regular session; degrade to closed on error."""
+    from app.services.market import get_market_status
+    try:
+        status = get_market_status()
+        return status, bool(status.get("is_open"))
+    except Exception:  # noqa: BLE001
+        return {}, False
+
+
 @router.get("")
 async def list_all() -> dict:
     out = []
@@ -183,6 +202,118 @@ async def position_detail(key: str) -> dict:
         if live is not None and abs(target - entry):
             # 0 at entry, 1 at target (can exceed 1 / go negative toward stop).
             out["progress_to_target"] = round((live - entry) * direction / abs(target - entry), 4)
+    return out
+
+
+async def _open_option_record(key: str):
+    """The strategy's open multi-leg options position record (it holds at most one), or None."""
+    async with session_scope() as session:
+        from sqlalchemy import select
+        from app.db.models import OptionPositionRecord
+        return (await session.execute(
+            select(OptionPositionRecord).where(
+                OptionPositionRecord.strategy_key == key,
+                OptionPositionRecord.status == "open"))).scalars().first()
+
+
+@router.get("/{key}/options-position")
+async def options_position(key: str) -> dict:
+    """Options-aware detail for a multi-leg strategy's open position (Triple Calendar).
+
+    Reads the persisted ``OptionPositionRecord`` plus the live valuation the manage loop
+    already computed — **no IBKR calls here**, so it's instant and can be polled. Live
+    fields are null when flat / never valued. ``has_position`` is False when flat."""
+    from datetime import date, datetime, timezone
+
+    from app.strategies.triple_calendar.params import TripleCalendarParams
+
+    _require_ready(key)
+    running = engine_manager.is_running(key)
+    conn_ready = _conn_ready()
+    _, market_open = _market_open()
+    last_signal, last_trade = await _last_event_times(key)
+
+    base = {
+        "has_position": False,
+        "running": running,
+        "broker_connected": session_manager.is_authenticated(),
+        "conn_ready": conn_ready,
+        "market_open": market_open,
+        "live_orders_enabled": get_settings().enable_live_orders,
+        "last_signal_time": last_signal,
+        "last_trade_time": last_trade,
+        "underlying": getattr(get_settings(), "tc_underlying", None) or TripleCalendarParams().underlying,
+    }
+
+    rec = await _open_option_record(key)
+    if rec is None:
+        return base
+
+    p = TripleCalendarParams()
+    today = date.today()
+    net = rec.net_debit or 0.0
+    calendars = []
+    for c in rec.calendars or []:
+        se = date.fromisoformat(c["sell"])
+        be = date.fromisoformat(c["buy"])
+        calendars.append({
+            "strike": c["strike"],
+            "sell_expiry": c["sell"], "buy_expiry": c["buy"],
+            "sell_dte": (se - today).days, "buy_dte": (be - today).days,
+        })
+    strikes = [c["strike"] for c in rec.calendars or []]
+    lower_strike = min(strikes) if strikes else None
+    upper_strike = max(strikes) if strikes else None
+
+    value = rec.last_value
+    pnl_pct = rec.last_pnl_pct
+    spot = rec.last_spot
+    valued_at = rec.valued_at
+    # Stale if the loop hasn't revalued within ~2 manage intervals (market closed / down).
+    stale = False
+    if valued_at is not None:
+        va = valued_at if valued_at.tzinfo else valued_at.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - va).total_seconds()
+        stale = age > 2 * get_settings().tc_manage_interval_seconds
+
+    out = {
+        **base,
+        "has_position": True,
+        "underlying": rec.underlying,
+        "status": rec.status,
+        "paper": rec.paper,
+        "entry_time": rec.entry_time.isoformat() if rec.entry_time else None,
+        # entry_time is stored UTC-aware, so measure the hold in UTC too (comparing to the
+        # local date could read one day off across the UTC/local boundary). Never negative.
+        "days_held": max(0, (datetime.now(timezone.utc).date() - rec.entry_time.date()).days)
+                     if rec.entry_time else None,
+        "net_debit": round(net, 4),
+        "calendars": calendars,
+        "target_value": round(net * (1 + p.profit_target), 4),
+        "stop_value": round(net * (1 - p.stop_loss_pct), 4),
+        "profit_target_pct": p.profit_target,
+        "stop_loss_pct": p.stop_loss_pct,
+        "vix_threshold": p.vix_threshold,
+        "value": round(value, 4) if value is not None else None,
+        "unrealized_pct": round(pnl_pct, 6) if pnl_pct is not None else None,
+        # Per-share calendar debit → dollars per contract (v1 assumes size = 1 contract).
+        "unrealized_pnl": round((value - net) * 100, 2) if value is not None else None,
+        "spot": round(spot, 4) if spot is not None else None,
+        "valued_at": valued_at.isoformat() if valued_at else None,
+        "stale": stale,
+    }
+    if pnl_pct is not None and p.profit_target:
+        out["progress_to_target"] = round(pnl_pct / p.profit_target, 4)
+    if pnl_pct is not None and p.stop_loss_pct:
+        out["distance_to_stop"] = round(max(0.0, -pnl_pct) / p.stop_loss_pct, 4)
+    if spot and lower_strike is not None and upper_strike is not None:
+        out["breach"] = {
+            "lower_strike": lower_strike, "upper_strike": upper_strike,
+            "dist_lower_pct": round((lower_strike - spot) / spot, 6),
+            "dist_upper_pct": round((upper_strike - spot) / spot, 6),
+        }
+    else:
+        out["breach"] = None
     return out
 
 
