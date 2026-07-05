@@ -46,3 +46,67 @@ def test_manage_exits_when_roll_disabled():
     assert act == "exit" and info["reason"] == "target"
     act, info = manage(_pos(), DAY, _Src(7.5), p)
     assert act == "exit" and info["reason"] == "stop_loss"
+
+
+class _EntrySrc:
+    """Supports decide_entry (spot/chain/option_close) AND management valuation. The open
+    calendar is worth `value`; fresh entries build from the same rising-with-DTE curve."""
+    def __init__(self, value, spot=445.0):
+        self.value, self.spot = value, spot
+        self.strikes = [float(r) for r in range(400, 491, 5)]
+    def underlying_close(self, u, d):
+        return self.spot
+    def chain_strikes(self, u, e):
+        return self.strikes
+    def option_close(self, u, expiry, strike, right, d):
+        # The seeded position's strike (725) values cleanly: buy leg -> `value`, sell leg -> 0,
+        # so its calendar value == `value`. Fresh decide_entry uses strikes near ATM (~445),
+        # which fall to the rising-with-DTE curve -> a positive-debit structure.
+        if strike == 725.0:
+            return self.value if expiry == BUY else 0.0
+        return 1.0 + 0.1 * max((expiry - d).days, 0)
+
+
+class _Exec:
+    def __init__(self):
+        self.calls = []
+    async def __call__(self, underlying, legs, **kw):
+        self.calls.append((kw.get("reason"), kw.get("action"), len(legs)))
+        return {"transmitted": False, "paper": True, "order_id": None}
+
+
+@pytest.mark.asyncio
+async def test_manage_step_roll_reopens_when_vix_ok():
+    from app.strategies.triple_calendar.live import manage_step
+    ex = _Exec()
+    p = TripleCalendarParams()
+    out = await manage_step(DAY, _EntrySrc(7.5), p, ex, position=_pos(), vix=12.0)  # -25% stop
+    assert out["action"] == "roll" and out["info"]["reopened"] is True
+    assert out["position"] is not None
+    assert out["info"]["closed_pnl"] == pytest.approx(-2.5)   # 7.5 - 10.0
+    reasons = [c[0] for c in ex.calls]
+    assert "roll_stop_loss" in reasons and "roll_entry" in reasons   # a SELL then a BUY
+
+
+@pytest.mark.asyncio
+async def test_manage_step_roll_target_reopens():
+    from app.strategies.triple_calendar.live import manage_step
+    ex = _Exec()
+    out = await manage_step(DAY, _EntrySrc(11.0), TripleCalendarParams(), ex,
+                            position=_pos(), vix=12.0)  # +10% target
+    assert out["action"] == "roll" and out["info"]["reason"] == "target"
+    assert out["info"]["closed_pnl"] == pytest.approx(1.0) and out["info"]["reopened"] is True
+
+
+@pytest.mark.asyncio
+async def test_manage_step_roll_fail_closed_no_reopen():
+    from app.strategies.triple_calendar.live import manage_step
+    # vix=None (unreadable) and vix>16 must both close WITHOUT reopening.
+    for vix in (None, 17.0):
+        ex = _Exec()
+        out = await manage_step(DAY, _EntrySrc(7.5), TripleCalendarParams(), ex,
+                                position=_pos(), vix=vix)
+        assert out["action"] == "roll" and out["position"] is None
+        assert out["info"]["reopened"] is False
+        actions = [c[1] for c in ex.calls]
+        assert actions == ["SELL"], f"expected close-only, got {ex.calls} (vix={vix})"

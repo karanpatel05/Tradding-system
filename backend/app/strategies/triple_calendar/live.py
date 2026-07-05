@@ -56,6 +56,25 @@ async def manage_step(day: date, source, params, executor, position: Position | 
         await executor(position.underlying, adjustment_legs(cal), net_price=None,
                        action="BUY", reason="adjust")
         return {"action": "adjust", "position": position, "info": info}
+    if act == "roll":
+        reason = info.get("reason", "roll")
+        value = info.get("value")
+        if value is None:
+            value = position_value(source, position, day) or position.net_debit
+        closed_pnl = value - position.net_debit
+        # Close the current position (realize P&L).
+        await executor(position.underlying, exit_legs(position), net_price=None,
+                       action="SELL", reason=f"roll_{reason}")
+        # Reopen at the current level. Fail closed: never reopen without a VIX reading; a
+        # readable VIX still passes through decide_entry's <=16 / event / debit gates.
+        new_pos = decide_entry(day, source, params, events, vix) if vix is not None else None
+        if new_pos is not None:
+            await executor(new_pos.underlying, entry_legs(new_pos),
+                           net_price=round(new_pos.net_debit, 2), action="BUY", reason="roll_entry")
+            return {"action": "roll", "position": new_pos,
+                    "info": {"reason": reason, "closed_pnl": closed_pnl, "reopened": True}}
+        return {"action": "roll", "position": None,
+                "info": {"reason": reason, "closed_pnl": closed_pnl, "reopened": False}}
     if act == "exit":
         value = info.get("value")
         if value is None:
