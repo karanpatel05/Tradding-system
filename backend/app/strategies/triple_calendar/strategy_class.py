@@ -100,46 +100,44 @@ class TripleCalendarStrategy(BaseStrategy):
         await log_event("Triple Calendar live loop started", category="action",
                         strategy_key=self.key)
         while True:
-            # Pause unless the connection is READY (recovery passed, not SAFE_MODE / disconnected)
-            # AND the regular market session is open — don't enter/manage on stale pre/post-market
-            # quotes (calendars are multi-day holds; pausing overnight is fine).
+            # Pause unless READY AND the regular session is open — no trading on stale quotes.
             if get_gateway().state is not ConnState.READY or not get_market_status()["is_open"]:
                 await asyncio.sleep(get_settings().tc_manage_interval_seconds)
                 continue
+            vix = None
             try:
                 today = datetime.now().date()
                 spot = await src.aunderlying(params.underlying)
                 if spot is not None:
-                    # Only take an entry when VIX is at or below the ceiling. When flat, read
-                    # VIX and fail closed: if it can't be read, skip the entry attempt this
-                    # tick (don't enter blind). VIX isn't needed while managing an open position.
-                    vix = None
-                    proceed = True
-                    if position is None:
-                        vix = await src.avix()
-                        if vix is None:
-                            await log_event("Triple Calendar: skipping entry — VIX unavailable "
-                                            "(fail-closed)", category="decision", strategy_key=self.key)
-                            proceed = False
-                    if proceed:
+                    # Fetch VIX every tick: a holding tick may roll and must gate its re-entry.
+                    vix = await src.avix()
+                    # Flat entry is fail-closed: no VIX reading -> don't enter this tick.
+                    if position is None and vix is None:
+                        await log_event("Triple Calendar: skipping entry — VIX unavailable "
+                                        "(fail-closed)", category="decision", strategy_key=self.key)
+                    else:
                         strikes = await src.achain(params.underlying)
                         snapshot = await _resolve_snapshot(src, params, spot, strikes, today, position)
                         out = await manage_step(today, snapshot, params, executor, position, vix=vix)
                         position, record_id = await self._persist(out, record_id)
-                    # Persist the live valuation the core already computed this tick so the
-                    # detail page can show P&L with no extra IBKR fetch (in-memory snapshot).
-                    if position is not None and record_id is not None and position.net_debit:
-                        from app.strategies.triple_calendar.strategy import position_value
-                        val = position_value(snapshot, position, today)
-                        if val is not None:
-                            await update_value(record_id, val,
-                                               (val - position.net_debit) / position.net_debit, spot)
+                        # Persist the live valuation the core computed (in-memory snapshot).
+                        if position is not None and record_id is not None and position.net_debit:
+                            from app.strategies.triple_calendar.strategy import position_value
+                            val = position_value(snapshot, position, today)
+                            if val is not None:
+                                await update_value(record_id, val,
+                                                   (val - position.net_debit) / position.net_debit, spot)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001
                 await log_event("Triple Calendar tick error", level="warning",
                                 category="decision", strategy_key=self.key)
-            await asyncio.sleep(get_settings().tc_manage_interval_seconds)
+            # Adaptive cadence: fast-poll VIX while flat + above the entry ceiling (or unreadable),
+            # otherwise the normal multi-day manage interval.
+            poll = get_settings().tc_manage_interval_seconds
+            if position is None and (vix is None or vix > params.vix_entry_max):
+                poll = get_settings().vix_wait_poll_seconds
+            await asyncio.sleep(poll)
 
     async def _persist(self, out, record_id):
         action, position = out["action"], out["position"]
@@ -154,6 +152,19 @@ class TripleCalendarStrategy(BaseStrategy):
             await log_event(f"ADJUST triple calendar {out['info'].get('side')}",
                             category="trade", strategy_key=self.key)
             return position, record_id
+        if action == "roll" and record_id is not None:
+            await close_position(record_id, pnl=out["info"].get("closed_pnl", 0.0))
+            reason = out["info"].get("reason", "roll")
+            await log_event(f"ROLL close ({reason}) pnl {out['info'].get('closed_pnl', 0.0):.2f}",
+                            category="trade", strategy_key=self.key)
+            new_pos = out["position"]
+            if new_pos is not None:
+                rid = await save_position(self.key, new_pos, order_ids=[],
+                                          paper=not get_settings().enable_live_orders)
+                await log_event(f"ROLL reopen {new_pos.underlying} debit {new_pos.net_debit:.2f}",
+                                category="trade", strategy_key=self.key)
+                return new_pos, rid
+            return None, None
         if action == "exit" and record_id is not None:
             await close_position(record_id, pnl=out["info"].get("pnl", 0.0))
             await log_event(f"EXIT triple calendar ({out['info'].get('reason')})",
