@@ -81,9 +81,10 @@ class TripleCalendarStrategy(BaseStrategy):
     rules = ["Only enter when VIX ≤ 16 (wait for it to fall otherwise)",
              "Sell 21DTE / buy 28DTE calendars at lower/ATM/upper strikes",
              "Outer strikes from the ATM straddle expected move + buffer",
-             "Close at +10% of net debit or -25% stop-loss; add calendars on a strike breach"]
+             "At +10% target or -25% stop: roll — close and reopen at the current level (VIX ≤ 16)",
+             "Add calendars on a strike breach"]
     entry_logic = "Three calendars around ATM; widths from the expected move. Only when VIX ≤ 16."
-    exit_logic = "10% debit target / -25% stop-loss / breach adjustments."
+    exit_logic = "+10% target / -25% stop both roll into a fresh calendar at the current level (VIX ≤ 16); breach adds a calendar."
     selection_criteria = "Single configured underlying (default QQQ)."
 
     async def scan(self, universe):  # not a stock-picker
