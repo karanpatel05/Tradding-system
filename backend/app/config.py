@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     tc_event_dates: str = ""                 # comma-separated ISO dates (FOMC/CPI)
     tc_manage_interval_seconds: int = 300
     builder_monitor_interval_seconds: int = 60  # options-builder paper-trade revaluation cadence
+    vix_wait_poll_seconds: int = 5   # while flat + VIX > entry ceiling, re-check VIX this often
 
     # --- Session persistence ---
     # When True, the login refresh token + app session id are written to

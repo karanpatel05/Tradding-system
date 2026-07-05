@@ -8,5 +8,6 @@ def test_defaults():
     assert p.profit_target == 0.10 and p.stop_loss_pct == 0.25
     assert p.vix_threshold == 13.0 and p.vix_scale == 0.5
     assert p.vix_entry_max == 16.0
+    assert p.roll_on_exit is True
     assert p.max_calendars == 4 and p.allow_fifth is False
     assert p.event_dates == []
