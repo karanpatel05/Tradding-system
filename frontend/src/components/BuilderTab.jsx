@@ -112,7 +112,7 @@ export default function BuilderTab() {
         </div>
       </section>
 
-      <ChainGrid underlying={underlying} expirations={chain.expirations} onAddLeg={addLegFromChain} />
+      <ChainGrid key={underlying} underlying={underlying} expirations={chain.expirations} onAddLeg={addLegFromChain} />
 
       <section className="card">
         <div className="row between center">

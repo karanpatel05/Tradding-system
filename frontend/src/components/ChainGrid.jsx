@@ -62,12 +62,12 @@ export default function ChainGrid({ underlying, expirations = [], onAddLeg }) {
               {data.rows.map((r) => (
                 <tr key={r.strike} className={r.strike === data.atm ? "atm" : ""}>
                   <td className={`price call ${r.call_mid == null ? "muted" : ""}`}
-                    onClick={() => r.call_mid != null && onAddLeg({ action: "BUY", right: "C", strike: r.strike, expiry, qty: 1 })}>
+                    onClick={() => r.call_mid != null && onAddLeg({ action: "BUY", right: "C", strike: r.strike, expiry: data.expiry, qty: 1 })}>
                     {mid(r.call_mid)}
                   </td>
                   <td className="strike num">{r.strike}</td>
                   <td className={`price put ${r.put_mid == null ? "muted" : ""}`}
-                    onClick={() => r.put_mid != null && onAddLeg({ action: "BUY", right: "P", strike: r.strike, expiry, qty: 1 })}>
+                    onClick={() => r.put_mid != null && onAddLeg({ action: "BUY", right: "P", strike: r.strike, expiry: data.expiry, qty: 1 })}>
                     {mid(r.put_mid)}
                   </td>
                 </tr>
