@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
 import PayoffChart from "./PayoffChart.jsx";
+import ChainGrid from "./ChainGrid.jsx";
 
 const money = (n) => (n == null ? "—" : `${n >= 0 ? "+" : "−"}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 const emptyLeg = (expiry, strike) => ({ action: "BUY", right: "C", strike, expiry, qty: 1 });
@@ -33,6 +34,7 @@ export default function BuilderTab() {
   const addLeg = () => { setLegs((ls) => [...ls, emptyLeg(chain.expirations[0] || "", chain.strikes[Math.floor(chain.strikes.length / 2)] || 0)]); invalidateQuote(); };
   const setLeg = (i, patch) => { setLegs((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch, mid: null } : l))); invalidateQuote(); };
   const removeLeg = (i) => { setLegs((ls) => ls.filter((_, j) => j !== i)); invalidateQuote(); };
+  const addLegFromChain = (leg) => { setLegs((ls) => [...ls, { ...leg, mid: null }]); invalidateQuote(); };
 
   const fetchQuotes = async () => {
     setBusy(true); setMsg(null);
@@ -109,6 +111,8 @@ export default function BuilderTab() {
           <span className="muted">Net: <b>{debitLabel}</b></span>
         </div>
       </section>
+
+      <ChainGrid underlying={underlying} expirations={chain.expirations} onAddLeg={addLegFromChain} />
 
       <section className="card">
         <div className="row between center">

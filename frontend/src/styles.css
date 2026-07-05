@@ -473,3 +473,20 @@ li { margin: 3px 0; }
   border-radius: 8px; padding: 6px 8px; font-size: 13px;
 }
 .builder-tab .table td { padding: 8px 10px; }
+
+/* ===================== option chain grid (builder) ===================== */
+.chain-card .badge{display:inline-block;background:var(--surface-3);color:var(--muted);border-radius:6px;padding:1px 7px;font-size:11px;font-family:var(--num);margin-left:8px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 6px}
+.chip{padding:7px 12px;border-radius:20px;font-size:12.5px;cursor:pointer;background:var(--surface-2);border:1px solid var(--border);color:var(--text);white-space:nowrap}
+.chip .dte{color:var(--faint);margin-left:6px;font-family:var(--num)}
+.chip.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent-bright)}
+.chip.active .dte{color:var(--accent-bright)}
+.chain-grid td{text-align:center;font-family:var(--num);font-variant-numeric:tabular-nums}
+.chain-grid th.callh,.chain-grid th.puth,.chain-grid th.strikeh{text-align:center}
+.chain-grid th.callh{color:var(--green)} .chain-grid th.puth{color:var(--red)}
+.chain-grid .call{color:var(--green)} .chain-grid .put{color:var(--red)} .chain-grid .strike{color:var(--text)}
+.chain-grid .price{cursor:pointer;border-radius:7px}
+.chain-grid .price.muted{cursor:default;color:var(--faint)}
+.chain-grid .price:not(.muted):hover{background:var(--accent-soft);color:var(--accent-bright)}
+.chain-grid tr.atm td{background:rgba(99,102,241,.07)}
+.chain-grid tr.atm .strike{color:var(--accent-bright);font-weight:700}
