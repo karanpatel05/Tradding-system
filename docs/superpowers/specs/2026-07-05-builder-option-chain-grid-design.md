@@ -28,7 +28,10 @@ strikes" summary; this surfaces it.
 the module-level `get_option_chain` (both monkeypatchable).
 1. `spot = (await get_quotes([underlying]))[underlying]["price"]`.
 2. `strikes = (await get_option_chain(underlying))["strikes"]` (sorted floats).
-3. If `spot is None` or no strikes → return `{underlying, expiry, spot, atm: None, count, rows: []}`.
+3. If `spot` is unavailable or no strikes → return `{underlying, expiry, spot, atm: None, count,
+   rows: []}`. **"Unavailable" means `spot is None` OR `spot <= 0`** — IBKR returns `-1` (a
+   sentinel), not `None`, when the underlying has no live quote (e.g. market closed / no
+   subscription). Do not treat `-1` as a real price.
 4. `atm = min(strikes, key=lambda s: abs(s - spot))`; take the index window `[i-count, i+count]`
    (clamped to bounds) → `window` (up to `2*count+1` strikes).
 5. Concurrently fetch call+put mids: build tasks `aoption_mid(underlying, date(expiry), s, "C")`
