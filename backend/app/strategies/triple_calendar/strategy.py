@@ -64,7 +64,7 @@ def decide_entry(day: date, source, params, events: list[date], vix: float | Non
 
 
 def manage(position: Position, day: date, source, params) -> tuple[str, dict]:
-    """Return ('exit'|'adjust'|'hold', info). Order: profit target, stop-loss, breach."""
+    """Return ('exit'|'roll'|'adjust'|'hold', info). Order: profit target, stop-loss, breach."""
     value = position_value(source, position, day)
     if value is not None and position.net_debit > 0:
         pnl_pct = (value - position.net_debit) / position.net_debit
