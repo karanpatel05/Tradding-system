@@ -44,4 +44,4 @@ async def test_manage_step_holds_or_acts_when_open():
     out = await manage_step(date(2026, 6, 25), Src(), p, ex, position=None)
     pos = out["position"]
     out2 = await manage_step(date(2026, 6, 26), Src(), p, ex, position=pos)
-    assert out2["action"] in ("hold", "adjust", "exit")
+    assert out2["action"] in ("hold", "adjust", "exit", "roll")

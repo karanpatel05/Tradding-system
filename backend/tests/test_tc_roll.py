@@ -110,3 +110,26 @@ async def test_manage_step_roll_fail_closed_no_reopen():
         assert out["info"]["reopened"] is False
         actions = [c[1] for c in ex.calls]
         assert actions == ["SELL"], f"expected close-only, got {ex.calls} (vix={vix})"
+
+
+@pytest.mark.asyncio
+async def test_holding_tick_snapshot_can_reopen():
+    # Regression: a roll fires on a HOLDING tick; _resolve_snapshot must prefetch the fresh
+    # entry strikes so decide_entry can price a new position from that same snapshot.
+    from datetime import date
+    from app.strategies.triple_calendar import strategy_class
+    from app.strategies.triple_calendar.strategy import decide_entry
+
+    today = date(2026, 1, 5)
+    strikes = [float(r) for r in range(400, 491, 5)]
+    p = TripleCalendarParams()
+
+    class Src:
+        async def aoption_mid(self, u, expiry, strike, right):
+            return 1.0 + 0.1 * max((expiry - today).days, 0)  # positive, rises with DTE
+
+    held = Position("QQQ", today, [Calendar(445.0, date(2026, 1, 30), date(2026, 2, 6))],
+                    net_debit=2.0)
+    snap = await strategy_class._resolve_snapshot(Src(), p, 445.0, strikes, today, position=held)
+    new_pos = decide_entry(today, snap, p, events=[], vix=12.0)
+    assert new_pos is not None and len(new_pos.calendars) == 3, "reopen must work from a holding-tick snapshot"

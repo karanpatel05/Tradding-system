@@ -58,14 +58,16 @@ async def _resolve_snapshot(src: LivePriceSource, params, spot, strikes, today, 
     wanted = {(sell_e, atm, "C"), (sell_e, atm, "P"), (buy_e, atm, "C")}
     for cal in (position.calendars if position else []):
         wanted |= {(cal.sell_expiry, cal.strike, "C"), (cal.buy_expiry, cal.strike, "C")}
-    if position is None:
-        c = await src.aoption_mid(params.underlying, sell_e, atm, "C")
-        pmid = await src.aoption_mid(params.underlying, sell_e, atm, "P")
-        if c and pmid:
-            lo, up = outer_strikes(atm, expected_move(c, pmid), params.em_buffer,
-                                   params.strike_round, params.manual_nudge)
-            for sk in (snap(lo, strikes), snap(up, strikes)):
-                wanted |= {(sell_e, sk, "C"), (buy_e, sk, "C")}
+    # Prefetch the entry strikes every tick (not just when flat): a roll fires on a HOLDING
+    # tick and reopens by calling decide_entry against this same snapshot, so the fresh
+    # outer-strike quotes must already be present even while a position is open.
+    c = await src.aoption_mid(params.underlying, sell_e, atm, "C")
+    pmid = await src.aoption_mid(params.underlying, sell_e, atm, "P")
+    if c and pmid:
+        lo, up = outer_strikes(atm, expected_move(c, pmid), params.em_buffer,
+                               params.strike_round, params.manual_nudge)
+        for sk in (snap(lo, strikes), snap(up, strikes)):
+            wanted |= {(sell_e, sk, "C"), (buy_e, sk, "C")}
     opt = {}
     for (e, k, r) in wanted:
         opt[(e, k, r)] = await src.aoption_mid(params.underlying, e, k, r)
