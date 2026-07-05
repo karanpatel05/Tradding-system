@@ -78,6 +78,8 @@ export const api = {
   optionsPosition: (key) => request(`/api/strategies/${key}/options-position`),
   // Options Strategy Builder (tracked paper trades — no orders transmitted).
   builderChain: (underlying) => request(`/api/builder/chain?underlying=${encodeURIComponent(underlying)}`),
+  builderChainQuotes: (underlying, expiry, count) =>
+    request(`/api/builder/chain-quotes?underlying=${encodeURIComponent(underlying)}&expiry=${expiry}&count=${count}`),
   builderQuote: (underlying, legs) =>
     request(`/api/builder/quote`, { method: "POST", body: JSON.stringify({ underlying, legs }) }),
   builderPayoff: (body) =>
