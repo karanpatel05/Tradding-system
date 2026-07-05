@@ -30,6 +30,11 @@ class LivePriceSource:
         ib = await get_gateway().get_ib()
         c = option(underlying, expiry, strike, right)
         await ib.qualifyContractsAsync(c)
+        # qualify silently leaves conId=0 for a strike/expiry that doesn't exist (IBKR returns
+        # "Unknown contract" without raising). reqMktData then throws on the unhashable
+        # contract -> a 500 in the builder /quote. Degrade to "no quote" instead.
+        if not getattr(c, "conId", 0):
+            return None
         t = ib.reqMktData(c, "", False, False)
         await asyncio.sleep(2)
         q = normalize_ticker(t)
