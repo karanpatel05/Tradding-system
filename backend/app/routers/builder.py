@@ -78,6 +78,12 @@ async def chain(underlying: str) -> dict:
     return await chain_mod.get_option_chain(underlying)
 
 
+@router.get("/chain-quotes")
+async def chain_quotes(underlying: str, expiry: str, count: int = 8) -> dict:
+    count = max(1, min(int(count), 25))  # bound the concurrent quote fan-out
+    return await chain_mod.get_chain_quotes(underlying, expiry, count)
+
+
 @router.post("/quote")
 async def quote(body: QuoteBody) -> dict:
     legs = _legs(body.legs)

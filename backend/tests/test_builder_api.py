@@ -44,3 +44,21 @@ async def test_invalid_leg_action_rejected():
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
         builder.Leg(action="buy", right="C", strike=100.0, expiry="2026-07-31", qty=1)
+
+
+@pytest.mark.asyncio
+async def test_chain_quotes_route_clamps_count(monkeypatch):
+    from app.routers import builder
+    seen = {}
+
+    async def fake(u, e, c):
+        seen["count"] = c
+        return {"underlying": u, "expiry": e, "count": c, "rows": []}
+
+    monkeypatch.setattr(builder.chain_mod, "get_chain_quotes", fake)
+    await builder.chain_quotes("QQQ", "2026-07-17", count=999)
+    assert seen["count"] == 25          # clamped high
+    await builder.chain_quotes("QQQ", "2026-07-17", count=0)
+    assert seen["count"] == 1           # clamped low
+    out = await builder.chain_quotes("QQQ", "2026-07-17", count=8)
+    assert seen["count"] == 8 and out["rows"] == []
