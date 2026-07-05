@@ -50,7 +50,7 @@ def test_event_filter_blocks_entry():
 
 
 def test_manage_exits_on_profit_target():
-    p = TripleCalendarParams(profit_target=0.10)
+    p = TripleCalendarParams(profit_target=0.10, roll_on_exit=False)
     from app.strategies.triple_calendar.legs import Calendar, Position
     se, be = date(2026, 7, 17), date(2026, 7, 24)
     pos = Position("QQQ", date(2026, 6, 25), [Calendar(445.0, se, be)], net_debit=1.0)
