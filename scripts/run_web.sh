@@ -37,6 +37,6 @@ FRONTEND_DIST="$ROOT/frontend/dist" \
   IBKR_PORT="${IBKR_PORT:-4002}" \
   IBKR_CLIENT_ID="${IBKR_CLIENT_ID:-3}" \
   "$ROOT/.venv/bin/uvicorn" app.main:app \
-    --host 127.0.0.1 \
+    --host "${RUN_WEB_HOST:-127.0.0.1}" \
     --port 8765 \
     --app-dir "$ROOT/backend"
