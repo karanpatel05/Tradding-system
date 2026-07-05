@@ -42,9 +42,12 @@ def _run() -> None:
             return [float(r) for r in range(400, 601, 5)]
         async def fake_mid(self, u, expiry, strike, right):
             return 1.0 + 0.1 * max((expiry - today).days, 0)
+        async def fake_vix(self):  # VIX is now read every tick; keep it offline + low
+            return 15.0
         live_source.LivePriceSource.aunderlying = fake_underlying   # type: ignore[assignment]
         live_source.LivePriceSource.achain = fake_chain             # type: ignore[assignment]
         live_source.LivePriceSource.aoption_mid = fake_mid          # type: ignore[assignment]
+        live_source.LivePriceSource.avix = fake_vix                 # type: ignore[assignment]
         strategy_class.get_market_status = lambda: {"is_open": True}  # type: ignore[assignment]
         get_gateway().set_state(ConnState.READY)
 
