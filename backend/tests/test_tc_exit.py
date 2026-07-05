@@ -12,7 +12,7 @@ def _run() -> None:
     from app.strategies.triple_calendar.strategy import manage
 
     day = date(2026, 1, 1)
-    params = TripleCalendarParams()  # profit_target 0.10, stop_loss_pct 0.25
+    params = TripleCalendarParams(roll_on_exit=False)  # classic exits: profit 0.10, stop 0.25
 
     def run_case(value: float, sell_dte: int):
         sell_exp = day + timedelta(days=sell_dte)

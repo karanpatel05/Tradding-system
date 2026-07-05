@@ -68,10 +68,13 @@ def manage(position: Position, day: date, source, params) -> tuple[str, dict]:
     value = position_value(source, position, day)
     if value is not None and position.net_debit > 0:
         pnl_pct = (value - position.net_debit) / position.net_debit
+        # +10% target / -25% stop: roll (close + reopen at current level) when enabled,
+        # else a plain exit. manage() only labels it; manage_step does the close/reopen.
+        exit_action = "roll" if params.roll_on_exit else "exit"
         if pnl_pct >= params.profit_target:
-            return "exit", {"reason": "target", "value": value, "pnl_pct": pnl_pct}
+            return exit_action, {"reason": "target", "value": value, "pnl_pct": pnl_pct}
         if pnl_pct <= -params.stop_loss_pct:
-            return "exit", {"reason": "stop_loss", "value": value, "pnl_pct": pnl_pct}
+            return exit_action, {"reason": "stop_loss", "value": value, "pnl_pct": pnl_pct}
     sell_expiry = position.calendars[0].sell_expiry
     spot = source.underlying_close(position.underlying, day)
     if spot is not None:
