@@ -215,7 +215,7 @@ async def flatten_all() -> str:
 
 
 async def submit_combo_order(underlying: str, legs: list[dict], *, net_price: float | None = None,
-                             action: str = "BUY", reason: str = "") -> dict:
+                             action: str = "BUY", reason: str = "", quantity: int = 1) -> dict:
     """Place a multi-leg options combo (BAG). Each leg = {expiry(date), strike, right, action}.
     GATE: ENABLE_LIVE_ORDERS off -> log + return transmitted:False (paper)."""
     if not legs:
@@ -236,7 +236,8 @@ async def submit_combo_order(underlying: str, legs: list[dict], *, net_price: fl
         await ib.qualifyContractsAsync(c)
         leg_ids.append((c.conId, spec["action"]))
     bag = combo(underlying, leg_ids)
-    order = LimitOrder(action, 1, net_price) if net_price is not None else MarketOrder(action, 1)
+    q = max(1, int(quantity))
+    order = LimitOrder(action, q, net_price) if net_price is not None else MarketOrder(action, q)
     trade = ib.placeOrder(bag, order)
     logger.warning("[LIVE COMBO] %s %s %d legs net %s (%s)", action, underlying, len(legs),
                    net_price, reason)
