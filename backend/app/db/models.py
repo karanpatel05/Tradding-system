@@ -31,6 +31,7 @@ class StrategyState(Base):
     status: Mapped[str] = mapped_column(String(16), default="idle")
     selected_symbol: Mapped[str | None] = mapped_column(String(16), nullable=True)
     capital_allocation: Mapped[float] = mapped_column(Float, default=0.0)
+    contracts: Mapped[int] = mapped_column(Integer, default=1)
     # Trade-direction mode for the multi-position crossover: long | short | both.
     # Gates which sides may OPEN new positions (existing positions ride their own
     # exits). Backtest accepts the same modes via the ``direction`` override.
@@ -110,6 +111,7 @@ class OptionPositionRecord(Base):
     entry_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     exit_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     net_debit: Mapped[float] = mapped_column(Float, default=0.0)
+    contracts: Mapped[int] = mapped_column(Integer, default=1)
     pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
     calendars: Mapped[list] = mapped_column(JSON, default=list)   # [{strike, sell, buy}]
     order_ids: Mapped[list] = mapped_column(JSON, default=list)

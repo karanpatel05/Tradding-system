@@ -73,6 +73,8 @@ def _ensure_added_columns(conn) -> None:
         if "direction" not in cols:
             conn.execute(text(
                 "ALTER TABLE strategy_state ADD COLUMN direction VARCHAR(8) DEFAULT 'both'"))
+        if "contracts" not in cols:
+            conn.execute(text("ALTER TABLE strategy_state ADD COLUMN contracts INTEGER DEFAULT 1"))
     if "option_positions" in tables:
         cols = {c["name"] for c in insp.get_columns("option_positions")}
         for col in ("last_value", "last_pnl_pct", "last_spot"):
@@ -80,6 +82,8 @@ def _ensure_added_columns(conn) -> None:
                 conn.execute(text(f"ALTER TABLE option_positions ADD COLUMN {col} FLOAT"))
         if "valued_at" not in cols:
             conn.execute(text("ALTER TABLE option_positions ADD COLUMN valued_at TIMESTAMP"))
+        if "contracts" not in cols:
+            conn.execute(text("ALTER TABLE option_positions ADD COLUMN contracts INTEGER DEFAULT 1"))
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:

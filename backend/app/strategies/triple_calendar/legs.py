@@ -20,6 +20,7 @@ class Position:
     calendars: list[Calendar] = field(default_factory=list)
     net_debit: float = 0.0
     size: float = 1.0
+    contracts: int = 1
 
 
 def nearest_friday(d: date) -> date:
