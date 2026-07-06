@@ -134,6 +134,7 @@ class BuilderPositionRecord(Base):
     legs: Mapped[list] = mapped_column(JSON, default=list)   # canonical leg dicts
     net_debit: Mapped[float] = mapped_column(Float, default=0.0)  # per 1x; debit>0, credit<0
     iv: Mapped[float] = mapped_column(Float, default=0.25)   # IV used for the saved payoff
+    contracts: Mapped[int] = mapped_column(Integer, default=1)  # whole-structure P&L multiplier
     target_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     stop_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[str] = mapped_column(String(8), default="open")  # open | closed

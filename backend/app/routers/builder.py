@@ -46,6 +46,7 @@ class SaveBody(BaseModel):
     iv: float = 0.25
     target_pct: float | None = None
     stop_pct: float | None = None
+    contracts: int = Field(1, ge=1)
 
 
 def _legs(models: list[Leg]) -> list[dict]:
@@ -55,7 +56,7 @@ def _legs(models: list[Leg]) -> list[dict]:
 def _serialize(rec) -> dict:
     return {
         "id": rec.id, "underlying": rec.underlying, "legs": rec.legs,
-        "net_debit": rec.net_debit, "iv": rec.iv,
+        "net_debit": rec.net_debit, "iv": rec.iv, "contracts": rec.contracts,
         "target_pct": rec.target_pct, "stop_pct": rec.stop_pct,
         "status": rec.status,
         "entry_time": rec.entry_time.isoformat() if rec.entry_time else None,
@@ -109,7 +110,7 @@ async def payoff(body: PayoffBody) -> dict:
 @router.post("/trades")
 async def save_trade(body: SaveBody) -> dict:
     tid = await store.save_trade(body.underlying, _legs(body.legs), body.net_debit,
-                                 body.iv, body.target_pct, body.stop_pct)
+                                 body.iv, body.target_pct, body.stop_pct, body.contracts)
     return _serialize(await store.get_trade(tid))
 
 

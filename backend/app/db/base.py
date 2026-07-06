@@ -84,6 +84,10 @@ def _ensure_added_columns(conn) -> None:
             conn.execute(text("ALTER TABLE option_positions ADD COLUMN valued_at TIMESTAMP"))
         if "contracts" not in cols:
             conn.execute(text("ALTER TABLE option_positions ADD COLUMN contracts INTEGER DEFAULT 1"))
+    if "builder_positions" in tables:
+        cols = {c["name"] for c in insp.get_columns("builder_positions")}
+        if "contracts" not in cols:
+            conn.execute(text("ALTER TABLE builder_positions ADD COLUMN contracts INTEGER DEFAULT 1"))
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:

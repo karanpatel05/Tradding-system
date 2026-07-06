@@ -10,10 +10,12 @@ from app.db.models import BuilderPositionRecord
 
 
 async def save_trade(underlying: str, legs: list[dict], net_debit: float, iv: float,
-                     target_pct: float | None, stop_pct: float | None) -> int:
+                     target_pct: float | None, stop_pct: float | None,
+                     contracts: int = 1) -> int:
     async with session_scope() as session:
         rec = BuilderPositionRecord(
             underlying=underlying.upper(), legs=list(legs), net_debit=net_debit, iv=iv,
+            contracts=max(1, int(contracts)),
             target_pct=target_pct, stop_pct=stop_pct, status="open")
         session.add(rec)
         await session.flush()
