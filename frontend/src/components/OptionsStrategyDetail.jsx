@@ -14,6 +14,7 @@ export default function OptionsStrategyDetail({ keyName, onBack }) {
   const [detail, setDetail] = useState(null); // strategy detail (controls/overview)
   const [op, setOp] = useState(null);         // options-position (structure/live/status)
   const [alloc, setAlloc] = useState("");
+  const [contracts, setContracts] = useState("");
   const [msg, setMsg] = useState(null);
 
   const loadDetail = () => api.strategy(keyName).then(setDetail).catch(() => {});
@@ -82,6 +83,18 @@ export default function OptionsStrategyDetail({ keyName, onBack }) {
           )}
         </div>
         <div className="muted small">Current allocation: ${(detail.capital_allocation || 0).toLocaleString()}</div>
+        <div className="row gap center" style={{ marginTop: 8 }}>
+          <input
+            className="input tiny"
+            type="number"
+            min="1"
+            placeholder="Contracts"
+            value={contracts}
+            onChange={(e) => setContracts(e.target.value)}
+          />
+          <button className="btn" onClick={() => act(() => api.setContracts(keyName, Math.max(1, Number(contracts) || 1)))}>Set Contracts</button>
+          <span className="muted small">Current: {detail.contracts ?? 1} contract{(detail.contracts ?? 1) === 1 ? "" : "s"}</span>
+        </div>
         <div className="op-params muted small">
           Target <b>+{pct(op?.profit_target_pct ?? 0.10)}</b> · Stop <b>−{pct(op?.stop_loss_pct ?? 0.25)}</b> ·
           VIX scale below <b>{op?.vix_threshold ?? 13}</b>. Live orders only transmit when{" "}

@@ -52,6 +52,12 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ amount }),
     }),
+  // How many of the whole spread to open per entry (Triple Calendar).
+  setContracts: (key, contracts) =>
+    request(`/api/strategies/${key}/contracts`, {
+      method: "PUT",
+      body: JSON.stringify({ contracts }),
+    }),
   // Multi-position crossover: set the live trade-direction mode (long/short/both).
   setDirection: (key, direction) =>
     request(`/api/strategies/${key}/direction`, {
