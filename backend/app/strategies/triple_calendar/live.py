@@ -38,7 +38,7 @@ def exit_legs(position: Position) -> list[dict]:
 
 
 async def manage_step(day: date, source, params, executor, position: Position | None,
-                      events=None, vix=None) -> dict:
+                      events=None, vix=None, contracts: int = 1) -> dict:
     """One live tick. `executor(underlying, legs, *, net_price, action, reason)` places a
     combo (or paper-logs it). Returns {action, position, info}."""
     events = events if events is not None else params.event_dates
@@ -46,15 +46,16 @@ async def manage_step(day: date, source, params, executor, position: Position | 
         pos = decide_entry(day, source, params, events, vix)
         if pos is None:
             return {"action": "none", "position": None, "info": {}}
+        pos.contracts = contracts
         await executor(pos.underlying, entry_legs(pos), net_price=round(pos.net_debit, 2),
-                       action="BUY", reason="entry")
+                       action="BUY", reason="entry", quantity=contracts)
         return {"action": "enter", "position": pos, "info": {"net_debit": pos.net_debit}}
 
     act, info = manage(position, day, source, params)
     if act == "adjust":
         cal = position.calendars[-1]   # manage() appended the new calendar
         await executor(position.underlying, adjustment_legs(cal), net_price=None,
-                       action="BUY", reason="adjust")
+                       action="BUY", reason="adjust", quantity=position.contracts)
         return {"action": "adjust", "position": position, "info": info}
     if act == "roll":
         reason = info.get("reason", "roll")
@@ -64,13 +65,15 @@ async def manage_step(day: date, source, params, executor, position: Position | 
         closed_pnl = value - position.net_debit
         # Close the current position (realize P&L).
         await executor(position.underlying, exit_legs(position), net_price=None,
-                       action="SELL", reason=f"roll_{reason}")
+                       action="SELL", reason=f"roll_{reason}", quantity=position.contracts)
         # Reopen at the current level. Fail closed: never reopen without a VIX reading; a
         # readable VIX still passes through decide_entry's <=16 / event / debit gates.
         new_pos = decide_entry(day, source, params, events, vix) if vix is not None else None
         if new_pos is not None:
+            new_pos.contracts = contracts
             await executor(new_pos.underlying, entry_legs(new_pos),
-                           net_price=round(new_pos.net_debit, 2), action="BUY", reason="roll_entry")
+                           net_price=round(new_pos.net_debit, 2), action="BUY",
+                           reason="roll_entry", quantity=contracts)
             return {"action": "roll", "position": new_pos,
                     "info": {"reason": reason, "closed_pnl": closed_pnl, "reopened": True}}
         return {"action": "roll", "position": None,
@@ -80,7 +83,7 @@ async def manage_step(day: date, source, params, executor, position: Position | 
         if value is None:
             value = position_value(source, position, day) or position.net_debit
         await executor(position.underlying, exit_legs(position), net_price=None,
-                       action="SELL", reason=info.get("reason", "exit"))
+                       action="SELL", reason=info.get("reason", "exit"), quantity=position.contracts)
         pnl = value - position.net_debit
         return {"action": "exit", "position": None, "info": {**info, "pnl": pnl}}
     return {"action": "hold", "position": position, "info": info}
