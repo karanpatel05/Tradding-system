@@ -16,6 +16,7 @@ export default function BuilderTab() {
   const [payoff, setPayoff] = useState(null);
   const [target, setTarget] = useState(10);
   const [stop, setStop] = useState(25);
+  const [contracts, setContracts] = useState(1);
   const [trades, setTrades] = useState([]);
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -61,6 +62,7 @@ export default function BuilderTab() {
         underlying, legs, net_debit: netDebit, iv: Number(iv),
         target_pct: target === "" ? null : Number(target) / 100,
         stop_pct: stop === "" ? null : Number(stop) / 100,
+        contracts: Math.max(1, Number(contracts) || 1),
       });
       setMsg("Saved as a tracked paper trade.");
       loadTrades();
@@ -138,6 +140,8 @@ export default function BuilderTab() {
           <input className="input tiny" type="number" value={target} onChange={(e) => setTarget(e.target.value)} />
           <label className="muted small">Stop %</label>
           <input className="input tiny" type="number" value={stop} onChange={(e) => setStop(e.target.value)} />
+          <label className="muted small">Contracts</label>
+          <input className="input tiny" type="number" min="1" value={contracts} onChange={(e) => setContracts(e.target.value)} />
           <button className="btn primary" onClick={save} disabled={busy || netDebit == null}>Save trade</button>
         </div>
         {msg && <div className="banner ok">{msg}</div>}
