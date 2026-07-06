@@ -114,6 +114,7 @@ async def detail(key: str) -> dict:
         "selected_symbol": st.selected_symbol if st else None,
         "direction": getattr(st, "direction", None) or "both",
         "capital_allocation": st.capital_allocation if st else 0.0,
+        "contracts": st.contracts if st else 1,
         "running": running,
         "broker_connected": session_manager.is_authenticated(),
         "live_orders_enabled": get_settings().enable_live_orders,
@@ -252,6 +253,7 @@ async def options_position(key: str) -> dict:
     p = TripleCalendarParams()
     today = date.today()
     net = rec.net_debit or 0.0
+    contracts = rec.contracts or 1
     calendars = []
     for c in rec.calendars or []:
         se = date.fromisoformat(c["sell"])
@@ -288,6 +290,7 @@ async def options_position(key: str) -> dict:
         "days_held": max(0, (datetime.now(timezone.utc).date() - rec.entry_time.date()).days)
                      if rec.entry_time else None,
         "net_debit": round(net, 4),
+        "contracts": contracts,
         "calendars": calendars,
         "target_value": round(net * (1 + p.profit_target), 4),
         "stop_value": round(net * (1 - p.stop_loss_pct), 4),
@@ -296,8 +299,8 @@ async def options_position(key: str) -> dict:
         "vix_threshold": p.vix_threshold,
         "value": round(value, 4) if value is not None else None,
         "unrealized_pct": round(pnl_pct, 6) if pnl_pct is not None else None,
-        # Per-share calendar debit → dollars per contract (v1 assumes size = 1 contract).
-        "unrealized_pnl": round((value - net) * 100, 2) if value is not None else None,
+        # Per-share calendar debit → dollars, scaled by the number of contracts held.
+        "unrealized_pnl": round((value - net) * 100 * contracts, 2) if value is not None else None,
         "spot": round(spot, 4) if spot is not None else None,
         "valued_at": valued_at.isoformat() if valued_at else None,
         "stale": stale,
@@ -364,6 +367,26 @@ async def set_allocation(key: str, body: AllocationBody) -> dict:
     await log_event(f"Capital allocation set to ${body.amount:,.2f}",
                     category="action", strategy_key=key)
     return {"key": key, "capital_allocation": body.amount}
+
+
+class ContractsBody(BaseModel):
+    contracts: int = 1  # clamped to >= 1 in the handler (0/neg → 1)
+
+
+@router.put("/{key}/contracts")
+async def set_contracts(key: str, body: ContractsBody) -> dict:
+    """How many of the whole spread to open per entry. Applies to the NEXT entry; an open
+    position keeps the contracts it was opened with."""
+    strat = _require_ready(key)  # rejected for Coming-Soon strategies
+    n = max(1, int(body.contracts))
+    async with session_scope() as session:
+        st = await session.get(StrategyState, key)
+        if st is None:
+            st = StrategyState(key=key, name=strat.name, ready=True)
+            session.add(st)
+        st.contracts = n
+    await log_event(f"Contracts set to {n}", category="action", strategy_key=key)
+    return {"key": key, "contracts": n}
 
 
 class DirectionBody(BaseModel):
