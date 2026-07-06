@@ -25,7 +25,8 @@ async def save_position(strategy_key: str, pos: Position, order_ids: list[int], 
     async with session_scope() as session:
         rec = OptionPositionRecord(
             strategy_key=strategy_key, underlying=pos.underlying, status="open", paper=paper,
-            net_debit=pos.net_debit, calendars=_ser(pos), order_ids=list(order_ids))
+            net_debit=pos.net_debit, calendars=_ser(pos), order_ids=list(order_ids),
+            contracts=pos.contracts)
         session.add(rec)
         await session.flush()
         return rec.id
@@ -39,7 +40,9 @@ async def load_open(strategy_key: str) -> Position | None:
                 OptionPositionRecord.status == "open"))).scalars().first()
         if rec is None:
             return None
-        return _deser(rec.underlying, rec.entry_time, rec.net_debit, rec.calendars)
+        pos = _deser(rec.underlying, rec.entry_time, rec.net_debit, rec.calendars)
+        pos.contracts = rec.contracts or 1
+        return pos
 
 
 async def load_open_id(strategy_key: str) -> int | None:

@@ -92,6 +92,13 @@ class TripleCalendarStrategy(BaseStrategy):
     async def scan(self, universe):  # not a stock-picker
         return []
 
+    async def _contracts(self) -> int:
+        from app.db.base import session_scope
+        from app.db.models import StrategyState
+        async with session_scope() as s:
+            st = await s.get(StrategyState, self.key)
+        return max(1, int(getattr(st, "contracts", 1) or 1))
+
     async def run_live(self) -> None:
         params = _params()
         src = LivePriceSource()
@@ -121,7 +128,9 @@ class TripleCalendarStrategy(BaseStrategy):
                     else:
                         strikes = await src.achain(params.underlying)
                         snapshot = await _resolve_snapshot(src, params, spot, strikes, today, position)
-                        out = await manage_step(today, snapshot, params, executor, position, vix=vix)
+                        contracts = await self._contracts()
+                        out = await manage_step(today, snapshot, params, executor, position,
+                                                vix=vix, contracts=contracts)
                         position, record_id = await self._persist(out, record_id)
                         # Persist the live valuation the core computed (in-memory snapshot).
                         if position is not None and record_id is not None and position.net_debit:
