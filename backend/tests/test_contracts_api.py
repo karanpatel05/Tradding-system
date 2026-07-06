@@ -22,6 +22,14 @@ async def test_set_contracts_clamps_and_persists():
 async def test_options_position_scales_pnl_by_contracts():
     await init_db()
     today = date.today()
+    # Isolation-safe: ensure our seeded record is the only OPEN strategy_2 position, even if a
+    # prior test in a shared DB left one behind.
+    from sqlalchemy import update
+    async with session_scope() as s:
+        await s.execute(update(OptionPositionRecord)
+                        .where(OptionPositionRecord.strategy_key == "strategy_2",
+                               OptionPositionRecord.status == "open")
+                        .values(status="closed"))
     async with session_scope() as s:
         rec = OptionPositionRecord(
             strategy_key="strategy_2", underlying="QQQ", status="open", paper=True,

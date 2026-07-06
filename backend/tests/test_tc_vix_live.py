@@ -20,7 +20,8 @@ def _run() -> None:
 
         calls: list = []
 
-        async def spy_manage_step(day, source, params, executor, position, events=None, vix=None):
+        async def spy_manage_step(day, source, params, executor, position, events=None, vix=None,
+                                  contracts=1):
             calls.append(vix)
             return {"action": "none", "position": None, "info": {}}
         strategy_class.manage_step = spy_manage_step  # type: ignore[assignment]
