@@ -51,3 +51,13 @@ async def test_missing_mid_skips():
     await monitor.value_open_trades_once(missing)
     t = await store.get_trade(tid)
     assert t.status == "open" and t.last_value is None
+
+
+@pytest.mark.asyncio
+async def test_pnl_scales_by_contracts():
+    await init_db()
+    tid = await store.save_trade("QQQ", LEGS, net_debit=2.0, iv=0.25,
+                                 target_pct=None, stop_pct=None, contracts=3)
+    await monitor.value_open_trades_once(_mids(2.1))   # +0.10/1x
+    t = await store.get_trade(tid)
+    assert t.last_pnl == pytest.approx(30.0)           # (2.1-2.0)*100*3

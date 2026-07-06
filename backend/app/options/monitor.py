@@ -24,7 +24,7 @@ async def value_open_trades_once(mid_source) -> None:
             value = combo_value(t.legs, mids)
             if value is None:
                 continue  # a mid was unavailable this tick; leave prior valuation
-            pnl = round((value - t.net_debit) * 100, 2)
+            pnl = round((value - t.net_debit) * 100 * (t.contracts or 1), 2)
             pnl_pct = (value - t.net_debit) / t.net_debit if t.net_debit else 0.0
             await store.update_valuation(t.id, value=round(value, 4), pnl=pnl,
                                          pnl_pct=round(pnl_pct, 6))
