@@ -1,20 +1,14 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
 
-// Options-aware strategy page (Triple Calendar): live position structure + P&L, target/
-// stop progress, breach distances, and operational status. No backtest (options history
-// isn't available from IBKR) — the equity StrategyDetail handles the backtest case.
+// Options-aware strategy page (Triple Calendar): strategy overview on top, controls, then the
+// live open-position section at the bottom (legs, P&L, target/stop progress, breach). No
+// backtest (options history isn't available from IBKR) — the equity StrategyDetail handles that.
 
 const pct = (n) => (n == null ? "—" : `${(n * 100).toFixed(2)}%`);
 const money = (n) => (n == null ? "—" : `${n >= 0 ? "+" : "−"}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 const money0 = (n) => (n == null ? "—" : `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 const clamp01 = (n) => Math.max(0, Math.min(1, n));
-
-function StatusPill({ ok, on, off, warn }) {
-  const label = ok ? on : off;
-  const cls = ok ? (warn ? "warn" : "live") : "idle";
-  return <span className={`pill tiny ${cls}`}>{label}</span>;
-}
 
 export default function OptionsStrategyDetail({ keyName, onBack }) {
   const [detail, setDetail] = useState(null); // strategy detail (controls/overview)
@@ -54,15 +48,49 @@ export default function OptionsStrategyDetail({ keyName, onBack }) {
         <span className={`pill ${detail.running ? "live" : "idle"}`}>{detail.status}</span>
       </div>
 
-      {/* Operational status strip — "is it actually working right now". */}
-      <div className="status-strip">
-        <StatusPill ok={op?.conn_ready} on="READY" off="Not ready" />
-        <StatusPill ok={op?.market_open} on="RTH open" off="Market closed" />
-        <StatusPill ok={op?.running} on="Loop active" off="Stopped" />
-        <StatusPill ok={op?.live_orders_enabled} on="Live orders" off="Paper orders" warn />
-      </div>
+      {/* Overview (top) */}
+      <section className="card">
+        <h2>Overview</h2>
+        <p>{ov.description}</p>
+        {ov.rules?.length > 0 && (
+          <>
+            <h4>Rules</h4>
+            <ul>{ov.rules.map((r, i) => <li key={i}>{r}</li>)}</ul>
+          </>
+        )}
+        <p><b>Entry:</b> {ov.entry_logic}</p>
+        <p><b>Exit:</b> {ov.exit_logic}</p>
+        <p><b>Selection criteria:</b> {ov.selection_criteria}</p>
+      </section>
 
-      {/* Position card */}
+      {/* Controls */}
+      <section className="card">
+        <h2>Controls</h2>
+        <div className="row gap center">
+          <input
+            className="input narrow"
+            type="number"
+            placeholder="Capital $"
+            value={alloc}
+            onChange={(e) => setAlloc(e.target.value)}
+          />
+          <button className="btn" onClick={() => act(() => api.allocate(keyName, Number(alloc)))}>Set Allocation</button>
+          {detail.running ? (
+            <button className="btn danger" onClick={() => act(() => api.stop(keyName))}>Stop</button>
+          ) : (
+            <button className="btn primary" onClick={() => act(() => api.activate(keyName))}>Activate</button>
+          )}
+        </div>
+        <div className="muted small">Current allocation: ${(detail.capital_allocation || 0).toLocaleString()}</div>
+        <div className="op-params muted small">
+          Target <b>+{pct(op?.profit_target_pct ?? 0.10)}</b> · Stop <b>−{pct(op?.stop_loss_pct ?? 0.25)}</b> ·
+          VIX scale below <b>{op?.vix_threshold ?? 13}</b>. Live orders only transmit when{" "}
+          <code>ENABLE_LIVE_ORDERS</code> is set server-side (otherwise recorded as paper).
+        </div>
+        {msg && <div className="banner error">{msg}</div>}
+      </section>
+
+      {/* Open Position (bottom) */}
       {hasPos ? (
         <section className="card">
           <div className="row between center">
@@ -142,9 +170,9 @@ export default function OptionsStrategyDetail({ keyName, onBack }) {
         <section className="card op-empty">
           <div className="op-empty-dot" />
           <div>
-            <h2>Scanning for entry</h2>
+            <h2>Open Position</h2>
             <p className="muted">
-              No open position. The loop enters a fresh three-calendar spread on{" "}
+              No open position — scanning. The loop enters a fresh three-calendar spread on{" "}
               <b>{op?.underlying || "the configured underlying"}</b> when conditions align.
             </p>
             <div className="muted small">{ov.entry_logic}</div>
@@ -154,48 +182,6 @@ export default function OptionsStrategyDetail({ keyName, onBack }) {
           </div>
         </section>
       )}
-
-      {/* Controls */}
-      <section className="card">
-        <h2>Controls</h2>
-        <div className="row gap center">
-          <input
-            className="input narrow"
-            type="number"
-            placeholder="Capital $"
-            value={alloc}
-            onChange={(e) => setAlloc(e.target.value)}
-          />
-          <button className="btn" onClick={() => act(() => api.allocate(keyName, Number(alloc)))}>Set Allocation</button>
-          {detail.running ? (
-            <button className="btn danger" onClick={() => act(() => api.stop(keyName))}>Stop</button>
-          ) : (
-            <button className="btn primary" onClick={() => act(() => api.activate(keyName))}>Activate</button>
-          )}
-        </div>
-        <div className="muted small">Current allocation: ${(detail.capital_allocation || 0).toLocaleString()}</div>
-        <div className="op-params muted small">
-          Target <b>+{pct(op?.profit_target_pct ?? 0.10)}</b> · Stop <b>−{pct(op?.stop_loss_pct ?? 0.25)}</b> ·
-          VIX scale below <b>{op?.vix_threshold ?? 13}</b>. Live orders only transmit when{" "}
-          <code>ENABLE_LIVE_ORDERS</code> is set server-side (otherwise recorded as paper).
-        </div>
-        {msg && <div className="banner error">{msg}</div>}
-      </section>
-
-      {/* Overview */}
-      <section className="card">
-        <h2>Overview</h2>
-        <p>{ov.description}</p>
-        {ov.rules?.length > 0 && (
-          <>
-            <h4>Rules</h4>
-            <ul>{ov.rules.map((r, i) => <li key={i}>{r}</li>)}</ul>
-          </>
-        )}
-        <p><b>Entry:</b> {ov.entry_logic}</p>
-        <p><b>Exit:</b> {ov.exit_logic}</p>
-        <p><b>Selection criteria:</b> {ov.selection_criteria}</p>
-      </section>
     </div>
   );
 }
