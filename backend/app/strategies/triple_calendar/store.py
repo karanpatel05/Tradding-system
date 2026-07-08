@@ -32,12 +32,14 @@ async def save_position(strategy_key: str, pos: Position, order_ids: list[int], 
         return rec.id
 
 
-async def load_open(strategy_key: str) -> Position | None:
+async def load_open(strategy_key: str, underlying: str | None = None) -> Position | None:
     async with session_scope() as session:
-        rec = (await session.execute(
-            select(OptionPositionRecord).where(
-                OptionPositionRecord.strategy_key == strategy_key,
-                OptionPositionRecord.status == "open"))).scalars().first()
+        stmt = select(OptionPositionRecord).where(
+            OptionPositionRecord.strategy_key == strategy_key,
+            OptionPositionRecord.status == "open")
+        if underlying is not None:
+            stmt = stmt.where(OptionPositionRecord.underlying == underlying.upper())
+        rec = (await session.execute(stmt)).scalars().first()
         if rec is None:
             return None
         pos = _deser(rec.underlying, rec.entry_time, rec.net_debit, rec.calendars)
@@ -45,14 +47,24 @@ async def load_open(strategy_key: str) -> Position | None:
         return pos
 
 
-async def load_open_id(strategy_key: str) -> int | None:
+async def load_open_id(strategy_key: str, underlying: str | None = None) -> int | None:
     """The open position's record id, so a restart-while-holding can keep updating it
     (adjust / exit / live valuation) instead of silently no-op'ing until re-entry."""
     async with session_scope() as session:
-        return (await session.execute(
-            select(OptionPositionRecord.id).where(
+        stmt = select(OptionPositionRecord.id).where(
+            OptionPositionRecord.strategy_key == strategy_key,
+            OptionPositionRecord.status == "open")
+        if underlying is not None:
+            stmt = stmt.where(OptionPositionRecord.underlying == underlying.upper())
+        return (await session.execute(stmt)).scalars().first()
+
+
+async def list_open(strategy_key: str) -> list:
+    async with session_scope() as session:
+        return list((await session.execute(
+            select(OptionPositionRecord).where(
                 OptionPositionRecord.strategy_key == strategy_key,
-                OptionPositionRecord.status == "open"))).scalars().first()
+                OptionPositionRecord.status == "open"))).scalars().all())
 
 
 async def update_calendars(record_id: int, pos: Position) -> None:
