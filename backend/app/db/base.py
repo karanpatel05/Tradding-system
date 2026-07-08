@@ -75,6 +75,8 @@ def _ensure_added_columns(conn) -> None:
                 "ALTER TABLE strategy_state ADD COLUMN direction VARCHAR(8) DEFAULT 'both'"))
         if "contracts" not in cols:
             conn.execute(text("ALTER TABLE strategy_state ADD COLUMN contracts INTEGER DEFAULT 1"))
+        if "tc_tickers" not in cols:
+            conn.execute(text("ALTER TABLE strategy_state ADD COLUMN tc_tickers JSON DEFAULT '[]'"))
     if "option_positions" in tables:
         cols = {c["name"] for c in insp.get_columns("option_positions")}
         for col in ("last_value", "last_pnl_pct", "last_spot"):
