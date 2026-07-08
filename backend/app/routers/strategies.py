@@ -115,6 +115,7 @@ async def detail(key: str) -> dict:
         "direction": getattr(st, "direction", None) or "both",
         "capital_allocation": st.capital_allocation if st else 0.0,
         "contracts": st.contracts if st else 1,
+        "tc_tickers": (st.tc_tickers if st else []) or [],
         "running": running,
         "broker_connected": session_manager.is_authenticated(),
         "live_orders_enabled": get_settings().enable_live_orders,
@@ -387,6 +388,51 @@ async def set_contracts(key: str, body: ContractsBody) -> dict:
         st.contracts = n
     await log_event(f"Contracts set to {n}", category="action", strategy_key=key)
     return {"key": key, "contracts": n}
+
+
+class TickerItem(BaseModel):
+    ticker: str
+    contracts: int = 1
+
+
+class TickersBody(BaseModel):
+    tickers: list[TickerItem]
+
+
+def _normalize_tickers(raw: list) -> list[dict]:
+    """Uppercase, clamp contracts >=1, drop blanks, de-dupe (first wins), cap at 10."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for it in raw:
+        t = (it.ticker or "").strip().upper()
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        out.append({"ticker": t, "contracts": max(1, int(it.contracts))})
+        if len(out) >= 10:
+            break
+    return out
+
+
+@router.get("/{key}/tickers")
+async def get_tickers(key: str) -> dict:
+    st = await _state(key)
+    return {"key": key, "tickers": (st.tc_tickers if st else []) or []}
+
+
+@router.put("/{key}/tickers")
+async def set_tickers(key: str, body: TickersBody) -> dict:
+    strat = _require_ready(key)
+    tickers = _normalize_tickers(body.tickers)
+    async with session_scope() as session:
+        st = await session.get(StrategyState, key)
+        if st is None:
+            st = StrategyState(key=key, name=strat.name, ready=True)
+            session.add(st)
+        st.tc_tickers = tickers
+    await log_event(f"TC tickers set: {', '.join(t['ticker'] for t in tickers) or '(none)'}",
+                    category="action", strategy_key=key)
+    return {"key": key, "tickers": tickers}
 
 
 class DirectionBody(BaseModel):
