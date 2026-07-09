@@ -439,6 +439,18 @@ async def get_tickers(key: str) -> dict:
 async def set_tickers(key: str, body: TickersBody) -> dict:
     strat = _require_ready(key)
     tickers = _normalize_tickers(body.tickers)
+    # A ticker with an open position cannot be dropped: the live loop only manages
+    # configured tickers, so removal would orphan the position (no stop/target enforcement)
+    # while its IBKR legs stay open. Empty list falls back to the single tc_underlying.
+    from app.strategies.triple_calendar.store import list_open
+    effective = ({t["ticker"] for t in tickers} if tickers
+                 else {(get_settings().tc_underlying or "QQQ").upper()})
+    orphaned = sorted({r.underlying.upper() for r in await list_open(key)} - effective)
+    if orphaned:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot remove ticker(s) with an open position: {', '.join(orphaned)}. "
+                   "Wait for the position to exit (or flatten) first.")
     async with session_scope() as session:
         st = await session.get(StrategyState, key)
         if st is None:

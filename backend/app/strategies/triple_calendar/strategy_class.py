@@ -108,7 +108,8 @@ class TripleCalendarStrategy(BaseStrategy):
         if cleaned:
             return cleaned
         contracts = max(1, int(getattr(st, "contracts", 1) or 1)) if st else 1
-        return [{"ticker": get_settings().tc_underlying, "contracts": contracts}]
+        return [{"ticker": (get_settings().tc_underlying or "QQQ").upper(),
+                 "contracts": contracts}]
 
     async def run_live(self) -> None:
         src = LivePriceSource()
