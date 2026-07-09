@@ -56,6 +56,16 @@ class Settings(BaseSettings):
     ibkr_reconnect_interval_seconds: int = 5   # fixed reconnect retry cadence (always-connect)
     ibkr_account_settle_seconds: float = 2.0   # wait after reconnect before reconciling (data re-sync)
 
+    # --- Tastytrade market data (OAuth personal grant; my.tastytrade.com → API access) ---
+    tt_provider_secret: str = ""     # env TT_PROVIDER_SECRET
+    tt_refresh_token: str = ""       # env TT_REFRESH_TOKEN
+    data_primary: str = "tastytrade"  # "tastytrade" | "ibkr" — facade try order
+    # Mid sanity guard: reject crossed/wide/jumpy option mids (see marketdata/sanity.py).
+    sanity_rel_spread: float = 0.35
+    sanity_abs_spread: float = 2.50
+    sanity_max_jump_pct: float = 0.50
+    sanity_jump_window_seconds: int = 900
+
     # --- Historical data cache ---
     # Candle history (daily + 5-min) is cached to local disk after the first pull
     # so reopening the strategy page reads from the cache instead of re-hitting the
