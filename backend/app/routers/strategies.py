@@ -115,6 +115,7 @@ async def detail(key: str) -> dict:
         "direction": getattr(st, "direction", None) or "both",
         "capital_allocation": st.capital_allocation if st else 0.0,
         "contracts": st.contracts if st else 1,
+        "tc_tickers": (st.tc_tickers if st else []) or [],
         "running": running,
         "broker_connected": session_manager.is_authenticated(),
         "live_orders_enabled": get_settings().enable_live_orders,
@@ -217,43 +218,16 @@ async def _open_option_record(key: str):
                 OptionPositionRecord.status == "open"))).scalars().first()
 
 
-@router.get("/{key}/options-position")
-async def options_position(key: str) -> dict:
-    """Options-aware detail for a multi-leg strategy's open position (Triple Calendar).
-
-    Reads the persisted ``OptionPositionRecord`` plus the live valuation the manage loop
-    already computed — **no IBKR calls here**, so it's instant and can be polled. Live
-    fields are null when flat / never valued. ``has_position`` is False when flat."""
+def _serialize_option_position(rec, contracts: int) -> dict:
+    """Position fields for one open OptionPositionRecord (Triple Calendar), P&L scaled by
+    ``contracts``. No IBKR calls — reads the persisted record + the loop's live valuation."""
     from datetime import date, datetime, timezone
 
     from app.strategies.triple_calendar.params import TripleCalendarParams
 
-    _require_ready(key)
-    running = engine_manager.is_running(key)
-    conn_ready = _conn_ready()
-    _, market_open = _market_open()
-    last_signal, last_trade = await _last_event_times(key)
-
-    base = {
-        "has_position": False,
-        "running": running,
-        "broker_connected": session_manager.is_authenticated(),
-        "conn_ready": conn_ready,
-        "market_open": market_open,
-        "live_orders_enabled": get_settings().enable_live_orders,
-        "last_signal_time": last_signal,
-        "last_trade_time": last_trade,
-        "underlying": getattr(get_settings(), "tc_underlying", None) or TripleCalendarParams().underlying,
-    }
-
-    rec = await _open_option_record(key)
-    if rec is None:
-        return base
-
     p = TripleCalendarParams()
     today = date.today()
     net = rec.net_debit or 0.0
-    contracts = rec.contracts or 1
     calendars = []
     for c in rec.calendars or []:
         se = date.fromisoformat(c["sell"])
@@ -279,8 +253,8 @@ async def options_position(key: str) -> dict:
         stale = age > 2 * get_settings().tc_manage_interval_seconds
 
     out = {
-        **base,
         "has_position": True,
+        "ticker": rec.underlying,
         "underlying": rec.underlying,
         "status": rec.status,
         "paper": rec.paper,
@@ -318,6 +292,48 @@ async def options_position(key: str) -> dict:
     else:
         out["breach"] = None
     return out
+
+
+@router.get("/{key}/options-position")
+async def options_position(key: str) -> dict:
+    """Triple Calendar detail — one entry per configured ticker (open position or flat/scanning).
+    No IBKR calls; reads persisted records + the loop's live valuation. Empty tc_tickers → the
+    single fallback ticker (tc_underlying)."""
+    _require_ready(key)
+    base = {
+        "running": engine_manager.is_running(key),
+        "broker_connected": session_manager.is_authenticated(),
+        "conn_ready": _conn_ready(),
+        "market_open": _market_open()[1],
+        "live_orders_enabled": get_settings().enable_live_orders,
+    }
+    last_signal, last_trade = await _last_event_times(key)
+    base["last_signal_time"], base["last_trade_time"] = last_signal, last_trade
+
+    st = await _state(key)
+    raw = (st.tc_tickers if st else None) or []
+    tickers = [{"ticker": str(t["ticker"]).upper(), "contracts": max(1, int(t.get("contracts", 1)))}
+               for t in raw if t.get("ticker")]
+    if not tickers:
+        contracts = max(1, int(getattr(st, "contracts", 1) or 1)) if st else 1
+        tickers = [{"ticker": (get_settings().tc_underlying or "QQQ").upper(), "contracts": contracts}]
+
+    from sqlalchemy import select
+
+    from app.db.models import OptionPositionRecord
+    out_tickers = []
+    async with session_scope() as session:
+        for tk in tickers:
+            rec = (await session.execute(select(OptionPositionRecord).where(
+                OptionPositionRecord.strategy_key == key,
+                OptionPositionRecord.underlying == tk["ticker"],
+                OptionPositionRecord.status == "open"))).scalars().first()
+            if rec is None:
+                out_tickers.append({"ticker": tk["ticker"], "contracts": tk["contracts"],
+                                    "has_position": False})
+            else:
+                out_tickers.append(_serialize_option_position(rec, tk["contracts"]))
+    return {**base, "tickers": out_tickers}
 
 
 async def _trades_today_count(key: str) -> int:
@@ -387,6 +403,63 @@ async def set_contracts(key: str, body: ContractsBody) -> dict:
         st.contracts = n
     await log_event(f"Contracts set to {n}", category="action", strategy_key=key)
     return {"key": key, "contracts": n}
+
+
+class TickerItem(BaseModel):
+    ticker: str
+    contracts: int = 1
+
+
+class TickersBody(BaseModel):
+    tickers: list[TickerItem]
+
+
+def _normalize_tickers(raw: list) -> list[dict]:
+    """Uppercase, clamp contracts >=1, drop blanks, de-dupe (first wins), cap at 10."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for it in raw:
+        t = (it.ticker or "").strip().upper()
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        out.append({"ticker": t, "contracts": max(1, int(it.contracts))})
+        if len(out) >= 10:
+            break
+    return out
+
+
+@router.get("/{key}/tickers")
+async def get_tickers(key: str) -> dict:
+    st = await _state(key)
+    return {"key": key, "tickers": (st.tc_tickers if st else []) or []}
+
+
+@router.put("/{key}/tickers")
+async def set_tickers(key: str, body: TickersBody) -> dict:
+    strat = _require_ready(key)
+    tickers = _normalize_tickers(body.tickers)
+    # A ticker with an open position cannot be dropped: the live loop only manages
+    # configured tickers, so removal would orphan the position (no stop/target enforcement)
+    # while its IBKR legs stay open. Empty list falls back to the single tc_underlying.
+    from app.strategies.triple_calendar.store import list_open
+    effective = ({t["ticker"] for t in tickers} if tickers
+                 else {(get_settings().tc_underlying or "QQQ").upper()})
+    orphaned = sorted({r.underlying.upper() for r in await list_open(key)} - effective)
+    if orphaned:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot remove ticker(s) with an open position: {', '.join(orphaned)}. "
+                   "Wait for the position to exit (or flatten) first.")
+    async with session_scope() as session:
+        st = await session.get(StrategyState, key)
+        if st is None:
+            st = StrategyState(key=key, name=strat.name, ready=True)
+            session.add(st)
+        st.tc_tickers = tickers
+    await log_event(f"TC tickers set: {', '.join(t['ticker'] for t in tickers) or '(none)'}",
+                    category="action", strategy_key=key)
+    return {"key": key, "tickers": tickers}
 
 
 class DirectionBody(BaseModel):

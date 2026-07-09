@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Float, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Date, DateTime, Float, Integer, String, Text, event
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -32,6 +32,7 @@ class StrategyState(Base):
     selected_symbol: Mapped[str | None] = mapped_column(String(16), nullable=True)
     capital_allocation: Mapped[float] = mapped_column(Float, default=0.0)
     contracts: Mapped[int] = mapped_column(Integer, default=1)
+    tc_tickers: Mapped[list] = mapped_column(JSON, default=list, nullable=False)  # [{ticker, contracts}] for multi-ticker TC
     # Trade-direction mode for the multi-position crossover: long | short | both.
     # Gates which sides may OPEN new positions (existing positions ride their own
     # exits). Backtest accepts the same modes via the ``direction`` override.
@@ -39,6 +40,11 @@ class StrategyState(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
+
+
+@event.listens_for(StrategyState, "init")
+def _tc_tickers_default(target, args, kwargs):
+    kwargs.setdefault("tc_tickers", [])
 
 
 class TradeRecord(Base):

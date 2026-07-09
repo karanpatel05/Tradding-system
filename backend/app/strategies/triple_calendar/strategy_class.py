@@ -15,14 +15,17 @@ from app.strategies.triple_calendar.legs import (atm_strike, expected_move, oute
 from app.strategies.triple_calendar.live import manage_step
 from app.strategies.triple_calendar.live_source import LivePriceSource
 from app.strategies.triple_calendar.params import TripleCalendarParams
-from app.strategies.triple_calendar.store import (close_position, load_open, load_open_id,
+from app.strategies.triple_calendar.store import (close_position, list_open, load_open,
                                                   save_position, update_calendars, update_value)
 
 
-def _params() -> TripleCalendarParams:
+def _event_dates() -> list[date]:
     s = get_settings()
-    events = [date.fromisoformat(d.strip()) for d in s.tc_event_dates.split(",") if d.strip()]
-    return TripleCalendarParams(underlying=s.tc_underlying, event_dates=events)
+    return [date.fromisoformat(d.strip()) for d in s.tc_event_dates.split(",") if d.strip()]
+
+
+def _params(underlying: str, events: list[date]) -> TripleCalendarParams:
+    return TripleCalendarParams(underlying=underlying, event_dates=events)
 
 
 class _Snapshot:
@@ -92,21 +95,32 @@ class TripleCalendarStrategy(BaseStrategy):
     async def scan(self, universe):  # not a stock-picker
         return []
 
-    async def _contracts(self) -> int:
+    async def _tickers(self) -> list[dict]:
+        """Configured tickers [{ticker, contracts}]. Empty tc_tickers → single fallback
+        (tc_underlying at the global contracts setting), preserving legacy single-ticker mode."""
         from app.db.base import session_scope
         from app.db.models import StrategyState
         async with session_scope() as s:
             st = await s.get(StrategyState, self.key)
-        return max(1, int(getattr(st, "contracts", 1) or 1))
+        raw = (st.tc_tickers if st else None) or []
+        cleaned = [{"ticker": str(t["ticker"]).upper(), "contracts": max(1, int(t.get("contracts", 1)))}
+                   for t in raw if t.get("ticker")]
+        if cleaned:
+            return cleaned
+        contracts = max(1, int(getattr(st, "contracts", 1) or 1)) if st else 1
+        return [{"ticker": (get_settings().tc_underlying or "QQQ").upper(),
+                 "contracts": contracts}]
 
     async def run_live(self) -> None:
-        params = _params()
         src = LivePriceSource()
-        position = await load_open(self.key)
-        # Recover the record id too, so a restart while holding keeps updating the SAME
-        # record (adjust / exit / live valuation) instead of no-op'ing until re-entry.
-        record_id = await load_open_id(self.key) if position is not None else None
+        events = _event_dates()
         executor = _make_executor()
+        # Seed per-ticker state from any open records (restart-while-holding).
+        positions: dict = {}
+        record_ids: dict = {}
+        for rec in await list_open(self.key):
+            positions[rec.underlying] = await load_open(self.key, rec.underlying)
+            record_ids[rec.underlying] = rec.id
         await log_event("Triple Calendar live loop started", category="action",
                         strategy_key=self.key)
         while True:
@@ -115,40 +129,55 @@ class TripleCalendarStrategy(BaseStrategy):
                 await asyncio.sleep(get_settings().tc_manage_interval_seconds)
                 continue
             vix = None
+            tickers = await self._tickers()
             try:
                 today = datetime.now().date()
-                spot = await src.aunderlying(params.underlying)
-                if spot is not None:
-                    # Fetch VIX every tick: a holding tick may roll and must gate its re-entry.
-                    vix = await src.avix()
-                    # Flat entry is fail-closed: no VIX reading -> don't enter this tick.
-                    if position is None and vix is None:
-                        await log_event("Triple Calendar: skipping entry — VIX unavailable "
-                                        "(fail-closed)", category="decision", strategy_key=self.key)
-                    else:
-                        strikes = await src.achain(params.underlying)
-                        snapshot = await _resolve_snapshot(src, params, spot, strikes, today, position)
-                        contracts = await self._contracts()
-                        out = await manage_step(today, snapshot, params, executor, position,
+                # Fetch VIX once per tick (market-wide gate shared by all tickers).
+                vix = await src.avix()
+                for tk in tickers:
+                    u, contracts = tk["ticker"], tk["contracts"]
+                    params = _params(u, events)
+                    pos = positions.get(u)
+                    rid = record_ids.get(u)
+                    try:
+                        spot = await src.aunderlying(u)
+                        if spot is None:
+                            continue
+                        # Flat entry is fail-closed: no VIX reading -> don't enter this ticker.
+                        if pos is None and vix is None:
+                            await log_event(f"Triple Calendar {u}: skipping entry — VIX "
+                                            "unavailable (fail-closed)", category="decision",
+                                            strategy_key=self.key)
+                            continue
+                        strikes = await src.achain(u)
+                        snapshot = await _resolve_snapshot(src, params, spot, strikes, today, pos)
+                        out = await manage_step(today, snapshot, params, executor, pos,
                                                 vix=vix, contracts=contracts)
-                        position, record_id = await self._persist(out, record_id)
+                        pos, rid = await self._persist(out, rid)
+                        positions[u], record_ids[u] = pos, rid
                         # Persist the live valuation the core computed (in-memory snapshot).
-                        if position is not None and record_id is not None and position.net_debit:
+                        if pos is not None and rid is not None and pos.net_debit:
                             from app.strategies.triple_calendar.strategy import position_value
-                            val = position_value(snapshot, position, today)
+                            val = position_value(snapshot, pos, today)
                             if val is not None:
-                                await update_value(record_id, val,
-                                                   (val - position.net_debit) / position.net_debit, spot)
+                                await update_value(rid, val,
+                                                   (val - pos.net_debit) / pos.net_debit, spot)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001 — one ticker's error must not stop the rest
+                        await log_event(f"Triple Calendar {u} tick error", level="warning",
+                                        category="decision", strategy_key=self.key)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001
                 await log_event("Triple Calendar tick error", level="warning",
                                 category="decision", strategy_key=self.key)
-            # Adaptive cadence: fast-poll VIX while flat + above the entry ceiling (or unreadable),
-            # otherwise the normal multi-day manage interval.
-            poll = get_settings().tc_manage_interval_seconds
-            if position is None and (vix is None or vix > params.vix_entry_max):
-                poll = get_settings().vix_wait_poll_seconds
+            # Adaptive cadence: fast-poll while any ticker is flat AND VIX blocks entry.
+            vmax = TripleCalendarParams().vix_entry_max
+            any_flat_blocked = (vix is None or vix > vmax) and any(
+                positions.get(tk["ticker"]) is None for tk in tickers)
+            poll = (get_settings().vix_wait_poll_seconds if any_flat_blocked
+                    else get_settings().tc_manage_interval_seconds)
             await asyncio.sleep(poll)
 
     async def _persist(self, out, record_id):

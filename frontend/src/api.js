@@ -58,6 +58,12 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ contracts }),
     }),
+  // Multi-ticker Triple Calendar: set the full ticker list [{ticker, contracts}].
+  setTickers: (key, tickers) =>
+    request(`/api/strategies/${key}/tickers`, {
+      method: "PUT",
+      body: JSON.stringify({ tickers }),
+    }),
   // Multi-position crossover: set the live trade-direction mode (long/short/both).
   setDirection: (key, direction) =>
     request(`/api/strategies/${key}/direction`, {
