@@ -16,6 +16,15 @@ export default function OptionsStrategyDetail({ keyName, onBack }) {
   const [alloc, setAlloc] = useState("");
   const [contracts, setContracts] = useState("");
   const [msg, setMsg] = useState(null);
+  const [tickerRows, setTickerRows] = useState(null); // null until seeded from detail
+  useEffect(() => {
+    if (detail && tickerRows === null) {
+      const rows = (detail.tc_tickers && detail.tc_tickers.length)
+        ? detail.tc_tickers
+        : [{ ticker: (op?.tickers?.[0]?.ticker) || "QQQ", contracts: detail.contracts ?? 1 }];
+      setTickerRows(rows.map((r) => ({ ...r })));
+    }
+  }, [detail, op, tickerRows]);
 
   const loadDetail = () => api.strategy(keyName).then(setDetail).catch(() => {});
   const loadOp = () => api.optionsPosition(keyName).then(setOp).catch(() => setOp(null));
@@ -102,6 +111,35 @@ export default function OptionsStrategyDetail({ keyName, onBack }) {
         </div>
         {msg && <div className="banner error">{msg}</div>}
       </section>
+
+      {/* Tickers (multi-ticker config) */}
+      {tickerRows && (
+        <section className="card">
+          <h2>Tickers</h2>
+          <div className="muted small">Each ticker runs its own Triple Calendar position at its own contract size.</div>
+          <div className="table-scroll">
+            <table className="table">
+              <thead><tr><th>Ticker</th><th>Contracts</th><th></th></tr></thead>
+              <tbody>
+                {tickerRows.map((r, i) => (
+                  <tr key={i}>
+                    <td><input className="input tiny" value={r.ticker}
+                      onChange={(e) => setTickerRows((rs) => rs.map((x, j) => j === i ? { ...x, ticker: e.target.value.toUpperCase() } : x))} /></td>
+                    <td><input className="input tiny" type="number" min="1" value={r.contracts}
+                      onChange={(e) => setTickerRows((rs) => rs.map((x, j) => j === i ? { ...x, contracts: Number(e.target.value) } : x))} /></td>
+                    <td><button className="btn ghost tiny" onClick={() => setTickerRows((rs) => rs.filter((_, j) => j !== i))}>✕</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="row gap center">
+            <button className="btn ghost" onClick={() => setTickerRows((rs) => [...rs, { ticker: "", contracts: 1 }])}>+ Add ticker</button>
+            <button className="btn primary" onClick={() => act(() => api.setTickers(keyName,
+              tickerRows.filter((r) => r.ticker.trim()).map((r) => ({ ticker: r.ticker.trim().toUpperCase(), contracts: Math.max(1, Number(r.contracts) || 1) }))))}>Save tickers</button>
+          </div>
+        </section>
+      )}
 
       {/* Open Position (bottom) */}
       {hasPos ? (
