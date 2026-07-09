@@ -44,7 +44,8 @@ export default function OptionsStrategyDetail({ keyName, onBack }) {
 
   if (!detail) return <div className="muted">Loading…</div>;
   const ov = detail.overview;
-  const hasPos = op?.has_position;
+  const tks = op?.tickers || [];
+  const posTk = tks.find((t) => t.has_position);
 
   return (
     <div className="strategy-detail options-detail">
@@ -53,7 +54,7 @@ export default function OptionsStrategyDetail({ keyName, onBack }) {
       <div className="row between center">
         <div className="row gap center">
           <h1>{ov.name}</h1>
-          {hasPos && <span className={`pill tiny ${op.paper ? "idle" : "trade"}`}>{op.paper ? "Paper" : "Live"}</span>}
+          {posTk && <span className={`pill tiny ${posTk.paper ? "idle" : "trade"}`}>{posTk.paper ? "Paper" : "Live"}</span>}
         </div>
         <span className={`pill ${detail.running ? "live" : "idle"}`}>{detail.status}</span>
       </div>
@@ -141,51 +142,51 @@ export default function OptionsStrategyDetail({ keyName, onBack }) {
         </section>
       )}
 
-      {/* Open Position (bottom) */}
-      {hasPos ? (
-        <section className="card">
+      {/* Open Positions (bottom) — one card per configured ticker */}
+      {tks.map((t) => t.has_position ? (
+        <section className="card" key={t.ticker}>
           <div className="row between center">
-            <h2>Open Position — {op.underlying}</h2>
+            <h2>Open Position — {t.ticker} · {t.contracts} contract{t.contracts === 1 ? "" : "s"}</h2>
             <span className="muted small">
-              entered {op.entry_time?.slice(0, 10)}{op.days_held != null && ` · ${op.days_held}d held`}
+              entered {t.entry_time?.slice(0, 10)}{t.days_held != null && ` · ${t.days_held}d held`}
             </span>
           </div>
 
           <div className="op-value-row">
             <div>
               <div className="muted small">Unrealized P&L</div>
-              <div className={`big-pnl ${(op.unrealized_pnl ?? 0) >= 0 ? "pos" : "neg"}`}>
-                {op.unrealized_pnl == null ? "—" : money(op.unrealized_pnl)}
-                {op.unrealized_pct != null && (
-                  <span className="op-pct"> {(op.unrealized_pct * 100).toFixed(2)}%</span>
+              <div className={`big-pnl ${(t.unrealized_pnl ?? 0) >= 0 ? "pos" : "neg"}`}>
+                {t.unrealized_pnl == null ? "—" : money(t.unrealized_pnl)}
+                {t.unrealized_pct != null && (
+                  <span className="op-pct"> {(t.unrealized_pct * 100).toFixed(2)}%</span>
                 )}
               </div>
             </div>
             <div className="op-value-meta">
-              <div><span className="muted small">Net debit</span><b className="num">{money0(op.net_debit)}</b></div>
-              <div><span className="muted small">Value</span><b className="num">{op.value == null ? "—" : money0(op.value)}</b></div>
-              {op.spot != null && <div><span className="muted small">Spot</span><b className="num">{money0(op.spot)}</b></div>}
-              {op.valued_at && (
+              <div><span className="muted small">Net debit</span><b className="num">{money0(t.net_debit)}</b></div>
+              <div><span className="muted small">Value</span><b className="num">{t.value == null ? "—" : money0(t.value)}</b></div>
+              {t.spot != null && <div><span className="muted small">Spot</span><b className="num">{money0(t.spot)}</b></div>}
+              {t.valued_at && (
                 <div>
                   <span className="muted small">Valued</span>
-                  <b className="num">{op.valued_at.slice(11, 16)}{op.stale && <span className="pill tiny warn stale-badge">stale</span>}</b>
+                  <b className="num">{t.valued_at.slice(11, 16)}{t.stale && <span className="pill tiny warn stale-badge">stale</span>}</b>
                 </div>
               )}
             </div>
           </div>
 
           {/* Target / stop meter — 0 at entry, full at +10% target; stop side to the left. */}
-          {op.progress_to_target != null && (
+          {t.progress_to_target != null && (
             <div className="op-meter">
               <div className="op-meter-track">
-                <div className="op-meter-fill" style={{ width: `${clamp01(op.progress_to_target) * 100}%` }} />
+                <div className="op-meter-fill" style={{ width: `${clamp01(t.progress_to_target) * 100}%` }} />
               </div>
               <div className="op-meter-ends">
-                <span className={`${(op.distance_to_stop ?? 0) > 0 ? "neg" : "muted"}`}>
-                  Stop {money0(op.stop_value)} (−{pct(op.stop_loss_pct)})
+                <span className={`${(t.distance_to_stop ?? 0) > 0 ? "neg" : "muted"}`}>
+                  Stop {money0(t.stop_value)} (−{pct(t.stop_loss_pct)})
                 </span>
-                <span className="muted">{Math.round(clamp01(op.progress_to_target) * 100)}% to target</span>
-                <span className="pos">Target {money0(op.target_value)} (+{pct(op.profit_target_pct)})</span>
+                <span className="muted">{Math.round(clamp01(t.progress_to_target) * 100)}% to target</span>
+                <span className="pos">Target {money0(t.target_value)} (+{pct(t.profit_target_pct)})</span>
               </div>
             </div>
           )}
@@ -195,7 +196,7 @@ export default function OptionsStrategyDetail({ keyName, onBack }) {
             <table className="table">
               <thead><tr><th>#</th><th>Strike</th><th>Sell exp</th><th>DTE</th><th>Buy exp</th><th>DTE</th></tr></thead>
               <tbody>
-                {op.calendars.map((c, i) => (
+                {t.calendars.map((c, i) => (
                   <tr key={i}>
                     <td>{i + 1}</td>
                     <td className="num">{c.strike}</td>
@@ -209,30 +210,28 @@ export default function OptionsStrategyDetail({ keyName, onBack }) {
             </table>
           </div>
 
-          {op.breach && (
+          {t.breach && (
             <div className="op-breach">
               <span className="muted small">Breach guard</span>
-              <span className="num">lower {op.breach.lower_strike} <span className={op.breach.dist_lower_pct > 0 ? "neg" : "muted"}>({pct(op.breach.dist_lower_pct)})</span></span>
-              <span className="num">upper {op.breach.upper_strike} <span className={op.breach.dist_upper_pct < 0 ? "neg" : "muted"}>({(op.breach.dist_upper_pct * 100).toFixed(2)}%)</span></span>
+              <span className="num">lower {t.breach.lower_strike} <span className={t.breach.dist_lower_pct > 0 ? "neg" : "muted"}>({pct(t.breach.dist_lower_pct)})</span></span>
+              <span className="num">upper {t.breach.upper_strike} <span className={t.breach.dist_upper_pct < 0 ? "neg" : "muted"}>({(t.breach.dist_upper_pct * 100).toFixed(2)}%)</span></span>
             </div>
           )}
         </section>
       ) : (
-        <section className="card op-empty">
+        <section className="card op-empty" key={t.ticker}>
           <div className="op-empty-dot" />
           <div>
-            <h2>Open Position</h2>
+            <h2>Open Position — {t.ticker}</h2>
             <p className="muted">
-              No open position — scanning. The loop enters a fresh three-calendar spread on{" "}
-              <b>{op?.underlying || "the configured underlying"}</b> when conditions align.
+              No open position — scanning <b>{t.ticker}</b> for entry (VIX ≤ 16).
             </p>
-            <div className="muted small">{ov.entry_logic}</div>
             {op?.last_trade_time && (
               <div className="muted small">Last trade: {op.last_trade_time.slice(0, 16).replace("T", " ")}</div>
             )}
           </div>
         </section>
-      )}
+      ))}
     </div>
   );
 }
