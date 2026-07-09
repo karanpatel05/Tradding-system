@@ -42,13 +42,18 @@ app/tastytrade/{session,streamer}.py     app/ibkr/* (existing, frozen)
 ## Components
 
 ### `app/tastytrade/session.py` — session manager
-- Credentials `tt_username` / `tt_password` in `Settings` (env: `TT_USERNAME`, `TT_PASSWORD`)
-  and editable/persisted via the existing API tab pattern (same as IBKR creds).
-- Uses the `tastytrade` SDK v12+ (fully async-native; already proven on the Python 3.14 venv).
-- Lazily creates and caches one `Session`; token lasts ~24h; on 401/expiry, re-login
-  automatically. Login failure marks Tastytrade unavailable (facade falls back) and journals
-  once per transition.
-- Exposes `async get_session() -> Session | None` and `def is_available() -> bool`.
+- **Credentials are OAuth, not username/password** (SDK v12 dropped password sessions):
+  `tt_provider_secret` / `tt_refresh_token` in `Settings` (env: `TT_PROVIDER_SECRET`,
+  `TT_REFRESH_TOKEN`), obtained from a Tastytrade OAuth personal grant
+  (my.tastytrade.com → API access). Editable/persisted via the API tab.
+- Uses the `tastytrade` SDK v12.4.1 (already installed in the venv; must be pinned in
+  `backend/requirements.txt`). `Session(provider_secret=…, refresh_token=…)` is cheap to
+  construct; the SDK fetches and auto-refreshes the short-lived access token internally
+  (`session_expiration` tracked per request), so there is no daily manual login at all.
+- Lazily creates and caches one `Session`. Missing creds or a failed probe marks Tastytrade
+  unavailable (facade falls back) and journals once per transition.
+- Exposes `async get_tt_session() -> Session | None` and `def reset_tt_session() -> None`
+  (called after creds change).
 
 ### `app/tastytrade/streamer.py` — DXLink streamer
 - One shared `DXLinkStreamer` websocket for the whole app, created on first use, auto-reconnect
@@ -117,14 +122,24 @@ market is open:
   facade; their order paths already gate on the Gateway connection, which is unchanged.
 
 ### Frontend
-- API tab: Tastytrade username/password fields (persisted like the IBKR creds).
+- API tab: Tastytrade card with OAuth provider-secret / refresh-token fields (persisted
+  server-side to `.env`), configured/available status.
 - Dashboard status: show two chips — **Data** (Tastytrade OK / fallback IBKR / down) and
   **Broker** (Gateway connected / disconnected) — replacing the single broker-implies-data
   status.
 
 ### Config additions
-`tt_username`, `tt_password`, `data_primary` (default `"tastytrade"`), the four sanity-guard
-settings above.
+`tt_provider_secret`, `tt_refresh_token`, `data_primary` (default `"tastytrade"`), the four
+sanity-guard settings above.
+
+### Explicit scope notes (from code exploration)
+- `services/market_stream.py` (the dashboard's persistent IBKR ticker stream for the
+  WebSocket push) **stays on IBKR**; its REST fallback (`get_market_overview`) moves to the
+  facade, so the overview degrades to Tastytrade-served REST when the Gateway is down.
+- `options/chain.py` (Builder) gets mids through `LivePriceSource`, which delegates to the
+  facade — only its spot quote and expiry-list fetches need explicit facade calls.
+- Consumers that early-return on `session_manager.is_authenticated()` (overview, position
+  live quote) drop that gate — data availability is the facade's concern now.
 
 ## Error handling
 
