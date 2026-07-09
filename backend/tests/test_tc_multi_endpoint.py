@@ -12,7 +12,14 @@ from app.routers import strategies
 async def test_options_position_lists_all_tickers():
     await init_db()
     today = date.today()
+    # Isolation-safe under a shared test DB: close any open strategy_2 records left by
+    # earlier tests so the endpoint's .first() picks OUR seeded record.
+    from sqlalchemy import update
     async with session_scope() as s:
+        await s.execute(update(OptionPositionRecord)
+                        .where(OptionPositionRecord.strategy_key == "strategy_2",
+                               OptionPositionRecord.status == "open")
+                        .values(status="closed"))
         st = await s.get(StrategyState, "strategy_2")
         if st is None:
             st = StrategyState(key="strategy_2", name="Triple Calendar", ready=True)
