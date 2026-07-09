@@ -218,43 +218,16 @@ async def _open_option_record(key: str):
                 OptionPositionRecord.status == "open"))).scalars().first()
 
 
-@router.get("/{key}/options-position")
-async def options_position(key: str) -> dict:
-    """Options-aware detail for a multi-leg strategy's open position (Triple Calendar).
-
-    Reads the persisted ``OptionPositionRecord`` plus the live valuation the manage loop
-    already computed — **no IBKR calls here**, so it's instant and can be polled. Live
-    fields are null when flat / never valued. ``has_position`` is False when flat."""
+def _serialize_option_position(rec, contracts: int) -> dict:
+    """Position fields for one open OptionPositionRecord (Triple Calendar), P&L scaled by
+    ``contracts``. No IBKR calls — reads the persisted record + the loop's live valuation."""
     from datetime import date, datetime, timezone
 
     from app.strategies.triple_calendar.params import TripleCalendarParams
 
-    _require_ready(key)
-    running = engine_manager.is_running(key)
-    conn_ready = _conn_ready()
-    _, market_open = _market_open()
-    last_signal, last_trade = await _last_event_times(key)
-
-    base = {
-        "has_position": False,
-        "running": running,
-        "broker_connected": session_manager.is_authenticated(),
-        "conn_ready": conn_ready,
-        "market_open": market_open,
-        "live_orders_enabled": get_settings().enable_live_orders,
-        "last_signal_time": last_signal,
-        "last_trade_time": last_trade,
-        "underlying": getattr(get_settings(), "tc_underlying", None) or TripleCalendarParams().underlying,
-    }
-
-    rec = await _open_option_record(key)
-    if rec is None:
-        return base
-
     p = TripleCalendarParams()
     today = date.today()
     net = rec.net_debit or 0.0
-    contracts = rec.contracts or 1
     calendars = []
     for c in rec.calendars or []:
         se = date.fromisoformat(c["sell"])
@@ -280,8 +253,8 @@ async def options_position(key: str) -> dict:
         stale = age > 2 * get_settings().tc_manage_interval_seconds
 
     out = {
-        **base,
         "has_position": True,
+        "ticker": rec.underlying,
         "underlying": rec.underlying,
         "status": rec.status,
         "paper": rec.paper,
@@ -319,6 +292,48 @@ async def options_position(key: str) -> dict:
     else:
         out["breach"] = None
     return out
+
+
+@router.get("/{key}/options-position")
+async def options_position(key: str) -> dict:
+    """Triple Calendar detail — one entry per configured ticker (open position or flat/scanning).
+    No IBKR calls; reads persisted records + the loop's live valuation. Empty tc_tickers → the
+    single fallback ticker (tc_underlying)."""
+    _require_ready(key)
+    base = {
+        "running": engine_manager.is_running(key),
+        "broker_connected": session_manager.is_authenticated(),
+        "conn_ready": _conn_ready(),
+        "market_open": _market_open()[1],
+        "live_orders_enabled": get_settings().enable_live_orders,
+    }
+    last_signal, last_trade = await _last_event_times(key)
+    base["last_signal_time"], base["last_trade_time"] = last_signal, last_trade
+
+    st = await _state(key)
+    raw = (st.tc_tickers if st else None) or []
+    tickers = [{"ticker": str(t["ticker"]).upper(), "contracts": max(1, int(t.get("contracts", 1)))}
+               for t in raw if t.get("ticker")]
+    if not tickers:
+        contracts = max(1, int(getattr(st, "contracts", 1) or 1)) if st else 1
+        tickers = [{"ticker": (get_settings().tc_underlying or "QQQ").upper(), "contracts": contracts}]
+
+    from sqlalchemy import select
+
+    from app.db.models import OptionPositionRecord
+    out_tickers = []
+    async with session_scope() as session:
+        for tk in tickers:
+            rec = (await session.execute(select(OptionPositionRecord).where(
+                OptionPositionRecord.strategy_key == key,
+                OptionPositionRecord.underlying == tk["ticker"],
+                OptionPositionRecord.status == "open"))).scalars().first()
+            if rec is None:
+                out_tickers.append({"ticker": tk["ticker"], "contracts": tk["contracts"],
+                                    "has_position": False})
+            else:
+                out_tickers.append(_serialize_option_position(rec, tk["contracts"]))
+    return {**base, "tickers": out_tickers}
 
 
 async def _trades_today_count(key: str) -> int:
