@@ -521,3 +521,10 @@ li { margin: 3px 0; }
 .sruler-badge.sell::after { border-top-color: #ef4444; }
 .sruler-spot { position: absolute; top: 0; width: 2px; height: 26px; background: #60a5fa;
   opacity: 0.7; }
+/* --- Builder visual chain: stats strip --- */
+.ostats { display: flex; flex-wrap: wrap; gap: 18px 34px; padding: 12px 4px;
+  border-top: 1px solid #1e2636; border-bottom: 1px solid #1e2636; margin: 10px 0; }
+.ostat-label { font-size: 11px; letter-spacing: 0.06em; color: #8b93a7; margin-bottom: 3px; }
+.ostat-value { font-size: 15px; font-weight: 600; color: #e6e9f2; }
+.ostat-value.pos, .ostat-value .pos { color: #22c55e; }
+.ostat-value.neg, .ostat-value .neg { color: #ef4444; }
