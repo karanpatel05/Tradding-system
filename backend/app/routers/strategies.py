@@ -169,15 +169,16 @@ async def position_detail(key: str) -> dict:
 
     # Best-effort live price (one-shot quote); degrade to null when disconnected.
     live = None
-    if session_manager.is_authenticated():
-        try:
-            from app.ibkr.market import get_quotes
-            q = (await get_quotes([symbol], timeout=3.0)).get(symbol, {})
-            live = q.get("last")
-            if live is None and q.get("bid") is not None and q.get("ask") is not None:
-                live = round((q["bid"] + q["ask"]) / 2, 4)
-        except Exception:  # noqa: BLE001 — never fail the page on a quote hiccup
-            logger.exception("position quote fetch failed for %s", symbol)
+    try:
+        from app.marketdata.facade import stock_quote
+        q = (await stock_quote(symbol)) or {}
+        live = q.get("last")
+        if live is None and q.get("bid") is not None and q.get("ask") is not None:
+            live = round((q["bid"] + q["ask"]) / 2, 4)
+        if live is None:
+            live = q.get("price")
+    except Exception:  # noqa: BLE001 — never fail the page on a quote hiccup
+        logger.exception("position quote fetch failed for %s", symbol)
 
     out: dict = {
         "has_position": True,

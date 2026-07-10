@@ -157,7 +157,7 @@ async def chain_expiries(underlying: str) -> list[str]:
         return d["expiries"] if d else None
 
     async def ib():
-        from app.options.chain import get_option_chain as ib_chain
+        from app.options.chain import _ib_option_chain as ib_chain
         out = await ib_chain(underlying)
         return out["expirations"] or None
 
