@@ -490,3 +490,14 @@ li { margin: 3px 0; }
 .chain-grid .price:not(.muted):hover{background:var(--accent-soft);color:var(--accent-bright)}
 .chain-grid tr.atm td{background:rgba(99,102,241,.07)}
 .chain-grid tr.atm .strike{color:var(--accent-bright);font-weight:700}
+/* --- Builder visual chain: expiry tabs --- */
+.xtabs { display: flex; gap: 14px; overflow-x: auto; padding: 6px 2px 10px; scrollbar-width: thin; }
+.xt-month { flex: 0 0 auto; }
+.xt-month-label { text-align: center; font-size: 12px; color: var(--muted, #8b93a7);
+  background: #1a2130; border-radius: 8px; padding: 3px 14px; margin-bottom: 6px; }
+.xt-month-label.active { color: #e6e9f2; background: #232d42; }
+.xt-days { display: flex; gap: 4px; justify-content: center; }
+.xt-day { border: none; background: transparent; color: #aab2c5; font-size: 13px;
+  padding: 4px 7px; border-radius: 7px; cursor: pointer; }
+.xt-day:hover { background: #1e2636; color: #e6e9f2; }
+.xt-day.active { background: #2563eb; color: #fff; font-weight: 600; }
