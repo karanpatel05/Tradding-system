@@ -1,53 +1,23 @@
-"""IBKR-backed price accessors for live Triple Calendar trading. The Phase-1 core
-needs SYNC reads; run_live builds a per-tick snapshot (see _Snapshot in
-strategy_class) from these async accessors, so the core stays unchanged and never
-does I/O. Needs OPRA real-time option data + market open for live quotes."""
+"""Price accessors for live Triple Calendar trading. The Phase-1 core needs SYNC reads;
+run_live builds a per-tick snapshot (see _Snapshot in strategy_class) from these async
+accessors, so the core stays unchanged and never does I/O. (Rewired to the marketdata
+facade in the Tastytrade migration; here still IBKR helpers, extraction step.)"""
 from __future__ import annotations
 
-import asyncio
-
-from app.ibkr.contracts import index, option, stock
-from app.ibkr.gateway import get_gateway
-from app.ibkr.market import get_quotes, normalize_ticker
+from app.ibkr.options_data import ib_chain_strikes, ib_option_quote, ib_stock_quotes, ib_vix
 
 
 class LivePriceSource:
     async def aunderlying(self, symbol: str) -> float | None:
-        return (await get_quotes([symbol]))[symbol]["price"]
+        return (await ib_stock_quotes([symbol]))[symbol]["price"]
 
     async def avix(self, symbol: str = "VIX") -> float | None:
-        """Live VIX index level (CBOE). None if unavailable — the caller fails closed."""
-        ib = await get_gateway().get_ib()
-        c = index(symbol)
-        await ib.qualifyContractsAsync(c)
-        t = ib.reqMktData(c, "", False, False)
-        await asyncio.sleep(2)
-        q = normalize_ticker(t)
-        ib.cancelMktData(c)
-        return q["price"]
+        """Live VIX index level. None if unavailable - the caller fails closed."""
+        return await ib_vix(symbol)
 
     async def aoption_mid(self, underlying: str, expiry, strike: float, right: str) -> float | None:
-        ib = await get_gateway().get_ib()
-        c = option(underlying, expiry, strike, right)
-        await ib.qualifyContractsAsync(c)
-        # qualify silently leaves conId=0 for a strike/expiry that doesn't exist (IBKR returns
-        # "Unknown contract" without raising). reqMktData then throws on the unhashable
-        # contract -> a 500 in the builder /quote. Degrade to "no quote" instead.
-        if not getattr(c, "conId", 0):
-            return None
-        t = ib.reqMktData(c, "", False, False)
-        await asyncio.sleep(2)
-        q = normalize_ticker(t)
-        ib.cancelMktData(c)
-        return q["price"]
+        q = await ib_option_quote(underlying, expiry, strike, right)
+        return q["price"] if q else None
 
     async def achain(self, underlying: str) -> list[float]:
-        # Strikes are returned across all expirations by reqSecDefOptParams; no per-expiry arg.
-        ib = await get_gateway().get_ib()
-        u = stock(underlying)
-        await ib.qualifyContractsAsync(u)
-        chains = await ib.reqSecDefOptParamsAsync(u.symbol, "", u.secType, u.conId)
-        for ch in chains:
-            if ch.exchange == "SMART":
-                return sorted(float(s) for s in ch.strikes)
-        return sorted(float(s) for s in chains[0].strikes) if chains else []
+        return await ib_chain_strikes(underlying)
