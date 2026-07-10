@@ -501,3 +501,23 @@ li { margin: 3px 0; }
   padding: 4px 7px; border-radius: 7px; cursor: pointer; }
 .xt-day:hover { background: #1e2636; color: #e6e9f2; }
 .xt-day.active { background: #2563eb; color: #fff; font-weight: 600; }
+/* --- Builder visual chain: strike ruler --- */
+.sruler { overflow-x: auto; padding: 34px 0 4px; cursor: pointer; user-select: none;
+  touch-action: pan-x; scrollbar-width: thin; }
+.sruler-track { position: relative; height: 44px; }
+.sruler-tick { position: absolute; top: 0; width: 12px; }
+.sruler-line { width: 1px; height: 14px; margin: 0 auto; background: #39415a; }
+.sruler-line.major { height: 22px; background: #556; }
+.sruler-tick.active .sruler-line { background: #e6e9f2; height: 24px; }
+.sruler-label { display: block; text-align: center; font-size: 10px; color: #8b93a7;
+  margin-top: 3px; transform: translateX(-38%); white-space: nowrap; }
+.sruler-badge { position: absolute; top: -30px; transform: translateX(-50%);
+  padding: 3px 10px; border-radius: 7px; font-size: 12px; font-weight: 700; color: #08110a; }
+.sruler-badge::after { content: ""; position: absolute; left: 50%; bottom: -5px;
+  transform: translateX(-50%); border: 5px solid transparent; border-bottom: none; }
+.sruler-badge.buy { background: #22c55e; }
+.sruler-badge.buy::after { border-top-color: #22c55e; }
+.sruler-badge.sell { background: #ef4444; color: #fff; }
+.sruler-badge.sell::after { border-top-color: #ef4444; }
+.sruler-spot { position: absolute; top: 0; width: 2px; height: 26px; background: #60a5fa;
+  opacity: 0.7; }
