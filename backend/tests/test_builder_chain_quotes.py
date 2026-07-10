@@ -4,8 +4,8 @@ from app.options import chain
 
 
 def _mk(monkeypatch, *, spot, strikes):
-    async def fake_quotes(syms):
-        return {"QQQ": {"price": spot}}
+    async def fake_quote(u):
+        return {"price": spot}
 
     async def fake_chain(u):
         return {"underlying": "QQQ", "expirations": [], "strikes": [float(s) for s in strikes]}
@@ -15,7 +15,7 @@ def _mk(monkeypatch, *, spot, strikes):
             return None  # a null inside the window -> must survive to the row
         return round(strike / 100 + (0.1 if right == "C" else 0.2), 2)
 
-    monkeypatch.setattr(chain, "get_quotes", fake_quotes)
+    monkeypatch.setattr(chain.facade, "stock_quote", fake_quote)
     monkeypatch.setattr(chain, "get_option_chain", fake_chain)
     monkeypatch.setattr(chain.LivePriceSource, "aoption_mid", fake_mid)
 

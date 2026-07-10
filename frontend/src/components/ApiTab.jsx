@@ -23,6 +23,24 @@ export default function ApiTab({ onChange }) {
     return () => clearInterval(id);
   }, []);
 
+  const [tt, setTt] = useState(null);
+  const [ttSecret, setTtSecret] = useState("");
+  const [ttRefresh, setTtRefresh] = useState("");
+  const [ttMsg, setTtMsg] = useState(null);
+  const loadTt = () => api.ttStatus().then(setTt).catch(() => {});
+  useEffect(() => { loadTt(); }, []);
+  const saveTt = async () => {
+    setTtMsg(null);
+    try {
+      const body = {};
+      if (ttSecret.trim()) body.provider_secret = ttSecret.trim();
+      if (ttRefresh.trim()) body.refresh_token = ttRefresh.trim();
+      const res = await api.ttSave(body);
+      setTt(res); setTtSecret(""); setTtRefresh("");
+      setTtMsg(res.configured ? "Saved — Tastytrade data enabled." : "Saved.");
+    } catch (e) { setTtMsg(e.message || "Save failed"); }
+  };
+
   const connect = async () => {
     setErr(null); setBusy(true);
     try {
@@ -96,6 +114,29 @@ export default function ApiTab({ onChange }) {
             </button>
           )}
         </div>
+      </section>
+
+      <section className="card">
+        <div className="card-head">
+          <h2>Tastytrade Market Data</h2>
+          <span className={`mode-badge ${tt?.configured ? "live" : "disabled"}`}>
+            {tt?.configured ? "Configured" : "Not configured"}
+          </span>
+        </div>
+        <p className="muted small">
+          Primary market-data source (quotes, option chains/mids, VIX, history). Create an
+          OAuth personal grant at my.tastytrade.com → API access, then paste the client
+          secret and refresh token here. Stored server-side in <code>.env</code>; IBKR is
+          used as fallback while its Gateway is connected.
+        </p>
+        <div className="row gap center" style={{ marginTop: 10 }}>
+          <input className="input" type="password" placeholder={tt?.has_secret ? "Provider secret (saved)" : "Provider secret"}
+            value={ttSecret} onChange={(e) => setTtSecret(e.target.value)} />
+          <input className="input" type="password" placeholder={tt?.has_refresh ? "Refresh token (saved)" : "Refresh token"}
+            value={ttRefresh} onChange={(e) => setTtRefresh(e.target.value)} />
+          <button className="btn primary" onClick={saveTt}>Save</button>
+        </div>
+        {ttMsg && <div className="muted small" style={{ marginTop: 8 }}>{ttMsg}</div>}
       </section>
     </div>
   );

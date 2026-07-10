@@ -18,8 +18,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from time import monotonic
 from zoneinfo import ZoneInfo
 
-from app.auth.manager import session_manager
-from app.ibkr.market import get_quotes
+from app.marketdata.facade import stock_quotes as facade_stock_quotes
 
 logger = logging.getLogger("trading.market")
 
@@ -103,14 +102,9 @@ async def get_market_overview() -> dict:
     status = get_market_status()
     base = {"status": status, "indices": [], "data_available": False, "note": None}
 
-    if not session_manager.is_authenticated():
-        base["note"] = "Live market data requires an IBKR Gateway connection."
-        base["indices"] = [{**ix, **_NULL_QUOTE} for ix in INDICES]
-        return base
-
     symbols = [ix["symbol"] for ix in INDICES]
     quotes, week_changes = await asyncio.gather(
-        get_quotes(symbols, timeout=2.5),
+        facade_stock_quotes(symbols, timeout=2.5),
         _weekly_changes(symbols),
         return_exceptions=True,
     )
@@ -122,6 +116,9 @@ async def get_market_overview() -> dict:
     if isinstance(week_changes, Exception):  # weekly is best-effort, never fatal
         logger.warning("Weekly change fetch failed: %s", week_changes)
         week_changes = {}
+
+    if quotes and all(q.get("price") is None for q in quotes.values()):
+        base["note"] = "No market data source available (Tastytrade not configured, Gateway down)."
 
     indices = [index_row(ix, quotes.get(ix["symbol"]), week_changes.get(ix["symbol"]))
                for ix in INDICES]

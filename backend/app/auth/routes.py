@@ -6,6 +6,7 @@ shows connection config + status and can connect/disconnect the local Gateway.""
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -13,10 +14,13 @@ from pydantic import BaseModel
 from app.auth.manager import session_manager
 from app.config import get_settings
 from app.ibkr.account import get_accounts
+from app.tastytrade.session import reset_tt_session
 
 logger = logging.getLogger("trading.auth")
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+_ENV_PATH = Path(__file__).resolve().parents[2] / ".env"   # backend/.env
 
 
 class ConnectionStatus(BaseModel):
@@ -86,3 +90,54 @@ async def connect() -> ConnectionStatus:
 async def disconnect() -> ConnectionStatus:
     session_manager.disconnect()
     return await _status()
+
+
+class TTCredsBody(BaseModel):
+    provider_secret: str | None = None
+    refresh_token: str | None = None
+
+
+def _upsert_env(path: Path, values: dict[str, str]) -> None:
+    lines = path.read_text().splitlines() if path.exists() else []
+    for key, val in values.items():
+        row = f"{key}={val}"
+        for i, ln in enumerate(lines):
+            if ln.startswith(f"{key}="):
+                lines[i] = row
+                break
+        else:
+            lines.append(row)
+    path.write_text("\n".join(lines) + "\n")
+
+
+def _tt_state() -> dict:
+    s = get_settings()
+    return {"configured": bool(s.tt_provider_secret and s.tt_refresh_token),
+            "has_secret": bool(s.tt_provider_secret),
+            "has_refresh": bool(s.tt_refresh_token),
+            "data_primary": s.data_primary}
+
+
+@router.get("/tastytrade")
+async def tt_status() -> dict:
+    return _tt_state()
+
+
+@router.put("/tastytrade")
+async def tt_save(body: TTCredsBody) -> dict:
+    """Persist Tastytrade OAuth creds to backend/.env and apply them live (no restart)."""
+    s = get_settings()
+    updates: dict[str, str] = {}
+    if body.provider_secret is not None:
+        s.tt_provider_secret = body.provider_secret.strip()
+        updates["TT_PROVIDER_SECRET"] = s.tt_provider_secret
+    if body.refresh_token is not None:
+        s.tt_refresh_token = body.refresh_token.strip()
+        updates["TT_REFRESH_TOKEN"] = s.tt_refresh_token
+    if updates:
+        from app.providers import get_historical_provider
+
+        _upsert_env(_ENV_PATH, updates)
+        reset_tt_session()
+        get_historical_provider.cache_clear()
+    return _tt_state()

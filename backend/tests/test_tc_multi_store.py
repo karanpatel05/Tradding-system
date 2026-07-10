@@ -13,6 +13,17 @@ SE, BE = date(2026, 7, 17), date(2026, 7, 24)
 @pytest.mark.asyncio
 async def test_open_lookups_key_by_underlying():
     await init_db()
+    # Isolation-safe under a shared test DB: close any open strategy_2 records left by
+    # earlier tests so load_open_id below resolves to OUR seeded records, not a leftover.
+    from sqlalchemy import update
+
+    from app.db.base import session_scope
+    from app.db.models import OptionPositionRecord
+    async with session_scope() as s:
+        await s.execute(update(OptionPositionRecord)
+                        .where(OptionPositionRecord.strategy_key == "strategy_2",
+                               OptionPositionRecord.status == "open")
+                        .values(status="closed"))
     q = Position("QQQ", date(2026, 6, 25), [Calendar(445.0, SE, BE)], net_debit=1.5)
     s = Position("SPY", date(2026, 6, 25), [Calendar(560.0, SE, BE)], net_debit=2.5)
     qid = await save_position("strategy_2", q, order_ids=[], paper=True)

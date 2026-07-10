@@ -16,6 +16,9 @@ pydantic-settings==2.14.1
 ib_async==2.1.0
 httpx==0.28.1
 
+# Tastytrade market data
+tastytrade==12.4.1
+
 # Background scheduling for strategy scans
 APScheduler==3.11.2
 

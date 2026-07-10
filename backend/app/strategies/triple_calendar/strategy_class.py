@@ -123,11 +123,25 @@ class TripleCalendarStrategy(BaseStrategy):
             record_ids[rec.underlying] = rec.id
         await log_event("Triple Calendar live loop started", category="action",
                         strategy_key=self.key)
+        monitor_logged = False
         while True:
-            # Pause unless READY AND the regular session is open — no trading on stale quotes.
-            if get_gateway().state is not ConnState.READY or not get_market_status()["is_open"]:
+            # Market closed: nothing to do at all.
+            if not get_market_status()["is_open"]:
                 await asyncio.sleep(get_settings().tc_manage_interval_seconds)
                 continue
+            # Gateway state decides the tick kind: READY -> full (may trade);
+            # NOT READY -> monitor-only (facade data still flows; valuations persist;
+            # no order actions). Journal the transition once per state change.
+            ready = get_gateway().state is ConnState.READY
+            if not ready and not monitor_logged:
+                await log_event("Triple Calendar: monitor-only (Gateway not READY - "
+                                "valuations continue, order actions paused)",
+                                category="decision", strategy_key=self.key)
+                monitor_logged = True
+            elif ready and monitor_logged:
+                await log_event("Triple Calendar: Gateway READY - trading resumed",
+                                category="decision", strategy_key=self.key)
+                monitor_logged = False
             vix = None
             tickers = await self._tickers()
             try:
@@ -151,10 +165,11 @@ class TripleCalendarStrategy(BaseStrategy):
                             continue
                         strikes = await src.achain(u)
                         snapshot = await _resolve_snapshot(src, params, spot, strikes, today, pos)
-                        out = await manage_step(today, snapshot, params, executor, pos,
-                                                vix=vix, contracts=contracts)
-                        pos, rid = await self._persist(out, rid)
-                        positions[u], record_ids[u] = pos, rid
+                        if ready:
+                            out = await manage_step(today, snapshot, params, executor, pos,
+                                                    vix=vix, contracts=contracts)
+                            pos, rid = await self._persist(out, rid)
+                            positions[u], record_ids[u] = pos, rid
                         # Persist the live valuation the core computed (in-memory snapshot).
                         if pos is not None and rid is not None and pos.net_debit:
                             from app.strategies.triple_calendar.strategy import position_value
@@ -174,7 +189,7 @@ class TripleCalendarStrategy(BaseStrategy):
                                 category="decision", strategy_key=self.key)
             # Adaptive cadence: fast-poll while any ticker is flat AND VIX blocks entry.
             vmax = TripleCalendarParams().vix_entry_max
-            any_flat_blocked = (vix is None or vix > vmax) and any(
+            any_flat_blocked = ready and (vix is None or vix > vmax) and any(
                 positions.get(tk["ticker"]) is None for tk in tickers)
             poll = (get_settings().vix_wait_poll_seconds if any_flat_blocked
                     else get_settings().tc_manage_interval_seconds)
