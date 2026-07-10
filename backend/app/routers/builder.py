@@ -79,6 +79,38 @@ async def chain(underlying: str) -> dict:
     return await chain_mod.get_option_chain(underlying)
 
 
+@router.get("/spot")
+async def spot(underlying: str) -> dict:
+    """Header quote for the Builder: last price + day change vs the previous daily close
+    (facade-served; falls back to daily bars when the live quote has no close)."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.marketdata import facade
+
+    q = await facade.stock_quote(underlying)
+    price = (q or {}).get("price")
+    prev = (q or {}).get("close")
+    if prev is None and price is not None:
+        bars = await facade.bars(underlying, "1d",
+                                 start=datetime.now(timezone.utc) - timedelta(days=7))
+        closed = [b for b in bars if b.get("close") is not None]
+        if closed:
+            today = datetime.now(timezone.utc).date()
+            last_day = datetime.fromtimestamp(closed[-1]["time"] / 1000, tz=timezone.utc).date()
+            # If the newest daily bar is today's (still forming), the previous close is
+            # the bar before it; otherwise the newest bar IS the previous close.
+            if last_day == today and len(closed) >= 2:
+                prev = closed[-2]["close"]
+            elif last_day != today:
+                prev = closed[-1]["close"]
+    out = {"underlying": underlying.upper(), "price": price, "prev_close": prev,
+           "change_abs": None, "change_pct": None}
+    if price is not None and prev:
+        out["change_abs"] = round(price - prev, 4)
+        out["change_pct"] = round((price - prev) / prev, 6)
+    return out
+
+
 @router.get("/chain-quotes")
 async def chain_quotes(underlying: str, expiry: str, count: int = 8) -> dict:
     count = max(1, min(int(count), 25))  # bound the concurrent quote fan-out

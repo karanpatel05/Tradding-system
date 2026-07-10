@@ -10,6 +10,8 @@ import { computeStats } from "./builder/payoffStats.js";
 
 const money = (n) => (n == null ? "—" : `${n >= 0 ? "+" : "−"}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 const emptyLeg = (expiry, strike) => ({ action: "BUY", right: "C", strike, expiry, qty: 1 });
+const dteOf = (iso) => Math.max(0, Math.round((new Date(iso + "T00:00:00") - new Date().setHours(0, 0, 0, 0)) / 86400000));
+const fmtDay = (d) => d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 
 export default function BuilderTab() {
   const [underlying, setUnderlying] = useState("QQQ");
@@ -26,10 +28,17 @@ export default function BuilderTab() {
   const [busy, setBusy] = useState(false);
   const [selectedLeg, setSelectedLeg] = useState(null); // index into legs
   const [spot, setSpot] = useState(null);
+  const [spotInfo, setSpotInfo] = useState(null);       // {price, change_abs, change_pct}
   const [rangePct, setRangePct] = useState(8);          // chart x-window ±%
+  const [evalDays, setEvalDays] = useState(null);       // DATE scrubber: null = at expiration
 
-  const loadChain = () => api.builderChain(underlying)
-    .then((c) => { setChain(c); }).catch((e) => setMsg(e.message));
+  const loadChain = () => {
+    api.builderChain(underlying).then((c) => { setChain(c); }).catch((e) => setMsg(e.message));
+    api.builderSpot(underlying).then((s) => {
+      setSpotInfo(s);
+      if (s?.price != null) setSpot(s.price);
+    }).catch(() => {});
+  };
   const loadTrades = () => api.builderTrades().then((d) => setTrades(d.trades)).catch(() => {});
 
   useEffect(() => { loadTrades(); }, []);
@@ -82,12 +91,18 @@ export default function BuilderTab() {
     } catch (e) { setMsg(e.message); } finally { setBusy(false); }
   };
 
-  const preview = async () => {
+  const preview = async (days = evalDays) => {
     if (netDebit == null) { setMsg("Fetch quotes first."); return; }
     setBusy(true); setMsg(null);
     try {
       const body = { legs, net_debit: netDebit, iv: Number(iv) };
       if (spot != null) { body.lo = spot * 0.5; body.hi = spot * 1.5; body.points = 161; }
+      // DATE scrubber: value BEFORE the nearest expiry re-prices via Black-Scholes at that
+      // date; null/max = the backend default (at the nearest expiration).
+      if (days != null && maxDays > 0 && days < maxDays) {
+        const d = new Date(); d.setDate(d.getDate() + days);
+        body.eval_date = d.toISOString().slice(0, 10);
+      }
       setPayoff(await api.builderPayoff(body));
     } catch (e) { setMsg(e.message); } finally { setBusy(false); }
   };
@@ -113,6 +128,17 @@ export default function BuilderTab() {
     : netDebit >= 0 ? `$${netDebit.toFixed(2)} debit` : `$${Math.abs(netDebit).toFixed(2)} credit`, [netDebit]);
 
   const sel = selectedLeg != null ? legs[selectedLeg] : null;
+  // Nearest leg expiry bounds the DATE scrubber (BS is priced up to the front expiration).
+  const nearestExpiry = useMemo(() => {
+    const es = legs.map((l) => l.expiry).filter(Boolean).sort();
+    return es[0] || null;
+  }, [legs]);
+  const maxDays = nearestExpiry ? dteOf(nearestExpiry) : 0;
+  const dateLabel = useMemo(() => {
+    const days = evalDays == null ? maxDays : Math.min(evalDays, maxDays);
+    const d = new Date(); d.setDate(d.getDate() + days);
+    return `${fmtDay(d)} (${days}d)`;
+  }, [evalDays, maxDays]);
   const stats = useMemo(
     () => (payoff ? computeStats(payoff.curve, payoff.breakevens, spot, legs) : null),
     [payoff, spot, legs]);
@@ -132,17 +158,27 @@ export default function BuilderTab() {
       <section className="card">
         <div className="row gap center">
           <input className="input narrow" value={underlying}
-            onChange={(e) => { setUnderlying(e.target.value.toUpperCase()); setSpot(null); }} placeholder="Underlying" />
+            onChange={(e) => { setUnderlying(e.target.value.toUpperCase()); setSpot(null); setSpotInfo(null); }} placeholder="Underlying" />
           <button className="btn" onClick={loadChain}>Load chain</button>
-          {spot != null && <span className="price-chip">${spot.toFixed(2)}</span>}
+          {spotInfo?.price != null && (
+            <span className="hdr-quote">
+              <b className="hdr-price">${spotInfo.price.toFixed(2)}</b>
+              {spotInfo.change_pct != null && (
+                <span className={`hdr-chg ${spotInfo.change_abs >= 0 ? "pos" : "neg"}`}>
+                  <span>{spotInfo.change_abs >= 0 ? "+" : ""}{(spotInfo.change_pct * 100).toFixed(2)}%</span>
+                  <span>{spotInfo.change_abs >= 0 ? "+" : "−"}${Math.abs(spotInfo.change_abs).toFixed(2)}</span>
+                </span>
+              )}
+            </span>
+          )}
           <span className="muted small">{chain.expirations.length} expiries · {chain.strikes.length} strikes</span>
         </div>
 
         {chain.expirations.length ? (
           <>
-            <div className="muted small" style={{ marginTop: 10 }}>EXPIRATION{sel?.expiry ? `: ${sel.expiry}` : ""}</div>
+            <div className="olabel" style={{ marginTop: 10 }}>EXPIRATION: <b>{sel?.expiry ? `${dteOf(sel.expiry)}d` : "—"}</b></div>
             <ExpiryTabs expirations={chain.expirations} value={sel?.expiry || null} onChange={pickExpiry} />
-            <div className="muted small">STRIKE:</div>
+            <div className="olabel">STRIKE:</div>
             <StrikeRuler strikes={chain.strikes} value={sel?.strike ?? null}
               right={sel?.right || "C"} action={sel?.action || "BUY"} spot={spot} onChange={pickStrike} />
           </>
@@ -153,24 +189,32 @@ export default function BuilderTab() {
         <StatsRow netDebit={netDebit} stats={stats} />
 
         {payoff ? (
-          <>
-            <PayoffChart curve={payoff.curve} breakevens={payoff.breakevens}
-              strikes={legStrikes} spot={spot} window={chartWindow} />
-            <div className="muted small">At {payoff.eval_date}</div>
-          </>
+          <PayoffChart curve={payoff.curve} breakevens={payoff.breakevens}
+            strikes={legStrikes} spot={spot} window={chartWindow} />
         ) : (
           <div className="muted">Fetch quotes, then Preview to see the payoff.</div>
         )}
 
+        {maxDays > 0 && (
+          <div className="row gap center date-row">
+            <label className="olabel">DATE: <b>{dateLabel}</b></label>
+            <input type="range" min="0" max={maxDays} step="1"
+              value={evalDays == null ? maxDays : Math.min(evalDays, maxDays)}
+              onChange={(e) => setEvalDays(Number(e.target.value))}
+              onPointerUp={() => { if (netDebit != null) preview(); }} />
+            <span className="muted small">(At expiration)</span>
+          </div>
+        )}
+
         <div className="row gap center sliders-row">
-          <label className="muted small">RANGE: ±{rangePct}%</label>
+          <label className="olabel">RANGE: <b>±{rangePct}%</b></label>
           <input type="range" min="2" max="50" step="1" value={rangePct}
             onChange={(e) => setRangePct(Number(e.target.value))} />
-          <label className="muted small">IMPLIED VOLATILITY: {(Number(iv) * 100).toFixed(1)}%</label>
+          <label className="olabel">🌡 IMPLIED VOLATILITY: <b>{(Number(iv) * 100).toFixed(1)}%</b></label>
           <input type="range" min="0.05" max="1.5" step="0.01" value={iv}
             onChange={(e) => setIv(e.target.value)}
             onPointerUp={() => { if (netDebit != null) preview(); }} />
-          <button className="btn" onClick={preview} disabled={busy || !legs.length}>Preview</button>
+          <button className="btn" onClick={() => preview()} disabled={busy || !legs.length}>Preview</button>
         </div>
 
         <h4>Legs</h4>

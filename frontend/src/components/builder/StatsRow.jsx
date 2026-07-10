@@ -16,26 +16,38 @@ export default function StatsRow({ netDebit, stats }) {
     ? <span className={tone}>Infinite</span> : usd(v);
   const bes = stats?.breakevens || [];
   return (
-    <div className="ostats">
-      <Stat label={netDebit != null && netDebit < 0 ? "NET CREDIT:" : "NET DEBIT:"}>
-        {debit$ == null ? "—" : `🪙 ${usd(debit$)}`}
-      </Stat>
-      <Stat label="MAX LOSS:" tone="neg">
-        {fmt(stats?.maxLoss, "neg")}
-      </Stat>
-      <Stat label="MAX PROFIT:" tone="pos">
-        {fmt(stats?.maxProfit, "pos")}
-      </Stat>
-      <Stat label="BREAKEVEN:">
-        {bes.length === 0 ? "—" : bes.map((b, i) => (
-          <span key={i}>
-            {i > 0 && " / "}
-            {bes.length === 1 && b.movePct != null && (b.movePct >= 0 ? "Above " : "Below ")}
-            <b>{usd(b.price)}</b>
-            {b.movePct != null && <span className="muted small"> ({b.movePct >= 0 ? "+" : ""}{(b.movePct * 100).toFixed(1)}%)</span>}
-          </span>
-        ))}
-      </Stat>
+    <div className="ostats-wrap">
+      <span className="ostats-chevron">‹</span>
+      <div className="ostats">
+        <Stat label={netDebit != null && netDebit < 0 ? "NET CREDIT:" : "NET DEBIT:"}>
+          {debit$ == null ? "—" : <>🪙 {usd(debit$)}</>}
+        </Stat>
+        <Stat label="MAX LOSS:" tone="neg">
+          <span className="neg">↘</span> {fmt(stats?.maxLoss, "neg")}
+        </Stat>
+        <Stat label="MAX PROFIT:" tone="pos">
+          <span className="pos">↗</span> {fmt(stats?.maxProfit, "pos")}
+        </Stat>
+        <Stat label="CHANCE OF PROFIT:">
+          <span className="muted">🎲 --% 🔒</span>
+        </Stat>
+        <Stat label="BREAKEVEN:">
+          {bes.length === 0 ? "—" : (
+            <>
+              <span className="muted">→ </span>
+              {bes.map((b, i) => (
+                <span key={i}>
+                  {i > 0 && " / "}
+                  {bes.length === 1 && b.movePct != null && (b.movePct >= 0 ? "Above " : "Below ")}
+                  <b>{usd(b.price)}</b>
+                  {b.movePct != null && <span className="muted small"> ({b.movePct >= 0 ? "+" : ""}{(b.movePct * 100).toFixed(1)}%)</span>}
+                </span>
+              ))}
+            </>
+          )}
+        </Stat>
+      </div>
+      <span className="ostats-chevron">›</span>
     </div>
   );
 }
