@@ -12,12 +12,14 @@ from datetime import datetime, timezone
 from app.config import get_settings
 from app.marketdata.sanity import MidSanity
 
-_TT_TIMEOUT = 10.0
+_SOURCE_TIMEOUT = 10.0
 _CHAIN_TTL = 3600.0
+_JOURNAL_COOLDOWN = 300.0
 
 _sanity = MidSanity()
 _chains: dict[str, tuple[float, dict]] = {}
 _last_source: dict[str, str] = {}
+_journal_cooldown: dict[str, float] = {}
 
 
 # Indirection points so tests (and the fallback) can be faked without network.
@@ -37,17 +39,31 @@ async def _ib_stock_quotes(symbols, timeout: float = 3.0):
 
 
 async def _note_source(op: str, source: str) -> None:
+    """Record which source served `op` (an instrument-scoped key such as
+    "stock_quote:QQQ"). The dict write happens before any await so concurrent
+    calls for different instruments never race each other. Journaling a
+    transition is cooled down per (category, source) so a whole-source flip
+    (e.g. 30 option keys transitioning at once) doesn't spam the journal."""
     prev = _last_source.get(op)
-    if prev is not None and prev != source:
-        from app.services.journal import log_event
-        await log_event(f"market data: {op} now served by {source} (was {prev})",
-                        category="action")
     _last_source[op] = source
+    if prev is None or prev == source:
+        return
+    category, _, instrument = op.partition(":")
+    cooldown_key = f"{category}->{source}"
+    now = time.monotonic()
+    if now - _journal_cooldown.get(cooldown_key, 0.0) <= _JOURNAL_COOLDOWN:
+        return
+    _journal_cooldown[cooldown_key] = now
+    from app.services.journal import log_event
+    label = f"{category} {instrument}".strip()
+    await log_event(f"market data: {label} now served by {source} (was {prev})",
+                    category="action")
 
 
 async def _race(op: str, tt_call, ib_call):
     """Try primary then fallback; a result of None/[]/{} is a miss. IBKR is only
-    attempted while the Gateway is READY. Exceptions count as misses."""
+    attempted while the Gateway is READY. Exceptions count as misses. `op` is an
+    instrument-scoped key (e.g. "stock_quote:QQQ") used for source tracking."""
     order = [("tastytrade", tt_call), ("ibkr", ib_call)]
     if get_settings().data_primary == "ibkr":
         order.reverse()
@@ -55,7 +71,7 @@ async def _race(op: str, tt_call, ib_call):
         if call is None or (name == "ibkr" and not _ib_ready()):
             continue
         try:
-            out = await asyncio.wait_for(call(), _TT_TIMEOUT)
+            out = await asyncio.wait_for(call(), _SOURCE_TIMEOUT)
         except Exception:  # noqa: BLE001 - a failed source is a miss, not a crash
             out = None
         if out not in (None, [], {}):
@@ -75,13 +91,14 @@ async def stock_quote(symbol: str) -> dict | None:
         ask = q["ask"] if q else None
         mid = (bid + ask) / 2 if bid is not None and ask is not None else None
         price = last if last is not None else mid
-        return {"bid": bid, "ask": ask, "last": last, "close": None, "price": price}
+        d = {"bid": bid, "ask": ask, "last": last, "close": None, "price": price}
+        return d if d["price"] is not None else None
 
     async def ib():
-        return (await _ib_stock_quotes([symbol])).get(symbol)
+        q = (await _ib_stock_quotes([symbol])).get(symbol)
+        return q if q and q.get("price") is not None else None
 
-    out = await _race("stock_quote", tt, ib)
-    return out if out and out.get("price") is not None else out
+    return await _race(f"stock_quote:{symbol}", tt, ib)
 
 
 async def stock_quotes(symbols: list[str], timeout: float = 3.0) -> dict[str, dict]:
@@ -131,7 +148,7 @@ async def chain_strikes(underlying: str) -> list[float]:
         from app.ibkr.options_data import ib_chain_strikes
         return await ib_chain_strikes(underlying)
 
-    return await _race("chain", tt, ib) or []
+    return await _race(f"chain:{underlying}", tt, ib) or []
 
 
 async def chain_expiries(underlying: str) -> list[str]:
@@ -144,7 +161,7 @@ async def chain_expiries(underlying: str) -> list[str]:
         out = await ib_chain(underlying)
         return out["expirations"] or None
 
-    return await _race("chain_expiries", tt, ib) or []
+    return await _race(f"chain_expiries:{underlying}", tt, ib) or []
 
 
 # --- option mid (sanity-guarded for BOTH sources) ---------------------------
@@ -172,16 +189,18 @@ async def option_mid(underlying: str, expiry, strike: float, right: str) -> floa
             return None
         if q["bid"] is not None and q["ask"] is not None:
             mid, reason = _sanity.check(key, q["bid"], q["ask"])
+            if reason not in (None, "missing"):
+                await _warn_sanity(key, q["bid"], q["ask"], reason)
         elif q["price"] is not None:
             # last/close only: no spread to validate, but the jump rule still protects.
             mid, reason = _sanity.check(key, q["price"], q["price"])
+            if reason not in (None, "missing"):
+                await _warn_sanity(key, q["price"], q["price"], reason)
         else:
             return None
-        if reason not in (None, "missing"):
-            await _warn_sanity(key, q["bid"], q["ask"], reason)
         return mid
 
-    return await _race("option_mid", tt, ib)
+    return await _race(f"option_mid:{key}", tt, ib)
 
 
 async def _warn_sanity(key: str, bid, ask, reason: str) -> None:
@@ -210,6 +229,8 @@ async def vix() -> float | None:
 async def bars(symbol: str, timeframe: str, start, end=None) -> list[dict]:
     if isinstance(start, datetime) and start.tzinfo is None:
         start = start.replace(tzinfo=timezone.utc)
+    if isinstance(end, datetime) and end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
 
     async def tt():
         return await _get_streamer().candles(symbol, timeframe, start=start, end=end) or None
@@ -218,4 +239,4 @@ async def bars(symbol: str, timeframe: str, start, end=None) -> list[dict]:
         from app.providers.ibkr_historical import IBKRHistoricalProvider
         return await IBKRHistoricalProvider().get_bars(symbol, timeframe, start=start, end=end)
 
-    return await _race("bars", tt, ib) or []
+    return await _race(f"bars:{symbol}", tt, ib) or []

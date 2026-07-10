@@ -18,6 +18,7 @@ class _FakeStreamer:
 
 def _reset():
     facade._last_source.clear()
+    facade._journal_cooldown.clear()
     facade._chains.clear()
     facade._sanity._last.clear()
 
@@ -70,3 +71,59 @@ async def test_option_mid_sanity_rejects_jump(monkeypatch):
 async def _fake_chain(underlying):
     return {"expiries": ["2026-07-30"], "strikes": [495.0, 500.0, 505.0],
             "by_key": {("2026-07-30", 500.0, "C"): ".QQQ260730C500"}}
+
+
+class _PerSymbolStreamer:
+    """Serves fixed quote/trade data per symbol; missing symbols are misses."""
+    def __init__(self, quotes: dict, trades: dict):
+        self._quotes, self._trades = quotes, trades
+    async def quote(self, symbol, timeout=3.0):
+        return self._quotes.get(symbol)
+    async def trade_price(self, symbol, timeout=3.0):
+        return self._trades.get(symbol)
+
+
+@pytest.mark.asyncio
+async def test_no_false_transition_across_symbols(monkeypatch):
+    """Symbol A stays on tastytrade throughout; symbol B falls back to ibkr on its
+    own first call. Because _last_source is keyed per-instrument, A's steady state
+    must never be reported as a transition just because B (a different instrument)
+    is being served by a different source."""
+    _reset()
+    monkeypatch.setattr(facade, "_ib_ready", lambda: True)
+    streamer = _PerSymbolStreamer(quotes={"A": {"bid": 10.0, "ask": 10.2}},
+                                  trades={"A": 10.1})
+    monkeypatch.setattr(facade, "_get_streamer", lambda: streamer)
+
+    async def fake_ib(symbols, timeout=3.0):
+        return {"B": {"bid": 20.0, "ask": 20.2, "last": 20.1, "close": None, "price": 20.1}}
+    monkeypatch.setattr(facade, "_ib_stock_quotes", fake_ib)
+
+    calls = []
+    async def fake_log_event(message, **kwargs):
+        calls.append(message)
+    monkeypatch.setattr("app.services.journal.log_event", fake_log_event)
+
+    await facade.stock_quote("A")
+    await facade.stock_quote("B")
+    await facade.stock_quote("A")
+
+    assert not any("now served by" in c for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_null_price_quote_falls_back(monkeypatch):
+    """A quote with bid=None/ask=None and no trade price yields price=None from the
+    tastytrade closure, which must be treated as a miss so _race falls through to
+    IBKR rather than returning a price-less dict."""
+    _reset()
+    monkeypatch.setattr(facade, "_ib_ready", lambda: True)
+    monkeypatch.setattr(facade, "_get_streamer",
+                        lambda: _FakeStreamer(quote={"bid": None, "ask": None}, trade=None))
+
+    async def fake_ib(symbols, timeout=3.0):
+        return {"QQQ": {"bid": 5.0, "ask": 5.2, "last": 5.1, "close": None, "price": 5.1}}
+    monkeypatch.setattr(facade, "_ib_stock_quotes", fake_ib)
+
+    q = await facade.stock_quote("QQQ")
+    assert q["price"] == 5.1
