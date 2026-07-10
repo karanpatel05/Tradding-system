@@ -528,3 +528,10 @@ li { margin: 3px 0; }
 .ostat-value { font-size: 15px; font-weight: 600; color: #e6e9f2; }
 .ostat-value.pos, .ostat-value .pos { color: #22c55e; }
 .ostat-value.neg, .ostat-value .neg { color: #ef4444; }
+/* --- Builder visual chain: integration --- */
+.price-chip { background: #16351f; color: #22c55e; font-weight: 700; border-radius: 8px;
+  padding: 3px 10px; font-size: 14px; }
+.sliders-row { margin: 8px 0 14px; flex-wrap: wrap; }
+.sliders-row input[type="range"] { flex: 1 1 140px; min-width: 120px; accent-color: #2563eb; }
+tr.leg-selected td { background: #1b2436; }
+tr.leg-selected td:first-child { box-shadow: inset 3px 0 0 #2563eb; }

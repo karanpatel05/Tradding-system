@@ -10,7 +10,7 @@ const label = (iso) => { const [y, m, d] = iso.split("-"); return `${MON[+m - 1]
 const dte = (iso) => Math.max(0, Math.round((new Date(iso + "T00:00:00") - new Date().setHours(0, 0, 0, 0)) / 86400000));
 const mid = (n) => (n == null ? "—" : n.toFixed(2));
 
-export default function ChainGrid({ underlying, expirations = [], onAddLeg }) {
+export default function ChainGrid({ underlying, expirations = [], onAddLeg, onSpot }) {
   const [expiry, setExpiry] = useState(null);
   const [count, setCount] = useState(8);
   const [data, setData] = useState(null);
@@ -19,7 +19,11 @@ export default function ChainGrid({ underlying, expirations = [], onAddLeg }) {
 
   const load = async (exp, cnt) => {
     setLoading(true); setErr(null); setExpiry(exp);
-    try { setData(await api.builderChainQuotes(underlying, exp, cnt)); }
+    try {
+      const d = await api.builderChainQuotes(underlying, exp, cnt);
+      setData(d);
+      if (d?.spot > 0) onSpot?.(d.spot);
+    }
     catch (e) { setErr(e.message); setData(null); }
     finally { setLoading(false); }
   };

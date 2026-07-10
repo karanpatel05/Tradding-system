@@ -3,6 +3,10 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
 import PayoffChart from "./PayoffChart.jsx";
 import ChainGrid from "./ChainGrid.jsx";
+import ExpiryTabs from "./builder/ExpiryTabs.jsx";
+import StrikeRuler from "./builder/StrikeRuler.jsx";
+import StatsRow from "./builder/StatsRow.jsx";
+import { computeStats } from "./builder/payoffStats.js";
 
 const money = (n) => (n == null ? "—" : `${n >= 0 ? "+" : "−"}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 const emptyLeg = (expiry, strike) => ({ action: "BUY", right: "C", strike, expiry, qty: 1 });
@@ -20,6 +24,9 @@ export default function BuilderTab() {
   const [trades, setTrades] = useState([]);
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [selectedLeg, setSelectedLeg] = useState(null); // index into legs
+  const [spot, setSpot] = useState(null);
+  const [rangePct, setRangePct] = useState(8);          // chart x-window ±%
 
   const loadChain = () => api.builderChain(underlying)
     .then((c) => { setChain(c); }).catch((e) => setMsg(e.message));
@@ -32,10 +39,38 @@ export default function BuilderTab() {
   // monitor's target/stop uses, so it must never be saved against a different leg set.
   // Clearing it forces a re-fetch (Preview/Save are gated on netDebit != null).
   const invalidateQuote = () => { setNetDebit(null); setPayoff(null); };
-  const addLeg = () => { setLegs((ls) => [...ls, emptyLeg(chain.expirations[0] || "", chain.strikes[Math.floor(chain.strikes.length / 2)] || 0)]); invalidateQuote(); };
   const setLeg = (i, patch) => { setLegs((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch, mid: null } : l))); invalidateQuote(); };
-  const removeLeg = (i) => { setLegs((ls) => ls.filter((_, j) => j !== i)); invalidateQuote(); };
-  const addLegFromChain = (leg) => { setLegs((ls) => [...ls, { ...leg, mid: null }]); invalidateQuote(); };
+
+  // The expiry tabs + strike ruler edit the SELECTED leg. With no legs yet, first
+  // interaction creates leg 0 (BUY CALL at the picked value) and selects it.
+  const atmStrike = () => {
+    const ks = chain.strikes;
+    if (!ks.length) return 0;
+    if (spot == null) return ks[Math.floor(ks.length / 2)];
+    return ks.reduce((a, b) => (Math.abs(b - spot) < Math.abs(a - spot) ? b : a));
+  };
+  const pickExpiry = (iso) => {
+    if (selectedLeg == null || !legs[selectedLeg]) {
+      setLegs((ls) => [...ls, { ...emptyLeg(iso, atmStrike()) }]);
+      setSelectedLeg(legs.length);
+      invalidateQuote();
+    } else setLeg(selectedLeg, { expiry: iso });
+  };
+  const pickStrike = (k) => {
+    if (selectedLeg == null || !legs[selectedLeg]) {
+      setLegs((ls) => [...ls, { ...emptyLeg(chain.expirations[0] || "", k) }]);
+      setSelectedLeg(legs.length);
+      invalidateQuote();
+    } else setLeg(selectedLeg, { strike: k });
+  };
+
+  const addLeg = () => { setLegs((ls) => [...ls, emptyLeg(chain.expirations[0] || "", atmStrike())]); setSelectedLeg(legs.length); invalidateQuote(); };
+  const removeLeg = (i) => {
+    setLegs((ls) => ls.filter((_, j) => j !== i));
+    setSelectedLeg((sel) => (sel == null ? null : sel === i ? (i > 0 ? i - 1 : null) : sel > i ? sel - 1 : sel));
+    invalidateQuote();
+  };
+  const addLegFromChain = (leg) => { setLegs((ls) => [...ls, { ...leg, mid: null }]); setSelectedLeg(legs.length); invalidateQuote(); };
 
   const fetchQuotes = async () => {
     setBusy(true); setMsg(null);
@@ -50,8 +85,11 @@ export default function BuilderTab() {
   const preview = async () => {
     if (netDebit == null) { setMsg("Fetch quotes first."); return; }
     setBusy(true); setMsg(null);
-    try { setPayoff(await api.builderPayoff({ legs, net_debit: netDebit, iv: Number(iv) })); }
-    catch (e) { setMsg(e.message); } finally { setBusy(false); }
+    try {
+      const body = { legs, net_debit: netDebit, iv: Number(iv) };
+      if (spot != null) { body.lo = spot * 0.5; body.hi = spot * 1.5; body.points = 161; }
+      setPayoff(await api.builderPayoff(body));
+    } catch (e) { setMsg(e.message); } finally { setBusy(false); }
   };
 
   const save = async () => {
@@ -74,6 +112,17 @@ export default function BuilderTab() {
   const debitLabel = useMemo(() => netDebit == null ? "—"
     : netDebit >= 0 ? `$${netDebit.toFixed(2)} debit` : `$${Math.abs(netDebit).toFixed(2)} credit`, [netDebit]);
 
+  const sel = selectedLeg != null ? legs[selectedLeg] : null;
+  const stats = useMemo(
+    () => (payoff ? computeStats(payoff.curve, payoff.breakevens, spot, legs) : null),
+    [payoff, spot, legs]);
+  const chartWindow = useMemo(() => {
+    if (!payoff) return null;
+    if (spot == null) return null; // full curve
+    return [spot * (1 - rangePct / 100), spot * (1 + rangePct / 100)];
+  }, [payoff, spot, rangePct]);
+  const legStrikes = useMemo(() => [...new Set(legs.map((l) => l.strike))], [legs]);
+
   return (
     <div className="builder-tab">
       <h1>Options Builder</h1>
@@ -83,9 +132,45 @@ export default function BuilderTab() {
       <section className="card">
         <div className="row gap center">
           <input className="input narrow" value={underlying}
-            onChange={(e) => setUnderlying(e.target.value.toUpperCase())} placeholder="Underlying" />
+            onChange={(e) => { setUnderlying(e.target.value.toUpperCase()); setSpot(null); }} placeholder="Underlying" />
           <button className="btn" onClick={loadChain}>Load chain</button>
+          {spot != null && <span className="price-chip">${spot.toFixed(2)}</span>}
           <span className="muted small">{chain.expirations.length} expiries · {chain.strikes.length} strikes</span>
+        </div>
+
+        {chain.expirations.length ? (
+          <>
+            <div className="muted small" style={{ marginTop: 10 }}>EXPIRATION{sel?.expiry ? `: ${sel.expiry}` : ""}</div>
+            <ExpiryTabs expirations={chain.expirations} value={sel?.expiry || null} onChange={pickExpiry} />
+            <div className="muted small">STRIKE:</div>
+            <StrikeRuler strikes={chain.strikes} value={sel?.strike ?? null}
+              right={sel?.right || "C"} action={sel?.action || "BUY"} spot={spot} onChange={pickStrike} />
+          </>
+        ) : (
+          <div className="muted" style={{ marginTop: 10 }}>Load a chain to pick expiry and strike.</div>
+        )}
+
+        <StatsRow netDebit={netDebit} stats={stats} />
+
+        {payoff ? (
+          <>
+            <PayoffChart curve={payoff.curve} breakevens={payoff.breakevens}
+              strikes={legStrikes} spot={spot} window={chartWindow} />
+            <div className="muted small">At {payoff.eval_date}</div>
+          </>
+        ) : (
+          <div className="muted">Fetch quotes, then Preview to see the payoff.</div>
+        )}
+
+        <div className="row gap center sliders-row">
+          <label className="muted small">RANGE: ±{rangePct}%</label>
+          <input type="range" min="2" max="50" step="1" value={rangePct}
+            onChange={(e) => setRangePct(Number(e.target.value))} />
+          <label className="muted small">IMPLIED VOLATILITY: {(Number(iv) * 100).toFixed(1)}%</label>
+          <input type="range" min="0.05" max="1.5" step="0.01" value={iv}
+            onChange={(e) => setIv(e.target.value)}
+            onPointerUp={() => { if (netDebit != null) preview(); }} />
+          <button className="btn" onClick={preview} disabled={busy || !legs.length}>Preview</button>
         </div>
 
         <h4>Legs</h4>
@@ -94,14 +179,15 @@ export default function BuilderTab() {
             <thead><tr><th>Side</th><th>Type</th><th>Strike</th><th>Expiry</th><th>Qty</th><th>Mid</th><th></th></tr></thead>
             <tbody>
               {legs.map((l, i) => (
-                <tr key={i}>
+                <tr key={i} className={i === selectedLeg ? "leg-selected" : ""}
+                  onClick={() => setSelectedLeg(i)}>
                   <td><select value={l.action} onChange={(e) => setLeg(i, { action: e.target.value })}><option>BUY</option><option>SELL</option></select></td>
                   <td><select value={l.right} onChange={(e) => setLeg(i, { right: e.target.value })}><option value="C">Call</option><option value="P">Put</option></select></td>
                   <td><select value={l.strike} onChange={(e) => setLeg(i, { strike: Number(e.target.value) })}>{chain.strikes.map((s) => <option key={s} value={s}>{s}</option>)}</select></td>
                   <td><select value={l.expiry} onChange={(e) => setLeg(i, { expiry: e.target.value })}>{chain.expirations.map((x) => <option key={x} value={x}>{x}</option>)}</select></td>
                   <td><input className="input tiny" type="number" min="1" value={l.qty} onChange={(e) => setLeg(i, { qty: Number(e.target.value) })} /></td>
                   <td className="num">{l.mid == null ? "—" : l.mid.toFixed(2)}</td>
-                  <td><button className="btn ghost tiny" onClick={() => removeLeg(i)}>✕</button></td>
+                  <td><button className="btn ghost tiny" onClick={(e) => { e.stopPropagation(); removeLeg(i); }}>✕</button></td>
                 </tr>
               ))}
             </tbody>
@@ -114,24 +200,8 @@ export default function BuilderTab() {
         </div>
       </section>
 
-      <ChainGrid key={underlying} underlying={underlying} expirations={chain.expirations} onAddLeg={addLegFromChain} />
-
-      <section className="card">
-        <div className="row between center">
-          <h2>Payoff</h2>
-          <div className="row gap center">
-            <label className="muted small">IV</label>
-            <input className="input tiny" type="number" step="0.01" value={iv} onChange={(e) => setIv(e.target.value)} />
-            <button className="btn" onClick={preview} disabled={busy || !legs.length}>Preview</button>
-          </div>
-        </div>
-        {payoff ? (
-          <>
-            <PayoffChart curve={payoff.curve} breakevens={payoff.breakevens} />
-            <div className="muted small">At {payoff.eval_date} · max profit {money(payoff.max_profit)} · max loss {money(payoff.max_loss)} · breakevens {payoff.breakevens.join(", ") || "—"}</div>
-          </>
-        ) : <div className="muted">Fetch quotes, then Preview to see the payoff.</div>}
-      </section>
+      <ChainGrid key={underlying} underlying={underlying} expirations={chain.expirations}
+        onAddLeg={addLegFromChain} onSpot={setSpot} />
 
       <section className="card">
         <h2>Save as tracked trade</h2>
