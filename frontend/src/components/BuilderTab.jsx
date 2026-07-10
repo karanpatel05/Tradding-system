@@ -32,13 +32,25 @@ export default function BuilderTab() {
   const [rangePct, setRangePct] = useState(8);          // chart x-window ±%
   const [evalDays, setEvalDays] = useState(null);       // DATE scrubber: null = at expiration
 
-  const loadChain = () => {
-    api.builderChain(underlying).then((c) => { setChain(c); }).catch((e) => setMsg(e.message));
-    api.builderSpot(underlying).then((s) => {
+  const loadChain = (sym) => {
+    api.builderChain(sym).then((c) => { setChain(c); }).catch((e) => setMsg(e.message));
+    api.builderSpot(sym).then((s) => {
       setSpotInfo(s);
       if (s?.price != null) setSpot(s.price);
     }).catch(() => {});
   };
+
+  // Auto-load the chain: on mount and (debounced) whenever the underlying changes.
+  // A symbol change also resets the legs — strikes/expiries from another chain are
+  // meaningless, and a stale net_debit must never survive the switch.
+  useEffect(() => {
+    if (!underlying.trim()) return;
+    const t = setTimeout(() => {
+      setLegs([]); setSelectedLeg(null); setNetDebit(null); setPayoff(null);
+      loadChain(underlying.trim());
+    }, 500);
+    return () => clearTimeout(t);
+  }, [underlying]);
   const loadTrades = () => api.builderTrades().then((d) => setTrades(d.trades)).catch(() => {});
 
   useEffect(() => { loadTrades(); }, []);
@@ -159,7 +171,6 @@ export default function BuilderTab() {
         <div className="row gap center">
           <input className="input narrow" value={underlying}
             onChange={(e) => { setUnderlying(e.target.value.toUpperCase()); setSpot(null); setSpotInfo(null); }} placeholder="Underlying" />
-          <button className="btn" onClick={loadChain}>Load chain</button>
           {spotInfo?.price != null && (
             <span className="hdr-quote">
               <b className="hdr-price">${spotInfo.price.toFixed(2)}</b>
