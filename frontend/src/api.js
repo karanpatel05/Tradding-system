@@ -35,6 +35,10 @@ export const api = {
   authStatus: () => request("/api/auth/status"),
   connect: () => request("/api/auth/connect", { method: "POST" }),
   disconnect: () => request("/api/auth/disconnect", { method: "POST" }),
+  // Tastytrade market-data creds (OAuth personal grant).
+  ttStatus: () => request("/api/auth/tastytrade"),
+  ttSave: (body) =>
+    request("/api/auth/tastytrade", { method: "PUT", body: JSON.stringify(body) }),
   resume: () => request("/api/system/resume", { method: "POST" }),
 
   account: () => request("/api/account"),
