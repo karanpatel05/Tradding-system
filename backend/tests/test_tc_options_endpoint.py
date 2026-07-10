@@ -17,7 +17,8 @@ KEY = "strategy_2"
 
 async def _reset(key: str) -> None:
     """Deterministic single-ticker (fallback) flat state regardless of a reused test DB file:
-    clear tc_tickers so the endpoint falls back to the single tc_underlying, and close opens."""
+    clear tc_tickers so the endpoint falls back to the single tc_underlying, reset contracts
+    to 1 (the fallback-mode multiplier other tests may have changed), and close opens."""
     from app.db.base import session_scope
     from app.db.models import OptionPositionRecord, StrategyState
     from sqlalchemy import update
@@ -27,6 +28,7 @@ async def _reset(key: str) -> None:
             st = StrategyState(key=key, name="Triple Calendar", ready=True)
             session.add(st)
         st.tc_tickers = []
+        st.contracts = 1
         await session.execute(update(OptionPositionRecord)
                               .where(OptionPositionRecord.strategy_key == key,
                                      OptionPositionRecord.status == "open")
