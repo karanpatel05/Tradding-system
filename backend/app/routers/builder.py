@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.options import chain as chain_mod
 from app.options import store
-from app.options.combo import combo_value, curve_stats, payoff_curve
+from app.options.combo import chance_of_profit, combo_value, curve_stats, payoff_curve
 
 router = APIRouter(prefix="/api/builder", tags=["builder"])
 
@@ -37,6 +37,7 @@ class PayoffBody(BaseModel):
     lo: float | None = None
     hi: float | None = None
     points: int = 61
+    spot: float | None = None   # enables chance-of-profit (lognormal mass over profit regions)
 
 
 class SaveBody(BaseModel):
@@ -136,7 +137,10 @@ async def payoff(body: PayoffBody) -> dict:
         date.fromisoformat(leg["expiry"]) for leg in legs)
     lo, hi = (body.lo, body.hi) if body.lo is not None and body.hi is not None else _strike_span(legs)
     curve = payoff_curve(legs, body.net_debit, ev, body.iv, r, lo, hi, body.points)
-    return {"curve": curve, "eval_date": ev.isoformat(), **curve_stats(curve)}
+    T = max(0.0, (ev - date.today()).days / 365.0)
+    cop = chance_of_profit(curve, body.spot, body.iv, r, T)
+    return {"curve": curve, "eval_date": ev.isoformat(), "chance_of_profit": cop,
+            **curve_stats(curve)}
 
 
 @router.post("/trades")

@@ -10,7 +10,7 @@ const Stat = ({ label, children, tone }) => (
   </div>
 );
 
-export default function StatsRow({ netDebit, stats }) {
+export default function StatsRow({ netDebit, stats, chance }) {
   const debit$ = netDebit == null ? null : netDebit * 100;
   const fmt = (v, tone) => v == null ? "—" : v === "infinite"
     ? <span className={tone}>Infinite</span> : usd(v);
@@ -29,7 +29,8 @@ export default function StatsRow({ netDebit, stats }) {
           <span className="pos">↗</span> {fmt(stats?.maxProfit, "pos")}
         </Stat>
         <Stat label="CHANCE OF PROFIT:">
-          <span className="muted">🎲 --% 🔒</span>
+          {chance == null ? <span className="muted">🎲 --%</span>
+            : <span className={chance >= 0.5 ? "pos" : ""}>🎲 {(chance * 100).toFixed(0)}%</span>}
         </Stat>
         <Stat label="BREAKEVEN:">
           {bes.length === 0 ? "—" : (

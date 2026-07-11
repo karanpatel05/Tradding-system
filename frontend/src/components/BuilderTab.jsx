@@ -108,7 +108,7 @@ export default function BuilderTab() {
     setBusy(true); setMsg(null);
     try {
       const body = { legs, net_debit: netDebit, iv: Number(iv) };
-      if (spot != null) { body.lo = spot * 0.5; body.hi = spot * 1.5; body.points = 161; }
+      if (spot != null) { body.lo = spot * 0.5; body.hi = spot * 1.5; body.points = 161; body.spot = spot; }
       // DATE scrubber: value BEFORE the nearest expiry re-prices via Black-Scholes at that
       // date; null/max = the backend default (at the nearest expiration).
       if (days != null && maxDays > 0 && days < maxDays) {
@@ -197,7 +197,7 @@ export default function BuilderTab() {
           <div className="muted" style={{ marginTop: 10 }}>Load a chain to pick expiry and strike.</div>
         )}
 
-        <StatsRow netDebit={netDebit} stats={stats} />
+        <StatsRow netDebit={netDebit} stats={stats} chance={payoff?.chance_of_profit} />
 
         {payoff ? (
           <PayoffChart curve={payoff.curve} breakevens={payoff.breakevens}
