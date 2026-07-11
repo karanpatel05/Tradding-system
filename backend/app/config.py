@@ -25,7 +25,10 @@ _BASE_DIR = Path(__file__).resolve().parent.parent
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # Anchored to backend/.env regardless of the process CWD: the LaunchAgent runs
+        # uvicorn from the repo root, so a relative ".env" silently reads the wrong file
+        # (which is how saved Tastytrade creds vanished on every restart).
+        env_file=str(_BASE_DIR / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
