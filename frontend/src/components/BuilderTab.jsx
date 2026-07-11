@@ -136,6 +136,18 @@ export default function BuilderTab() {
 
   const closeTrade = async (id) => { await api.builderCloseTrade(id).catch(() => {}); loadTrades(); };
 
+  // Fully automatic flow: legs settle (debounced) -> quotes fetch -> payoff previews.
+  // A failed fetch leaves netDebit null and does NOT retry until the legs change again,
+  // so there is no request loop; Fetch quotes stays as a manual retry.
+  useEffect(() => {
+    if (!legs.length || legs.some((l) => !l.expiry || !l.strike)) return;
+    const t = setTimeout(() => { fetchQuotes(); }, 600);
+    return () => clearTimeout(t);
+  }, [legs]);
+  useEffect(() => {
+    if (netDebit != null && legs.length) preview();
+  }, [netDebit]);
+
   const debitLabel = useMemo(() => netDebit == null ? "—"
     : netDebit >= 0 ? `$${netDebit.toFixed(2)} debit` : `$${Math.abs(netDebit).toFixed(2)} credit`, [netDebit]);
 
@@ -203,7 +215,10 @@ export default function BuilderTab() {
           <PayoffChart curve={payoff.curve} breakevens={payoff.breakevens}
             strikes={legStrikes} spot={spot} window={chartWindow} />
         ) : (
-          <div className="muted">Fetch quotes, then Preview to see the payoff.</div>
+          <div className="muted">
+            {legs.length ? (busy ? "Fetching quotes…" : "Waiting for a quote — the payoff renders automatically.")
+              : "Pick an expiry and strike above — quotes and the payoff load automatically."}
+          </div>
         )}
 
         {maxDays > 0 && (
@@ -225,7 +240,6 @@ export default function BuilderTab() {
           <input type="range" min="0.05" max="1.5" step="0.01" value={iv}
             onChange={(e) => setIv(e.target.value)}
             onPointerUp={() => { if (netDebit != null) preview(); }} />
-          <button className="btn" onClick={() => preview()} disabled={busy || !legs.length}>Preview</button>
         </div>
 
         <h4>Legs</h4>
