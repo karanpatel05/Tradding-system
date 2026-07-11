@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef } from "react";
 // auto-centered on the selection. Badge above the active tick shows e.g. "725C"
 // (green = BUY leg, red = SELL). Click or drag (pointer capture) to select; snaps
 // to real strikes. Thin marker at spot when known.
-const TICK_W = 12;
+const TICK_W = 14;
 
 export default function StrikeRuler({ strikes = [], value, right = "C", action = "BUY",
                                       spot = null, onChange }) {
@@ -29,7 +29,9 @@ export default function StrikeRuler({ strikes = [], value, right = "C", action =
     return best;
   }, [strikes, spot]);
 
-  const labelEvery = Math.max(1, Math.round(strikes.length / 14));
+  // Dense labels like the reference UI: every 4th tick is a labeled major
+  // (~$4 apart near the ATM dollar strikes, wider in the wings).
+  const labelEvery = 4;
 
   useEffect(() => {
     const el = wrap.current;
