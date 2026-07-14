@@ -196,6 +196,72 @@ async def cancel_symbol_orders(symbol: str) -> dict:
     return {"cancelled": cancelled}
 
 
+def occ_symbol_for(underlying: str, expiry, strike: float, right: str) -> str:
+    """OCC option symbol: 6-char padded root + yymmdd + C/P + strike*1000 zero-padded
+    to 8 digits. This is the Tastytrade instrument symbol format for options."""
+    root = f"{underlying.upper():<6}"
+    ymd = expiry.strftime("%y%m%d")
+    k = f"{int(round(float(strike) * 1000)):08d}"
+    return f"{root}{ymd}{right.upper()}{k}"
+
+
+async def _option(session, occ_symbol: str):
+    from tastytrade.instruments import Option
+    return await Option.get(session, occ_symbol)
+
+
+async def _held_symbols() -> set[str]:
+    from app.broker.account import positions
+    return {p.symbol for p in await positions()}
+
+
+async def submit_combo_order(underlying: str, legs: list[dict], *, net_price: float | None = None,
+                             action: str = "BUY", reason: str = "", quantity: int = 1) -> dict:
+    """Multi-leg options order. Each leg = {expiry(date), strike, right, action}.
+    Per-leg OrderAction: (BUY|SELL) + (TO_CLOSE if the account currently holds that OCC
+    symbol on the closing side, else TO_OPEN). Net price: combo LIMIT at the (sanity-
+    guarded) net, sign per SDK convention — `action=BUY` (opening for a debit) -> pay ->
+    NEGATIVE Decimal; `action=SELL` (closing for a credit) -> receive -> POSITIVE."""
+    if not legs:
+        return {"transmitted": False, "detail": "no legs"}
+    if await is_safe_mode():
+        return {"transmitted": False, "safe_mode": True,
+                "detail": f"blocked: SAFE_MODE ({underlying})"}
+    s = get_settings()
+    if not s.enable_live_orders:
+        logger.warning("[PAPER] COMBO %s %s x%d legs net~%s (%s)",
+                       action, underlying, len(legs), net_price, reason)
+        return {"transmitted": False, "paper": True, "legs": len(legs),
+                "detail": f"paper combo {action} {underlying} {len(legs)} legs"}
+    session = await _session()
+    account = await _account()
+    if session is None or account is None:
+        return {"transmitted": False, "detail": "broker unavailable (no TT session)"}
+    held = await _held_symbols()
+    q = Decimal(max(1, int(quantity)))
+    sdk_legs = []
+    for spec in legs:
+        occ = occ_symbol_for(underlying, spec["expiry"], spec["strike"], spec["right"])
+        inst = await _option(session, occ)
+        buying = spec["action"].upper() == "BUY"
+        closing = occ in held    # holding it and now trading the opposite way = closing
+        name = ("BUY_TO_CLOSE" if closing else "BUY_TO_OPEN") if buying else \
+               ("SELL_TO_CLOSE" if closing else "SELL_TO_OPEN")
+        sdk_legs.append(inst.build_leg(q, _order_action(name)))
+    price = None
+    if net_price is not None:
+        p = Decimal(str(round(abs(net_price), 2)))
+        price = -p if action.upper() == "BUY" else p
+    order = _new_order(sdk_legs, price, order_type="LIMIT" if price is not None else "MARKET")
+    out = await _validated_place(account, session, order)
+    out["legs"] = len(legs)
+    out.setdefault("detail",
+                   f"LIVE combo {action} {underlying} {len(legs)} legs")
+    logger.warning("[LIVE COMBO] %s %s %d legs net %s (%s) -> %s",
+                   action, underlying, len(legs), net_price, reason, out["detail"])
+    return out
+
+
 async def poll_bracket_fill(symbol: str, ref=None) -> dict | None:
     """None while still holding; else {price, ms, reason} for the filled closer.
     Paper mode -> None (the worker simulates fills on 1m bars, unchanged)."""
