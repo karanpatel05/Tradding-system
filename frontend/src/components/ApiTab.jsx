@@ -120,9 +120,19 @@ export default function ApiTab({ onChange }) {
       <section className="card">
         <div className="card-head">
           <h2>Tastytrade Market Data</h2>
-          <span className={`mode-badge ${tt?.configured ? "live" : "disabled"}`}>
-            {tt?.configured ? "Configured" : "Not configured"}
+          <span className={`mode-badge ${
+            tt?.probe === "ok" ? "live"
+              : tt?.probe ? "danger"
+              : tt?.configured ? "warn" : "disabled"}`}>
+            {tt?.probe === "ok" ? "Connected ✓"
+              : tt?.probe ? "Rejected"
+              : tt?.configured ? "Configured (unverified)" : "Not configured"}
           </span>
+        </div>
+        <div className="muted small">
+          Serving: <b>{tt?.serving === "tastytrade" ? "Tastytrade"
+            : tt?.serving === "ibkr" ? "IBKR (fallback)" : "idle"}</b>
+          {tt?.probe && tt.probe !== "ok" && <span className="neg"> · {tt.probe}</span>}
         </div>
         <p className="muted small">
           Primary market-data source (quotes, option chains/mids, VIX, history). Create an
@@ -136,6 +146,9 @@ export default function ApiTab({ onChange }) {
           <input className="input" type="password" placeholder={tt?.has_refresh ? "Refresh token (saved)" : "Refresh token"}
             value={ttRefresh} onChange={(e) => setTtRefresh(e.target.value)} />
           <button className="btn primary" onClick={saveTt}>Save</button>
+          <button className="btn ghost" onClick={() => api.ttStatus(true).then(setTt).catch(() => {})}>
+            Test connection
+          </button>
         </div>
         {ttMsg && <div className="muted small" style={{ marginTop: 8 }}>{ttMsg}</div>}
       </section>

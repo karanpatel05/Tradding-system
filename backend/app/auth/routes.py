@@ -120,9 +120,35 @@ def _tt_state() -> dict:
             **data_status()}
 
 
+_tt_probe: dict = {"result": None, "at": 0.0}
+
+
+async def _probe_tt(force: bool = False) -> str | None:
+    """Verify the OAuth pair against Tastytrade — a forced token refresh, the cheapest
+    authenticated call. Cached 5 min so the status poll doesn't hammer their API."""
+    import time as _time
+
+    if not force and _tt_probe["result"] is not None \
+            and _time.monotonic() - _tt_probe["at"] < 300:
+        return _tt_probe["result"]
+    result = None
+    s = get_settings()
+    if s.tt_provider_secret and s.tt_refresh_token:
+        try:
+            from app.tastytrade.session import get_tt_session
+            sess = await get_tt_session()
+            if sess is not None:
+                await sess.refresh(force=True)
+                result = "ok"
+        except Exception as e:  # noqa: BLE001 — surfaced to the UI, not raised
+            result = f"rejected: {str(e)[:200]}"
+    _tt_probe.update(result=result, at=_time.monotonic())
+    return result
+
+
 @router.get("/tastytrade")
-async def tt_status() -> dict:
-    return _tt_state()
+async def tt_status(probe: bool = False) -> dict:
+    return {**_tt_state(), "probe": await _probe_tt(force=probe)}
 
 
 @router.put("/tastytrade")
@@ -144,15 +170,4 @@ async def tt_save(body: TTCredsBody) -> dict:
         get_historical_provider.cache_clear()
     # Validate the pair against Tastytrade right away: a secret/refresh-token mismatch
     # ("invalid_grant") otherwise fails silently later, with everything on IBKR fallback.
-    probe = None
-    state = _tt_state()
-    if state["configured"]:
-        try:
-            from app.tastytrade.session import get_tt_session
-            sess = await get_tt_session()
-            if sess is not None:
-                await sess.refresh(force=True)
-                probe = "ok"
-        except Exception as e:  # noqa: BLE001 — surfaced to the UI, not raised
-            probe = f"rejected: {str(e)[:200]}"
-    return {**state, "probe": probe}
+    return {**_tt_state(), "probe": await _probe_tt(force=True)}
