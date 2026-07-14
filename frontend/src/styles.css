@@ -550,3 +550,6 @@ tr.leg-selected td:first-child { box-shadow: inset 3px 0 0 #2563eb; }
 .date-row { margin-top: 4px; }
 .date-row input[type="range"] { flex: 1 1 200px; min-width: 160px; accent-color: #2563eb; }
 .xt-month-label { min-width: 88px; }
+/* --- Dashboard data/broker source chips --- */
+.src-chips { display: flex; gap: 6px; margin-top: 6px; }
+.pill.down { background: rgba(239, 68, 68, 0.14); color: #ef4444; }

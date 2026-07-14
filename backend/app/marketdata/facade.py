@@ -19,6 +19,7 @@ _JOURNAL_COOLDOWN = 300.0
 _sanity = MidSanity()
 _chains: dict[str, tuple[float, dict]] = {}
 _last_source: dict[str, str] = {}
+_last_source_ts: dict[str, float] = {}
 _journal_cooldown: dict[str, float] = {}
 
 
@@ -46,6 +47,7 @@ async def _note_source(op: str, source: str) -> None:
     (e.g. 30 option keys transitioning at once) doesn't spam the journal."""
     prev = _last_source.get(op)
     _last_source[op] = source
+    _last_source_ts[op] = time.monotonic()
     if prev is None or prev == source:
         return
     category, _, instrument = op.partition(":")
@@ -240,3 +242,16 @@ async def bars(symbol: str, timeframe: str, start, end=None) -> list[dict]:
         return await IBKRHistoricalProvider().get_bars(symbol, timeframe, start=start, end=end)
 
     return await _race(f"bars:{symbol}", tt, ib) or []
+
+
+def data_status(window_seconds: float = 900.0) -> dict:
+    """Which source has actually served market data recently — for the dashboard's
+    Data chip. "serving" is tastytrade > ibkr > idle by recent-hit presence."""
+    now = time.monotonic()
+    recent: dict[str, int] = {}
+    for op, src in _last_source.items():
+        if now - _last_source_ts.get(op, 0.0) <= window_seconds:
+            recent[src] = recent.get(src, 0) + 1
+    serving = ("tastytrade" if recent.get("tastytrade")
+               else "ibkr" if recent.get("ibkr") else "idle")
+    return {"serving": serving, "recent_sources": recent}

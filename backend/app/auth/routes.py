@@ -111,11 +111,13 @@ def _upsert_env(path: Path, values: dict[str, str]) -> None:
 
 
 def _tt_state() -> dict:
+    from app.marketdata.facade import data_status
     s = get_settings()
     return {"configured": bool(s.tt_provider_secret and s.tt_refresh_token),
             "has_secret": bool(s.tt_provider_secret),
             "has_refresh": bool(s.tt_refresh_token),
-            "data_primary": s.data_primary}
+            "data_primary": s.data_primary,
+            **data_status()}
 
 
 @router.get("/tastytrade")
