@@ -98,8 +98,8 @@ export const api = {
   builderSpot: (underlying) => request(`/api/builder/spot?underlying=${encodeURIComponent(underlying)}`),
   builderChainQuotes: (underlying, expiry, count) =>
     request(`/api/builder/chain-quotes?underlying=${encodeURIComponent(underlying)}&expiry=${expiry}&count=${count}`),
-  builderQuote: (underlying, legs) =>
-    request(`/api/builder/quote`, { method: "POST", body: JSON.stringify({ underlying, legs }) }),
+  builderQuote: (underlying, legs, spot, iv) =>
+    request(`/api/builder/quote`, { method: "POST", body: JSON.stringify({ underlying, legs, spot, iv: Number(iv) || 0.25 }) }),
   builderPayoff: (body) =>
     request(`/api/builder/payoff`, { method: "POST", body: JSON.stringify(body) }),
   builderSaveTrade: (body) =>

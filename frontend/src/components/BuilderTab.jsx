@@ -31,6 +31,7 @@ export default function BuilderTab() {
   const [spotInfo, setSpotInfo] = useState(null);       // {price, change_abs, change_pct}
   const [rangePct, setRangePct] = useState(8);          // chart x-window ±%
   const [evalDays, setEvalDays] = useState(null);       // DATE scrubber: null = at expiration
+  const [isTheo, setIsTheo] = useState(false);           // net debit built from BS theo values
 
   const loadChain = (sym) => {
     api.builderChain(sym).then((c) => { setChain(c); }).catch((e) => setMsg(e.message));
@@ -59,7 +60,7 @@ export default function BuilderTab() {
   // Any change to the legs invalidates the fetched quote/payoff: net_debit is what the
   // monitor's target/stop uses, so it must never be saved against a different leg set.
   // Clearing it forces a re-fetch (Preview/Save are gated on netDebit != null).
-  const invalidateQuote = () => { setNetDebit(null); setPayoff(null); };
+  const invalidateQuote = () => { setNetDebit(null); setPayoff(null); setIsTheo(false); };
   const setLeg = (i, patch) => { setLegs((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch, mid: null } : l))); invalidateQuote(); };
 
   // The expiry tabs + strike ruler edit the SELECTED leg. With no legs yet, first
@@ -96,10 +97,12 @@ export default function BuilderTab() {
   const fetchQuotes = async () => {
     setBusy(true); setMsg(null);
     try {
-      const q = await api.builderQuote(underlying, legs);
+      const q = await api.builderQuote(underlying, legs, spot, iv);
       setNetDebit(q.net_debit);
-      setLegs((ls) => ls.map((l, i) => ({ ...l, mid: q.legs[i]?.mid })));
+      setIsTheo(!!q.theoretical);
+      setLegs((ls) => ls.map((l, i) => ({ ...l, mid: q.legs[i]?.mid, theo: q.legs[i]?.theo })));
       if (q.missing?.length) setMsg(`No quote for ${q.missing.length} leg(s).`);
+      else if (q.theoretical) setMsg("No live quotes right now — using Black-Scholes theoretical values (saving disabled).");
     } catch (e) { setMsg(e.message); } finally { setBusy(false); }
   };
 
@@ -137,13 +140,16 @@ export default function BuilderTab() {
   const closeTrade = async (id) => { await api.builderCloseTrade(id).catch(() => {}); loadTrades(); };
 
   // Fully automatic flow: legs settle (debounced) -> quotes fetch -> payoff previews.
-  // A failed fetch leaves netDebit null and does NOT retry until the legs change again,
-  // so there is no request loop; Fetch quotes stays as a manual retry.
+  // Keyed on the legs' CONTENTS (mid/theo excluded): fetchQuotes rewrites `legs` to
+  // attach mids, so keying on the array identity would loop forever.
+  const legsKey = useMemo(
+    () => JSON.stringify(legs.map((l) => [l.action, l.right, l.strike, l.expiry, l.qty])),
+    [legs]);
   useEffect(() => {
     if (!legs.length || legs.some((l) => !l.expiry || !l.strike)) return;
     const t = setTimeout(() => { fetchQuotes(); }, 600);
     return () => clearTimeout(t);
-  }, [legs]);
+  }, [legsKey]);
   useEffect(() => {
     if (netDebit != null && legs.length) preview();
   }, [netDebit]);
@@ -255,7 +261,7 @@ export default function BuilderTab() {
                   <td><select value={l.strike} onChange={(e) => setLeg(i, { strike: Number(e.target.value) })}>{chain.strikes.map((s) => <option key={s} value={s}>{s}</option>)}</select></td>
                   <td><select value={l.expiry} onChange={(e) => setLeg(i, { expiry: e.target.value })}>{chain.expirations.map((x) => <option key={x} value={x}>{x}</option>)}</select></td>
                   <td><input className="input tiny" type="number" min="1" value={l.qty} onChange={(e) => setLeg(i, { qty: Number(e.target.value) })} /></td>
-                  <td className="num">{l.mid == null ? "—" : l.mid.toFixed(2)}</td>
+                  <td className="num">{l.mid == null ? "—" : `${l.theo ? "~" : ""}${l.mid.toFixed(2)}`}</td>
                   <td><button className="btn ghost tiny" onClick={(e) => { e.stopPropagation(); removeLeg(i); }}>✕</button></td>
                 </tr>
               ))}
@@ -265,7 +271,7 @@ export default function BuilderTab() {
         <div className="row gap center">
           <button className="btn ghost" onClick={addLeg} disabled={!chain.expirations.length}>+ Add leg</button>
           <button className="btn" onClick={fetchQuotes} disabled={busy || !legs.length}>Fetch quotes</button>
-          <span className="muted">Net: <b>{debitLabel}</b></span>
+          <span className="muted">Net: <b>{isTheo ? "~" : ""}{debitLabel}</b></span>
         </div>
       </section>
 
@@ -281,7 +287,8 @@ export default function BuilderTab() {
           <input className="input tiny" type="number" value={stop} onChange={(e) => setStop(e.target.value)} />
           <label className="muted small">Contracts</label>
           <input className="input tiny" type="number" min="1" value={contracts} onChange={(e) => setContracts(e.target.value)} />
-          <button className="btn primary" onClick={save} disabled={busy || netDebit == null}>Save trade</button>
+          <button className="btn primary" onClick={save} disabled={busy || netDebit == null || isTheo}>Save trade</button>
+          {isTheo && <span className="muted small">Theoretical prices — saving needs live quotes.</span>}
         </div>
         {msg && <div className="banner ok">{msg}</div>}
       </section>
