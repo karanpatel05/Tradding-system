@@ -1,5 +1,5 @@
 // frontend/src/components/BuilderTab.jsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import PayoffChart from "./PayoffChart.jsx";
 import ChainGrid from "./ChainGrid.jsx";
@@ -33,12 +33,24 @@ export default function BuilderTab() {
   const [evalDays, setEvalDays] = useState(null);       // DATE scrubber: null = at expiration
   const [isTheo, setIsTheo] = useState(false);           // net debit built from BS theo values
 
-  const loadChain = (sym) => {
-    api.builderChain(sym).then((c) => { setChain(c); }).catch((e) => setMsg(e.message));
+  const underlyingRef = useRef(underlying);
+  useEffect(() => { underlyingRef.current = underlying; }, [underlying]);
+
+  // Spot can miss right after a server restart (cold data stream) — retry a few
+  // times, but never apply a late result for a symbol the user has moved on from.
+  const loadSpot = (sym, attempt = 0) => {
     api.builderSpot(sym).then((s) => {
+      if (underlyingRef.current !== sym) return;
       setSpotInfo(s);
       if (s?.price != null) setSpot(s.price);
-    }).catch(() => {});
+      else if (attempt < 3) setTimeout(() => loadSpot(sym, attempt + 1), 4000);
+    }).catch(() => {
+      if (underlyingRef.current === sym && attempt < 3) setTimeout(() => loadSpot(sym, attempt + 1), 4000);
+    });
+  };
+  const loadChain = (sym) => {
+    api.builderChain(sym).then((c) => { setChain(c); }).catch((e) => setMsg(e.message));
+    loadSpot(sym);
   };
 
   // Auto-load the chain: on mount and (debounced) whenever the underlying changes.
