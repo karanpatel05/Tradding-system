@@ -221,7 +221,9 @@ export default function BuilderTab() {
             <ExpiryTabs expirations={chain.expirations} value={sel?.expiry || null} onChange={pickExpiry} />
             <div className="olabel">STRIKE:</div>
             <StrikeRuler strikes={chain.strikes} value={sel?.strike ?? null}
-              right={sel?.right || "C"} action={sel?.action || "BUY"} spot={spot} onChange={pickStrike} />
+              right={sel?.right || "C"} action={sel?.action || "BUY"} spot={spot}
+              legs={legs} selected={selectedLeg} onSelect={setSelectedLeg}
+              onChange={pickStrike} />
           </>
         ) : (
           <div className="muted" style={{ marginTop: 10 }}>Load a chain to pick expiry and strike.</div>

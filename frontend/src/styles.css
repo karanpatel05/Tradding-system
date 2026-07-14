@@ -553,3 +553,7 @@ tr.leg-selected td:first-child { box-shadow: inset 3px 0 0 #2563eb; }
 /* --- Dashboard data/broker source chips --- */
 .src-chips { display: flex; gap: 6px; margin-top: 6px; }
 .pill.down { background: rgba(239, 68, 68, 0.14); color: #ef4444; }
+/* --- Strike ruler: per-leg badges --- */
+.sruler-badge.dim { opacity: 0.62; }
+.sruler-badge.sel { opacity: 1; z-index: 2; box-shadow: 0 0 0 2px rgba(230, 233, 242, 0.55); }
+.sruler-badge { cursor: pointer; white-space: nowrap; }
