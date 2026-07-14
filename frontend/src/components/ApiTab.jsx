@@ -37,7 +37,8 @@ export default function ApiTab({ onChange }) {
       if (ttRefresh.trim()) body.refresh_token = ttRefresh.trim();
       const res = await api.ttSave(body);
       setTt(res); setTtSecret(""); setTtRefresh("");
-      setTtMsg(res.configured ? "Saved — Tastytrade data enabled." : "Saved.");
+      if (res.probe && res.probe !== "ok") setTtMsg(`Saved, but Tastytrade ${res.probe} — paste BOTH values from the same grant.`);
+      else setTtMsg(res.configured ? (res.probe === "ok" ? "Saved — verified with Tastytrade ✓" : "Saved.") : "Saved.");
     } catch (e) { setTtMsg(e.message || "Save failed"); }
   };
 

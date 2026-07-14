@@ -142,4 +142,17 @@ async def tt_save(body: TTCredsBody) -> dict:
         _upsert_env(_ENV_PATH, updates)
         reset_tt_session()
         get_historical_provider.cache_clear()
-    return _tt_state()
+    # Validate the pair against Tastytrade right away: a secret/refresh-token mismatch
+    # ("invalid_grant") otherwise fails silently later, with everything on IBKR fallback.
+    probe = None
+    state = _tt_state()
+    if state["configured"]:
+        try:
+            from app.tastytrade.session import get_tt_session
+            sess = await get_tt_session()
+            if sess is not None:
+                await sess.refresh(force=True)
+                probe = "ok"
+        except Exception as e:  # noqa: BLE001 — surfaced to the UI, not raised
+            probe = f"rejected: {str(e)[:200]}"
+    return {**state, "probe": probe}

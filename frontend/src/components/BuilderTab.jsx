@@ -186,6 +186,13 @@ export default function BuilderTab() {
     const t = setTimeout(() => { fetchQuotes(); }, 600);
     return () => clearTimeout(t);
   }, [legsKey]);
+  // Self-healing retry: legs present but still no net debit (transient fetch failure /
+  // cold stream) -> try again every 5s until a quote (live or theo) lands.
+  useEffect(() => {
+    if (!legs.length || netDebit != null) return;
+    const id = setInterval(() => { if (!busy) fetchQuotes(); }, 5000);
+    return () => clearInterval(id);
+  }, [legsKey, netDebit, busy]);
   useEffect(() => {
     if (netDebit != null && legs.length) preview();
   }, [netDebit]);
@@ -308,7 +315,6 @@ export default function BuilderTab() {
         </div>
         <div className="row gap center">
           <button className="btn ghost" onClick={addLeg} disabled={!chain.expirations.length}>+ Add leg</button>
-          <button className="btn" onClick={fetchQuotes} disabled={busy || !legs.length}>Fetch quotes</button>
           <span className="muted">Net: <b>{isTheo ? "~" : ""}{debitLabel}</b></span>
         </div>
       </section>
