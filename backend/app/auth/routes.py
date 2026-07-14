@@ -1,7 +1,8 @@
-"""Connection routes (replaces Tastytrade OAuth login/credentials).
+"""Connection routes (Tastytrade OAuth probe status; no login/credentials flow).
 
-Auth is the IBKR Gateway connection: there are no secrets to submit. The frontend
-shows connection config + status and can connect/disconnect the local Gateway."""
+Auth is a Tastytrade OAuth-pair readiness probe: there is no interactive login, only
+a provider secret + refresh token verified against Tastytrade. The frontend shows
+connection status and can force a re-probe via /connect."""
 
 from __future__ import annotations
 
@@ -12,8 +13,8 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from app.auth.manager import session_manager
+from app.broker.status import is_ready_cached, probe
 from app.config import get_settings
-from app.ibkr.account import get_accounts
 from app.tastytrade.session import reset_tt_session
 
 logger = logging.getLogger("trading.auth")
@@ -25,15 +26,36 @@ _ENV_PATH = Path(__file__).resolve().parents[2] / ".env"   # backend/.env
 
 class ConnectionStatus(BaseModel):
     connected: bool
-    host: str
-    port: int
-    client_id: int
-    account: str
+    host: str | None = None
+    port: int | None = None
+    client_id: int | None = None
+    account: str = ""
     accounts: list[str] = []
     detail: str | None = None
     conn_state: str = "disconnected"
     safe_mode: bool = False
     safe_mode_reason: str | None = None
+
+
+def _mask_account(number: str) -> str:
+    if not number:
+        return ""
+    if len(number) <= 4:
+        return number
+    return "•" * (len(number) - 4) + number[-4:]
+
+
+async def _account_number() -> str:
+    s = get_settings()
+    if s.tt_account_number:
+        return s.tt_account_number
+    try:
+        from app.broker.account import get_tt_account
+        acct = await get_tt_account()
+        return getattr(acct, "account_number", "") or ""
+    except Exception:  # noqa: BLE001 — a status read must never 500 the badge
+        logger.exception("Failed to read Tastytrade account for status")
+        return ""
 
 
 async def _safe_mode_info() -> tuple[bool, str | None]:
@@ -49,20 +71,16 @@ async def _safe_mode_info() -> tuple[bool, str | None]:
     return False, None
 
 
-async def _status(detail: str | None = None) -> ConnectionStatus:
+async def _status() -> ConnectionStatus:
     from app.ibkr.gateway import get_gateway
-    s = get_settings()
-    accounts: list[str] = []
-    if session_manager.is_authenticated():
-        try:
-            accounts = await get_accounts()
-        except Exception:  # don't let a transient data error flip the view
-            logger.exception("Failed to list IBKR accounts for status")
+    result = await probe()
+    detail = result if (result and result != "ok") else None
+    masked = _mask_account(await _account_number())
     sm_on, sm_reason = await _safe_mode_info()
     return ConnectionStatus(
-        connected=session_manager.is_authenticated(),
-        host=s.ibkr_host, port=s.ibkr_port, client_id=s.ibkr_client_id,
-        account=s.ibkr_account, accounts=accounts, detail=detail,
+        connected=is_ready_cached(),
+        host=None, port=None, client_id=None,
+        account=masked, accounts=[masked] if masked else [], detail=detail,
         conn_state=get_gateway().state.value, safe_mode=sm_on, safe_mode_reason=sm_reason,
     )
 
@@ -75,15 +93,12 @@ async def status_endpoint() -> ConnectionStatus:
 
 @router.post("/connect", response_model=ConnectionStatus)
 async def connect() -> ConnectionStatus:
-    """Connect to the local IB Gateway. Returns status (with a detail on failure)."""
-    detail = None
+    """Force a fresh Tastytrade OAuth probe. Returns status (detail set on rejection)."""
     try:
         await session_manager.connect()
-    except Exception as exc:  # noqa: BLE001 — Gateway down / wrong port / clientId in use
-        logger.warning("IBKR connect failed: %s", exc)
-        detail = (f"Could not connect to IB Gateway at "
-                  f"{get_settings().ibkr_host}:{get_settings().ibkr_port} — {exc}")
-    return await _status(detail)
+    except Exception as exc:  # noqa: BLE001 — probe() itself doesn't raise; defensive
+        logger.warning("Tastytrade probe failed: %s", exc)
+    return await _status()
 
 
 @router.post("/disconnect", response_model=ConnectionStatus)
@@ -120,35 +135,10 @@ def _tt_state() -> dict:
             **data_status()}
 
 
-_tt_probe: dict = {"result": None, "at": 0.0}
-
-
-async def _probe_tt(force: bool = False) -> str | None:
-    """Verify the OAuth pair against Tastytrade — a forced token refresh, the cheapest
-    authenticated call. Cached 5 min so the status poll doesn't hammer their API."""
-    import time as _time
-
-    if not force and _tt_probe["result"] is not None \
-            and _time.monotonic() - _tt_probe["at"] < 300:
-        return _tt_probe["result"]
-    result = None
-    s = get_settings()
-    if s.tt_provider_secret and s.tt_refresh_token:
-        try:
-            from app.tastytrade.session import get_tt_session
-            sess = await get_tt_session()
-            if sess is not None:
-                await sess.refresh(force=True)
-                result = "ok"
-        except Exception as e:  # noqa: BLE001 — surfaced to the UI, not raised
-            result = f"rejected: {str(e)[:200]}"
-    _tt_probe.update(result=result, at=_time.monotonic())
-    return result
-
-
 @router.get("/tastytrade")
 async def tt_status(probe: bool = False) -> dict:
-    return {**_tt_state(), "probe": await _probe_tt(force=probe)}
+    from app.broker import status as _bstatus
+    return {**_tt_state(), "probe": await _bstatus.probe(force=probe)}
 
 
 @router.put("/tastytrade")
@@ -169,5 +159,5 @@ async def tt_save(body: TTCredsBody) -> dict:
         reset_tt_session()
         get_historical_provider.cache_clear()
     # Validate the pair against Tastytrade right away: a secret/refresh-token mismatch
-    # ("invalid_grant") otherwise fails silently later, with everything on IBKR fallback.
-    return {**_tt_state(), "probe": await _probe_tt(force=True)}
+    # ("invalid_grant") otherwise fails silently later, with everything on fallback.
+    return {**_tt_state(), "probe": await probe(force=True)}

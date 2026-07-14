@@ -50,6 +50,8 @@ async def lifespan(app: FastAPI):
     await _resume_active_workers()
     from app.options.monitor import run_builder_monitor
     asyncio.create_task(run_builder_monitor())
+    from app.broker.status import refresher
+    asyncio.create_task(refresher())
     yield
     logger.info("Shutting down")
 
