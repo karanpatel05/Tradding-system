@@ -292,3 +292,79 @@ async def poll_bracket_fill(symbol: str, ref=None) -> dict | None:
         if o.order_type == OrderType.LIMIT:
             return {"price": abs(float(o.price or 0)), "ms": None, "reason": "target"}
     return {"price": None, "ms": None, "reason": "bracket"}
+
+
+async def _positions():
+    from app.broker.account import positions
+    return await positions()
+
+
+async def _live_orders():
+    from app.broker.account import live_orders
+    return await live_orders()
+
+
+async def _cancel_order(order_id):
+    from app.broker.account import cancel_order
+    return await cancel_order(order_id)
+
+
+async def flatten_all() -> str:
+    """Cancel every live order, then market-close every open position. Live: transmits
+    closing orders (equity SELL/BUY; options *_TO_CLOSE). Paper: logs would-close and
+    raises so the kill switch honestly reports fully_flat=False. Raises when anything
+    is left standing."""
+    s = get_settings()
+    poss = await _positions()
+    cancelled = 0
+    closed: list[str] = []
+    failures: list[str] = []
+
+    if s.enable_live_orders:
+        for o in await _live_orders():
+            try:
+                if await _cancel_order(getattr(o, "id", 0)):
+                    cancelled += 1
+            except Exception as exc:  # noqa: BLE001 — record, keep killing
+                failures.append(f"order-cancel {getattr(o, 'id', '?')}: {exc}")
+
+    total = len(poss)
+    session = await _session() if s.enable_live_orders else None
+    account = await _account() if s.enable_live_orders else None
+    for p in poss:
+        qty = abs(p.quantity)
+        if qty <= 0:
+            continue
+        if not s.enable_live_orders:
+            logger.warning("[FLATTEN-PAPER] would close %s x%d — ENABLE_LIVE_ORDERS off",
+                           p.symbol, qty)
+            failures.append(f"{p.symbol} x{qty} (paper: not transmitted)")
+            continue
+        if session is None or account is None:
+            failures.append(f"{p.symbol} (broker unavailable)")
+            continue
+        try:
+            is_option = "Option" in (p.instrument_type or "")
+            if is_option:
+                inst = await _option(session, p.symbol)
+                name = "SELL_TO_CLOSE" if p.quantity > 0 else "BUY_TO_CLOSE"
+            else:
+                inst = (await _equities(session, [p.symbol]))[0]
+                name = "SELL" if p.quantity > 0 else "BUY"
+            leg = inst.build_leg(Decimal(qty), _order_action(name))
+            placed = await account.place_order(session, _new_order([leg], None),
+                                               dry_run=False)   # kill switch: no dry-run delay
+            _ = placed
+            logger.warning("[FLATTEN-LIVE] %s %s x%d", name, p.symbol, qty)
+            closed.append(f"{p.symbol} x{qty}")
+        except Exception as exc:  # noqa: BLE001 — must attempt every position
+            logger.error("Flatten failed for %s: %r", p.symbol, exc)
+            failures.append(f"{p.symbol} ({exc})")
+
+    note = f"cancelled {cancelled} resting order(s); " if cancelled else ""
+    if total == 0 and not failures:
+        return f"{note}No open positions." if note else "No open positions."
+    if failures:
+        raise RuntimeError(f"Flatten incomplete: {note}closed {len(closed)}/{total} "
+                           f"[{', '.join(closed) or 'none'}]; not flat: {', '.join(failures)}")
+    return f"{note}Flattened {total} position(s): {', '.join(closed)}"
