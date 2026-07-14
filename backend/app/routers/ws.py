@@ -26,7 +26,7 @@ from app.services.market_stream import market_stream
 from app.strategies.registry import list_strategies
 from app.db.base import session_scope
 from app.db.models import StrategyState, TradeRecord
-from app.ibkr.account import get_account_summary, get_positions
+from app.broker.account import balances as get_account_summary, positions as get_positions
 
 logger = logging.getLogger("trading.ws")
 
@@ -125,7 +125,7 @@ async def ws_endpoint(websocket: WebSocket) -> None:
             await websocket.send_json({
                 "type": "snapshot",
                 "market_status": get_market_status(),
-                "market_overview": market_stream.overview(),  # live, from the stream cache
+                "market_overview": market_stream.snapshot(),  # live, from the stream cache
                 "strategies": await _strategies_snapshot(),
                 "positions": positions,
                 "account": broker_account,
