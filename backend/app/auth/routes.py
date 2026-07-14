@@ -153,10 +153,12 @@ async def tt_save(body: TTCredsBody) -> dict:
         s.tt_refresh_token = body.refresh_token.strip()
         updates["TT_REFRESH_TOKEN"] = s.tt_refresh_token
     if updates:
+        from app.broker.account import reset_tt_account
         from app.providers import get_historical_provider
 
         _upsert_env(_ENV_PATH, updates)
         reset_tt_session()
+        reset_tt_account()          # cached Account belongs to the old creds
         get_historical_provider.cache_clear()
     # Validate the pair against Tastytrade right away: a secret/refresh-token mismatch
     # ("invalid_grant") otherwise fails silently later, with everything on fallback.
