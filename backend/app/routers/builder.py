@@ -115,6 +115,14 @@ async def spot(underlying: str) -> dict:
     return out
 
 
+@router.get("/chain-strikes")
+async def chain_strikes(underlying: str, expiry: str) -> dict:
+    """Strikes available for one expiry (drives the strike ruler per-expiry)."""
+    from app.marketdata import facade
+    return {"underlying": underlying.upper(), "expiry": expiry,
+            "strikes": await facade.chain_strikes_for(underlying, expiry)}
+
+
 @router.get("/chain-quotes")
 async def chain_quotes(underlying: str, expiry: str, count: int = 8) -> dict:
     count = max(1, min(int(count), 25))  # bound the concurrent quote fan-out

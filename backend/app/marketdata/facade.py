@@ -153,6 +153,23 @@ async def chain_strikes(underlying: str) -> list[float]:
     return await _race(f"chain:{underlying}", tt, ib) or []
 
 
+async def chain_strikes_for(underlying: str, expiry: str) -> list[float]:
+    """Strikes listed for ONE expiry (ISO date). Tastytrade's chain is per-expiry;
+    the IBKR fallback only knows the union across expiries, so it returns that."""
+    async def tt():
+        d = await _tt_chain(underlying)
+        if not d:
+            return None
+        ks = sorted({k for (e, k, _r) in d["by_key"] if e == expiry})
+        return ks or None
+
+    async def ib():
+        from app.ibkr.options_data import ib_chain_strikes
+        return await ib_chain_strikes(underlying)
+
+    return await _race(f"chain:{underlying}", tt, ib) or []
+
+
 async def chain_expiries(underlying: str) -> list[str]:
     async def tt():
         d = await _tt_chain(underlying)

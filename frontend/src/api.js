@@ -96,6 +96,9 @@ export const api = {
   builderChain: (underlying) => request(`/api/builder/chain?underlying=${encodeURIComponent(underlying)}`),
   // Header quote: last price + day change vs previous close.
   builderSpot: (underlying) => request(`/api/builder/spot?underlying=${encodeURIComponent(underlying)}`),
+  // Strikes available for ONE expiry (the ruler shows only these).
+  builderChainStrikes: (underlying, expiry) =>
+    request(`/api/builder/chain-strikes?underlying=${encodeURIComponent(underlying)}&expiry=${expiry}`),
   builderChainQuotes: (underlying, expiry, count) =>
     request(`/api/builder/chain-quotes?underlying=${encodeURIComponent(underlying)}&expiry=${expiry}&count=${count}`),
   builderQuote: (underlying, legs, spot, iv) =>

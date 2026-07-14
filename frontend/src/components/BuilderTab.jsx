@@ -32,6 +32,7 @@ export default function BuilderTab() {
   const [rangePct, setRangePct] = useState(8);          // chart x-window ±%
   const [evalDays, setEvalDays] = useState(null);       // DATE scrubber: null = at expiration
   const [isTheo, setIsTheo] = useState(false);           // net debit built from BS theo values
+  const [expiryStrikes, setExpiryStrikes] = useState({}); // iso -> strikes for that expiry
 
   const underlyingRef = useRef(underlying);
   useEffect(() => { underlyingRef.current = underlying; }, [underlying]);
@@ -60,6 +61,7 @@ export default function BuilderTab() {
     if (!underlying.trim()) return;
     const t = setTimeout(() => {
       setLegs([]); setSelectedLeg(null); setNetDebit(null); setPayoff(null);
+      setExpiryStrikes({});
       loadChain(underlying.trim());
     }, 500);
     return () => clearTimeout(t);
@@ -151,6 +153,28 @@ export default function BuilderTab() {
 
   const closeTrade = async (id) => { await api.builderCloseTrade(id).catch(() => {}); loadTrades(); };
 
+  // Strikes for one expiry (fallback: the whole-chain union while loading).
+  const strikesFor = (iso) => (iso && expiryStrikes[iso]) || chain.strikes;
+  useEffect(() => {
+    const iso = legs[selectedLeg!= null ? selectedLeg : -1]?.expiry;
+    if (!iso || expiryStrikes[iso]) return;
+    let stale = false;
+    api.builderChainStrikes(underlying, iso).then((d) => {
+      if (!stale && d.strikes?.length) setExpiryStrikes((m) => ({ ...m, [iso]: d.strikes }));
+    }).catch(() => {});
+    return () => { stale = true; };
+  }, [selectedLeg, legs, underlying]);
+  // After an expiry switch, snap the leg's strike to the nearest strike that actually
+  // exists for that expiry (per-expiry lists load async).
+  useEffect(() => {
+    if (selectedLeg == null) return;
+    const l = legs[selectedLeg];
+    const ks = l && expiryStrikes[l.expiry];
+    if (!l || !ks?.length || ks.includes(l.strike)) return;
+    const nearest = ks.reduce((a, b) => (Math.abs(b - l.strike) < Math.abs(a - l.strike) ? b : a));
+    setLeg(selectedLeg, { strike: nearest });
+  }, [expiryStrikes, selectedLeg]);
+
   // Fully automatic flow: legs settle (debounced) -> quotes fetch -> payoff previews.
   // Keyed on the legs' CONTENTS (mid/theo excluded): fetchQuotes rewrites `legs` to
   // attach mids, so keying on the array identity would loop forever.
@@ -220,7 +244,7 @@ export default function BuilderTab() {
             <div className="olabel" style={{ marginTop: 10 }}>EXPIRATION: <b>{sel?.expiry ? `${dteOf(sel.expiry)}d` : "—"}</b></div>
             <ExpiryTabs expirations={chain.expirations} value={sel?.expiry || null} onChange={pickExpiry} />
             <div className="olabel">STRIKE:</div>
-            <StrikeRuler strikes={chain.strikes} value={sel?.strike ?? null}
+            <StrikeRuler strikes={strikesFor(sel?.expiry)} value={sel?.strike ?? null}
               right={sel?.right || "C"} action={sel?.action || "BUY"} spot={spot}
               legs={legs} selected={selectedLeg} onSelect={setSelectedLeg}
               onChange={pickStrike} />
@@ -272,7 +296,7 @@ export default function BuilderTab() {
                   onClick={() => setSelectedLeg(i)}>
                   <td><select value={l.action} onChange={(e) => setLeg(i, { action: e.target.value })}><option>BUY</option><option>SELL</option></select></td>
                   <td><select value={l.right} onChange={(e) => setLeg(i, { right: e.target.value })}><option value="C">Call</option><option value="P">Put</option></select></td>
-                  <td><select value={l.strike} onChange={(e) => setLeg(i, { strike: Number(e.target.value) })}>{chain.strikes.map((s) => <option key={s} value={s}>{s}</option>)}</select></td>
+                  <td><select value={l.strike} onChange={(e) => setLeg(i, { strike: Number(e.target.value) })}>{(strikesFor(l.expiry)).map((s) => <option key={s} value={s}>{s}</option>)}{!strikesFor(l.expiry).includes(l.strike) && <option value={l.strike}>{l.strike}</option>}</select></td>
                   <td><select value={l.expiry} onChange={(e) => setLeg(i, { expiry: e.target.value })}>{chain.expirations.map((x) => <option key={x} value={x}>{x}</option>)}</select></td>
                   <td><input className="input tiny" type="number" min="1" value={l.qty} onChange={(e) => setLeg(i, { qty: Number(e.target.value) })} /></td>
                   <td className="num">{l.mid == null ? "—" : `${l.theo ? "~" : ""}${l.mid.toFixed(2)}`}</td>
