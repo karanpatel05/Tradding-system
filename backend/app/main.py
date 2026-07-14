@@ -42,15 +42,11 @@ async def lifespan(app: FastAPI):
         "or POST /api/auth/connect. App boots without a live connection.",
         settings.ibkr_host, settings.ibkr_port, settings.ibkr_client_id,
     )
-    # Best-effort connect + recovery sequence (reconcile broker truth → READY/SAFE_MODE).
-    # Boot even if the Gateway is down: workers stay paused until the supervisor reaches READY.
-    from app.ibkr.gateway import get_gateway
-    gw = get_gateway()
+    from app.engine.recovery import run_recovery
     try:
-        await gw.connect_and_recover()
-    except Exception:  # noqa: BLE001 — boot even if the Gateway is down
-        logger.warning("IBKR not connected at startup; workers stay paused until READY")
-    asyncio.create_task(gw.supervise())
+        await run_recovery()
+    except Exception:  # noqa: BLE001 — recovery is best-effort at boot
+        logger.warning("startup recovery failed", exc_info=True)
     await _resume_active_workers()
     from app.options.monitor import run_builder_monitor
     asyncio.create_task(run_builder_monitor())

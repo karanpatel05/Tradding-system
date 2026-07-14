@@ -8,38 +8,41 @@ import asyncio
 
 def _run() -> None:
     async def _t():
+        from app.broker.account import NormalizedPosition
         from app.db.base import init_db
+        from app.engine import reconciliation as recon_mod
         from app.engine.recovery import run_recovery
-        from app.engine.safe_mode import is_safe_mode
-        from app.ibkr.gateway import ConnState, Gateway
+        from app.engine.safe_mode import clear_safe_mode, is_safe_mode
 
         await init_db()
-        from app.config import get_settings
-        get_settings().ibkr_account_settle_seconds = 0  # no settle wait in tests
 
-        class C:
-            def __init__(self, sym): self.symbol = sym; self.secType = "STK"
-        class Pos:
-            def __init__(self, sym, q): self.contract = C(sym); self.position = q; self.avgCost = 100.0
+        def pos(sym, qty):
+            return NormalizedPosition(symbol=sym, quantity=qty, quantity_direction="Long",
+                                      instrument_type="Equity", avg_price=100.0, account="X")
 
-        class CleanIB:
-            async def reqPositionsAsync(self): return []
-            async def reqExecutionsAsync(self, flt): return []
-            async def reqAllOpenOrdersAsync(self): return []
-        class OrphanIB(CleanIB):
-            async def reqPositionsAsync(self): return [Pos("AAPL", 10)]
+        async def no_positions():
+            return []
 
-        gw = Gateway()
-        ok = await run_recovery(CleanIB(), gw)
-        assert ok is True and gw.state is ConnState.READY, gw.state
+        async def orphan_positions():
+            return [pos("AAPL", 10)]
+
+        async def no_orders():
+            return []
+
+        recon_mod._positions = no_positions
+        recon_mod._live_orders = no_orders
+        await clear_safe_mode()
+        ok = await run_recovery()
+        assert ok is True, ok
         assert await is_safe_mode() is False
         print("PASS: clean recovery -> READY")
 
-        gw2 = Gateway()
-        ok2 = await run_recovery(OrphanIB(), gw2)
-        assert ok2 is False and gw2.state is ConnState.SAFE_MODE, gw2.state
+        recon_mod._positions = orphan_positions
+        ok2 = await run_recovery()
+        assert ok2 is False, ok2
         assert await is_safe_mode() is True
         print("PASS: orphan position -> SAFE_MODE")
+        await clear_safe_mode()
 
     asyncio.run(_t())
     print("\nALL RECOVERY TESTS PASSED")

@@ -141,7 +141,7 @@ class Gateway:
     async def connect_and_recover(self) -> bool:
         from app.engine.recovery import run_recovery  # lazy: avoid import cycle
         await self.connect()
-        return await run_recovery(self._ib, self)
+        return await run_recovery()
 
     async def supervise(self, interval: float = 15.0) -> None:
         while True:
@@ -152,9 +152,9 @@ class Gateway:
         from app.engine.recovery import run_recovery  # lazy: avoid import cycle
         if self.state is ConnState.DISCONNECTED:
             await self.reconnect_loop()
-            await run_recovery(self._ib, self)
+            await run_recovery()
         elif self.is_connected() and self.state is ConnState.CONNECTED:
-            await run_recovery(self._ib, self)  # reconnected without recovery → drive to READY
+            await run_recovery()  # reconnected without recovery → drive to READY
         elif self.is_connected():
             await self.heartbeat_once()
 

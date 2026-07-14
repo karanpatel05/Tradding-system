@@ -10,13 +10,12 @@ def _run() -> None:
     async def _t():
         from app.db.base import init_db, session_scope
         from app.db.models import TradeRecord
+        from app.engine import reconciliation as recon_mod
         from app.engine import recovery
-        from app.ibkr.gateway import ConnState, Gateway
+        from app.ibkr.gateway import Gateway
         from app.services import alerts
 
         await init_db()
-        from app.config import get_settings
-        get_settings().ibkr_account_settle_seconds = 0  # no settle wait in tests
         seen = []
         async def cap(kind, msg, data): seen.append(kind)
         alerts.register_channel(cap)
@@ -26,16 +25,21 @@ def _run() -> None:
             s.add(TradeRecord(strategy_key="strategy_1", symbol="AAPL", side="buy",
                               quantity=10, status="open"))
 
-        class OrphanIB:
-            async def reqPositionsAsync(self): return []
-            async def reqExecutionsAsync(self, flt): return []
-            async def reqAllOpenOrdersAsync(self): return []
+        async def no_positions():
+            return []
 
-        gw = Gateway()
-        ok = await recovery.run_recovery(OrphanIB(), gw)
-        assert ok is False and gw.state is ConnState.SAFE_MODE
+        async def no_orders():
+            return []
+
+        recon_mod._positions = no_positions
+        recon_mod._live_orders = no_orders
+
+        ok = await recovery.run_recovery()
+        assert ok is False
         assert "safe_mode" in seen, seen
 
+        # Disconnect alert is Gateway's own event wiring — unrelated to recovery.
+        gw = Gateway()
         gw._on_disconnect()
         await asyncio.sleep(0.2)   # let fire_alert's scheduled task run to completion
         assert "disconnect" in seen, seen
