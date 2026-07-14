@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.options import chain as chain_mod
 from app.options import store
-from app.options.combo import combo_value, curve_stats, payoff_curve
+from app.options.combo import chance_of_profit, combo_value, curve_stats, payoff_curve
 
 router = APIRouter(prefix="/api/builder", tags=["builder"])
 
@@ -26,6 +26,9 @@ class Leg(BaseModel):
 class QuoteBody(BaseModel):
     underlying: str
     legs: list[Leg] = Field(min_length=1)
+    spot: float | None = None   # enables theoretical (Black-Scholes) fill for unquoted legs
+    iv: float = 0.25
+    r: float = 0.04
 
 
 class PayoffBody(BaseModel):
@@ -37,6 +40,7 @@ class PayoffBody(BaseModel):
     lo: float | None = None
     hi: float | None = None
     points: int = 61
+    spot: float | None = None   # enables chance-of-profit (lognormal mass over profit regions)
 
 
 class SaveBody(BaseModel):
@@ -79,6 +83,38 @@ async def chain(underlying: str) -> dict:
     return await chain_mod.get_option_chain(underlying)
 
 
+@router.get("/spot")
+async def spot(underlying: str) -> dict:
+    """Header quote for the Builder: last price + day change vs the previous daily close
+    (facade-served; falls back to daily bars when the live quote has no close)."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.marketdata import facade
+
+    q = await facade.stock_quote(underlying)
+    price = (q or {}).get("price")
+    prev = (q or {}).get("close")
+    if prev is None and price is not None:
+        bars = await facade.bars(underlying, "1d",
+                                 start=datetime.now(timezone.utc) - timedelta(days=7))
+        closed = [b for b in bars if b.get("close") is not None]
+        if closed:
+            today = datetime.now(timezone.utc).date()
+            last_day = datetime.fromtimestamp(closed[-1]["time"] / 1000, tz=timezone.utc).date()
+            # If the newest daily bar is today's (still forming), the previous close is
+            # the bar before it; otherwise the newest bar IS the previous close.
+            if last_day == today and len(closed) >= 2:
+                prev = closed[-2]["close"]
+            elif last_day != today:
+                prev = closed[-1]["close"]
+    out = {"underlying": underlying.upper(), "price": price, "prev_close": prev,
+           "change_abs": None, "change_pct": None}
+    if price is not None and prev:
+        out["change_abs"] = round(price - prev, 4)
+        out["change_pct"] = round((price - prev) / prev, 6)
+    return out
+
+
 @router.get("/chain-quotes")
 async def chain_quotes(underlying: str, expiry: str, count: int = 8) -> dict:
     count = max(1, min(int(count), 25))  # bound the concurrent quote fan-out
@@ -87,13 +123,26 @@ async def chain_quotes(underlying: str, expiry: str, count: int = 8) -> dict:
 
 @router.post("/quote")
 async def quote(body: QuoteBody) -> dict:
+    """Live mids per leg; legs without a live quote fall back to their Black-Scholes
+    theoretical value when a spot is supplied (weekend/after-hours: the payoff still
+    renders). Theo legs are flagged so the UI can mark them and gate saving."""
     legs = _legs(body.legs)
     mids = await chain_mod.get_leg_mids(body.underlying, legs)
-    out_legs = [{**leg, "mid": mid} for leg, mid in zip(legs, mids)]
+    theo = [False] * len(legs)
+    if body.spot and body.spot > 0:
+        from app.options.blackscholes import bs_price
+        today = date.today()
+        for i, (leg, mid) in enumerate(zip(legs, mids)):
+            if mid is None:
+                T = max(0.0, (date.fromisoformat(leg["expiry"]) - today).days / 365.0)
+                mids[i] = round(bs_price(body.spot, leg["strike"], T, body.iv, body.r,
+                                         leg["right"]), 4)
+                theo[i] = True
+    out_legs = [{**leg, "mid": mid, "theo": t} for leg, mid, t in zip(legs, mids, theo)]
     value = combo_value(legs, mids)
     missing = [i for i, m in enumerate(mids) if m is None]
     return {"legs": out_legs, "net_debit": None if value is None else round(value, 4),
-            "missing": missing}
+            "missing": missing, "theoretical": any(theo)}
 
 
 @router.post("/payoff")
@@ -104,7 +153,10 @@ async def payoff(body: PayoffBody) -> dict:
         date.fromisoformat(leg["expiry"]) for leg in legs)
     lo, hi = (body.lo, body.hi) if body.lo is not None and body.hi is not None else _strike_span(legs)
     curve = payoff_curve(legs, body.net_debit, ev, body.iv, r, lo, hi, body.points)
-    return {"curve": curve, "eval_date": ev.isoformat(), **curve_stats(curve)}
+    T = max(0.0, (ev - date.today()).days / 365.0)
+    cop = chance_of_profit(curve, body.spot, body.iv, r, T)
+    return {"curve": curve, "eval_date": ev.isoformat(), "chance_of_profit": cop,
+            **curve_stats(curve)}
 
 
 @router.post("/trades")

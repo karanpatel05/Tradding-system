@@ -1,4 +1,5 @@
 import MarketStatus from "./MarketStatus.jsx";
+import DataBrokerChips from "./DataBrokerChips.jsx";
 import KillSwitch from "./KillSwitch.jsx";
 import MarketOverview from "./MarketOverview.jsx";
 
@@ -38,6 +39,7 @@ export default function Dashboard({ snapshot, onOpenStrategy }) {
         <div>
           <h1>Dashboard</h1>
           <MarketStatus status={snapshot?.market_status} />
+          <DataBrokerChips />
         </div>
         <KillSwitch />
       </header>

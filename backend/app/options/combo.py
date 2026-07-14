@@ -77,3 +77,43 @@ def exit_check(net_debit: float | None, value: float | None,
     if stop_pct is not None and pnl_pct <= -stop_pct:
         return "stop"
     return None
+
+
+def chance_of_profit(curve: list[dict], spot: float | None, iv: float, r: float,
+                     T: float) -> float | None:
+    """P(position pnl > 0 at the eval date) under the same lognormal model the pricer
+    uses: ln(S_T/S0) ~ N((r - iv²/2)·T, iv²·T). Profitable price regions come from the
+    curve's breakeven crossings; each region contributes its lognormal probability mass.
+    None when it can't be computed (no spot / degenerate curve / no vol)."""
+    import math
+
+    from app.options.blackscholes import norm_cdf
+
+    if not curve or len(curve) < 2 or spot is None or spot <= 0 or iv <= 0:
+        return None
+    if T <= 0:  # at the eval date: profit is deterministic at the current spot
+        pnl = min(curve, key=lambda p: abs(p["price"] - spot))["pnl"]
+        return 1.0 if pnl > 0 else 0.0
+    mu = (r - 0.5 * iv * iv) * T
+    sig = iv * math.sqrt(T)
+
+    def cdf(price: float) -> float:  # P(S_T <= price)
+        if price <= 0:
+            return 0.0
+        if math.isinf(price):
+            return 1.0
+        return norm_cdf((math.log(price / spot) - mu) / sig)
+
+    bes = curve_stats(curve)["breakevens"]
+    bounds = [0.0] + bes + [math.inf]
+    total = 0.0
+    lo_p, hi_p = curve[0]["price"], curve[-1]["price"]
+    for lo, hi in zip(bounds, bounds[1:]):
+        # Sample the curve inside the region to learn its sign (clamped to the curve's
+        # sampled span; regions beyond it extend the edge sample's sign).
+        test = (lo + hi) / 2 if math.isfinite(hi) else hi_p
+        test = min(max(test, lo_p), hi_p)
+        pnl = min(curve, key=lambda p: abs(p["price"] - test))["pnl"]
+        if pnl > 0:
+            total += cdf(hi) - cdf(lo)
+    return round(min(1.0, max(0.0, total)), 4)

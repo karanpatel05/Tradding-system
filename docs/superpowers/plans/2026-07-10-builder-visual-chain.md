@@ -42,7 +42,7 @@ frontend/src/styles.css                               (modify) new classes appen
 - Test: `frontend/src/components/builder/payoffStats.test.mjs`
 
 **Interfaces:**
-- Produces: `computeStats(curve, breakevens = [], spot = null) -> { maxProfit: number|"infinite"|null, maxLoss: number|"infinite"|null, breakevens: [{price, movePct: number|null}] }`. Curve pnl values are dollars (×100 upstream). Consumed by `StatsRow` (Task 4) and `BuilderTab` (Task 5).
+- Produces: `computeStats(curve, breakevens = [], spot = null, legs = null) -> { maxProfit: number|"infinite"|null, maxLoss: number|"infinite"|null, breakevens: [{price, movePct: number|null}] }`. Curve pnl values are dollars (×100 upstream). `legs` (array of `{action:"BUY"|"SELL", right:"C"|"P", qty}`) enables exact leg-aware infinite detection via net call quantity; when omitted/empty, a safe-biased slope heuristic is used instead. Consumed by `StatsRow` (Task 4) and `BuilderTab` (Task 5).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -630,8 +630,8 @@ Derived values (before `return`):
 ```jsx
   const sel = selectedLeg != null ? legs[selectedLeg] : null;
   const stats = useMemo(
-    () => (payoff ? computeStats(payoff.curve, payoff.breakevens, spot) : null),
-    [payoff, spot]);
+    () => (payoff ? computeStats(payoff.curve, payoff.breakevens, spot, legs) : null),
+    [payoff, spot, legs]);
   const chartWindow = useMemo(() => {
     if (!payoff) return null;
     if (spot == null) return null; // full curve

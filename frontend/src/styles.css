@@ -490,3 +490,66 @@ li { margin: 3px 0; }
 .chain-grid .price:not(.muted):hover{background:var(--accent-soft);color:var(--accent-bright)}
 .chain-grid tr.atm td{background:rgba(99,102,241,.07)}
 .chain-grid tr.atm .strike{color:var(--accent-bright);font-weight:700}
+/* --- Builder visual chain: expiry tabs --- */
+.xtabs { display: flex; gap: 14px; overflow-x: auto; padding: 6px 2px 10px; scrollbar-width: thin; }
+.xt-month { flex: 0 0 auto; }
+.xt-month-label { text-align: center; font-size: 12px; color: var(--muted, #8b93a7);
+  background: #1a2130; border-radius: 8px; padding: 3px 14px; margin-bottom: 6px; }
+.xt-month-label.active { color: #e6e9f2; background: #232d42; }
+.xt-days { display: flex; gap: 4px; justify-content: center; }
+.xt-day { border: none; background: transparent; color: #aab2c5; font-size: 13px;
+  padding: 4px 7px; border-radius: 7px; cursor: pointer; }
+.xt-day:hover { background: #1e2636; color: #e6e9f2; }
+.xt-day.active { background: #2563eb; color: #fff; font-weight: 600; }
+/* --- Builder visual chain: strike ruler --- */
+.sruler { overflow-x: auto; padding: 34px 0 4px; cursor: pointer; user-select: none;
+  touch-action: pan-x; scrollbar-width: thin; }
+.sruler-track { position: relative; height: 44px; }
+.sruler-tick { position: absolute; top: 0; width: 14px; }
+.sruler-line { width: 1px; height: 14px; margin: 0 auto; background: #39415a; }
+.sruler-line.major { height: 22px; background: #556; }
+.sruler-tick.active .sruler-line { background: #e6e9f2; height: 24px; }
+.sruler-label { display: block; text-align: center; font-size: 9px; color: #6b7387;
+  margin-top: 3px; transform: translateX(-38%); white-space: nowrap; }
+.sruler-badge { position: absolute; top: -30px; transform: translateX(-50%);
+  padding: 3px 10px; border-radius: 7px; font-size: 12px; font-weight: 700; color: #08110a; }
+.sruler-badge::after { content: ""; position: absolute; left: 50%; bottom: -5px;
+  transform: translateX(-50%); border: 5px solid transparent; border-bottom: none; }
+.sruler-badge.buy { background: #22c55e; }
+.sruler-badge.buy::after { border-top-color: #22c55e; }
+.sruler-badge.sell { background: #ef4444; color: #fff; }
+.sruler-badge.sell::after { border-top-color: #ef4444; }
+.sruler-spot { position: absolute; top: 0; width: 2px; height: 26px; background: #60a5fa;
+  opacity: 0.7; }
+/* --- Builder visual chain: stats strip --- */
+.ostats { display: flex; flex-wrap: wrap; gap: 18px 34px; padding: 12px 4px;
+  border-top: 1px solid #1e2636; border-bottom: 1px solid #1e2636; margin: 10px 0; }
+.ostat-label { font-size: 11px; letter-spacing: 0.06em; color: #8b93a7; margin-bottom: 3px; }
+.ostat-value { font-size: 15px; font-weight: 600; color: #e6e9f2; }
+.ostat-value.pos, .ostat-value .pos { color: #22c55e; }
+.ostat-value.neg, .ostat-value .neg { color: #ef4444; }
+/* --- Builder visual chain: integration --- */
+.price-chip { background: #16351f; color: #22c55e; font-weight: 700; border-radius: 8px;
+  padding: 3px 10px; font-size: 14px; }
+.sliders-row { margin: 8px 0 14px; flex-wrap: wrap; }
+.sliders-row input[type="range"] { flex: 1 1 140px; min-width: 120px; accent-color: #2563eb; }
+tr.leg-selected td { background: #1b2436; }
+tr.leg-selected td:first-child { box-shadow: inset 3px 0 0 #2563eb; }
+/* --- Builder visual chain: screenshot-fidelity pass --- */
+.hdr-quote { display: inline-flex; align-items: center; gap: 8px; }
+.hdr-price { font-size: 22px; font-weight: 700; color: #e6e9f2; }
+.hdr-chg { display: inline-flex; flex-direction: column; font-size: 11px; line-height: 1.15; font-weight: 600; }
+.hdr-chg.pos { color: #22c55e; }
+.hdr-chg.neg { color: #ef4444; }
+.olabel { font-size: 11px; letter-spacing: 0.08em; color: #8b93a7; margin: 8px 0 4px; }
+.olabel b { color: #e6e9f2; font-weight: 700; }
+.ostats-wrap { display: flex; align-items: center; gap: 8px;
+  border-top: 1px solid #1e2636; border-bottom: 1px solid #1e2636; margin: 10px 0; }
+.ostats-wrap .ostats { flex: 1; justify-content: space-between; border: none; margin: 0; }
+.ostats-chevron { color: #566; font-size: 20px; user-select: none; }
+.date-row { margin-top: 4px; }
+.date-row input[type="range"] { flex: 1 1 200px; min-width: 160px; accent-color: #2563eb; }
+.xt-month-label { min-width: 88px; }
+/* --- Dashboard data/broker source chips --- */
+.src-chips { display: flex; gap: 6px; margin-top: 6px; }
+.pill.down { background: rgba(239, 68, 68, 0.14); color: #ef4444; }
