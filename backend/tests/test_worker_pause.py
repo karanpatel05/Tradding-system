@@ -11,13 +11,13 @@ def _run() -> None:
         from app.config import get_settings
         from app.db.base import init_db, session_scope
         from app.db.models import StrategyState
+        from app.engine import worker as worker_mod
         from app.engine.manager import engine_manager
         from app.engine.worker import run_strategy
-        from app.ibkr.gateway import ConnState, get_gateway
         from app.strategies.base import BaseStrategy, Candidate
 
         get_settings().scan_interval_seconds = 0
-        get_gateway().set_state(ConnState.DISCONNECTED)   # NOT ready
+        worker_mod.broker_ready = lambda: False   # NOT ready
         await init_db()
         async with session_scope() as s:
             s.add(StrategyState(key="paws", name="P", ready=True, status="idle"))

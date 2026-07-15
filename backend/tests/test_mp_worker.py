@@ -29,8 +29,8 @@ async def _run() -> None:
     settings.scan_interval_seconds = 0          # tight loop
     settings.watchlist = "AAA"                  # single-symbol watchlist for the test
 
-    from app.ibkr.gateway import ConnState, get_gateway
-    get_gateway().set_state(ConnState.READY)    # workers only act when READY
+    from app.engine import worker as worker_mod
+    worker_mod.broker_ready = lambda: True    # workers only act when ready
     import app.services.market as _mkt
     _mkt.get_market_status = lambda: {"is_open": False}  # closed → gap gate is pass-through
 

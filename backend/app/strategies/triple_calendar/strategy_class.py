@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 from datetime import date, datetime
 
+from app.broker.status import is_ready_cached as broker_ready
 from app.config import get_settings
-from app.ibkr.gateway import ConnState, get_gateway
 from app.services.journal import log_event
 from app.services.market import get_market_status
 from app.strategies.base import BaseStrategy
@@ -129,17 +129,17 @@ class TripleCalendarStrategy(BaseStrategy):
             if not get_market_status()["is_open"]:
                 await asyncio.sleep(get_settings().tc_manage_interval_seconds)
                 continue
-            # Gateway state decides the tick kind: READY -> full (may trade);
-            # NOT READY -> monitor-only (facade data still flows; valuations persist;
+            # Broker readiness decides the tick kind: ready -> full (may trade);
+            # NOT ready -> monitor-only (facade data still flows; valuations persist;
             # no order actions). Journal the transition once per state change.
-            ready = get_gateway().state is ConnState.READY
+            ready = broker_ready()
             if not ready and not monitor_logged:
-                await log_event("Triple Calendar: monitor-only (Gateway not READY - "
+                await log_event("Triple Calendar: monitor-only (broker not ready - "
                                 "valuations continue, order actions paused)",
                                 category="decision", strategy_key=self.key)
                 monitor_logged = True
             elif ready and monitor_logged:
-                await log_event("Triple Calendar: Gateway READY - trading resumed",
+                await log_event("Triple Calendar: broker ready - trading resumed",
                                 category="decision", strategy_key=self.key)
                 monitor_logged = False
             vix = None

@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from app.broker.status import is_ready_cached as broker_ready
 from app.config import get_settings
-from app.ibkr.gateway import ConnState, get_gateway
 from app.options import store
 from app.options.chain import get_leg_mids
 from app.options.combo import combo_value, exit_check
@@ -44,7 +44,7 @@ async def run_builder_monitor() -> None:
     while True:
         interval = get_settings().builder_monitor_interval_seconds
         try:
-            if (get_gateway().state is ConnState.READY
+            if (broker_ready()
                     and get_market_status().get("is_open")):
                 await value_open_trades_once(get_leg_mids)
         except asyncio.CancelledError:

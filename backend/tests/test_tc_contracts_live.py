@@ -6,7 +6,6 @@ def _run():
         from app.config import get_settings
         from app.db.base import init_db, session_scope
         from app.db.models import OptionPositionRecord, StrategyState
-        from app.ibkr.gateway import ConnState, get_gateway
         from app.strategies.triple_calendar import live_source, strategy_class
         from sqlalchemy import select
 
@@ -29,7 +28,7 @@ def _run():
         live_source.LivePriceSource.aoption_mid = a_mid
         live_source.LivePriceSource.avix = a_vix
         strategy_class.get_market_status = lambda: {"is_open": True}
-        get_gateway().set_state(ConnState.READY)
+        strategy_class.broker_ready = lambda: True
 
         strat = strategy_class.TripleCalendarStrategy()
         task = asyncio.create_task(strat.run_live())

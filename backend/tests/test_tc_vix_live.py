@@ -12,7 +12,6 @@ def _run() -> None:
     async def _t():
         from app.config import get_settings
         from app.db.base import init_db
-        from app.ibkr.gateway import ConnState, get_gateway
         from app.strategies.triple_calendar import live_source, strategy_class
 
         await init_db()
@@ -36,7 +35,7 @@ def _run() -> None:
         live_source.LivePriceSource.achain = a_chain       # type: ignore[assignment]
         live_source.LivePriceSource.aoption_mid = a_mid     # type: ignore[assignment]
         strategy_class.get_market_status = lambda: {"is_open": True}  # type: ignore[assignment]
-        get_gateway().set_state(ConnState.READY)
+        strategy_class.broker_ready = lambda: True  # type: ignore[assignment]
 
         strat = strategy_class.TripleCalendarStrategy()
 
