@@ -1,5 +1,6 @@
-"""Options Strategy Builder API. Read-only IBKR (chain + quotes); saved trades are tracked
-(paper) only — NO orders are ever transmitted."""
+"""Options Strategy Builder API. Read-only market data (chain + quotes) via the
+Tastytrade-backed facade; saved trades are tracked (paper) only — NO orders are ever
+transmitted."""
 from __future__ import annotations
 
 from typing import Literal

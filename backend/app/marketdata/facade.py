@@ -1,15 +1,13 @@
-"""Provider-agnostic market data: Tastytrade primary, IBKR fallback (only while the
-Gateway is READY), controlled by settings.data_primary. Consumers call these functions
-and never import a provider directly. Every option mid passes the sanity guard - a
-suspect quote comes back as None, never as a number. Total failure -> None/[], never
-an exception into a strategy loop."""
+"""Provider-agnostic market data: Tastytrade is the sole source. Consumers call these
+functions and never import a provider directly. Every option mid passes the sanity
+guard - a suspect quote comes back as None, never as a number. Total failure ->
+None/[], never an exception into a strategy loop."""
 from __future__ import annotations
 
 import asyncio
 import time
 from datetime import datetime, timezone
 
-from app.config import get_settings
 from app.marketdata.sanity import MidSanity
 
 _SOURCE_TIMEOUT = 10.0
@@ -23,20 +21,10 @@ _last_source_ts: dict[str, float] = {}
 _journal_cooldown: dict[str, float] = {}
 
 
-# Indirection points so tests (and the fallback) can be faked without network.
+# Indirection point so tests can fake the streamer without network.
 def _get_streamer():
     from app.tastytrade.streamer import get_streamer
     return get_streamer()
-
-
-def _ib_ready() -> bool:
-    from app.ibkr.gateway import ConnState, get_gateway
-    return get_gateway().state is ConnState.READY
-
-
-async def _ib_stock_quotes(symbols, timeout: float = 3.0):
-    from app.ibkr.options_data import ib_stock_quotes
-    return await ib_stock_quotes(symbols, timeout=timeout)
 
 
 async def _note_source(op: str, source: str) -> None:
@@ -62,23 +50,18 @@ async def _note_source(op: str, source: str) -> None:
                     category="action")
 
 
-async def _race(op: str, tt_call, ib_call):
-    """Try primary then fallback; a result of None/[]/{} is a miss. IBKR is only
-    attempted while the Gateway is READY. Exceptions count as misses. `op` is an
-    instrument-scoped key (e.g. "stock_quote:QQQ") used for source tracking."""
-    order = [("tastytrade", tt_call), ("ibkr", ib_call)]
-    if get_settings().data_primary == "ibkr":
-        order.reverse()
-    for name, call in order:
-        if call is None or (name == "ibkr" and not _ib_ready()):
-            continue
-        try:
-            out = await asyncio.wait_for(call(), _SOURCE_TIMEOUT)
-        except Exception:  # noqa: BLE001 - a failed source is a miss, not a crash
-            out = None
-        if out not in (None, [], {}):
-            await _note_source(op, name)
-            return out
+async def _race(op: str, tt_call, ib_call=None):
+    """Call Tastytrade; a result of None/[]/{} is a miss. Exceptions count as misses.
+    `ib_call` is accepted for call-site compatibility but always ignored — Tastytrade
+    is the sole data source, there is no fallback. `op` is an instrument-scoped key
+    (e.g. "stock_quote:QQQ") used for source tracking."""
+    try:
+        out = await asyncio.wait_for(tt_call(), _SOURCE_TIMEOUT)
+    except Exception:  # noqa: BLE001 - a failed source is a miss, not a crash
+        out = None
+    if out not in (None, [], {}):
+        await _note_source(op, "tastytrade")
+        return out
     return None
 
 
@@ -96,11 +79,7 @@ async def stock_quote(symbol: str) -> dict | None:
         d = {"bid": bid, "ask": ask, "last": last, "close": None, "price": price}
         return d if d["price"] is not None else None
 
-    async def ib():
-        q = (await _ib_stock_quotes([symbol])).get(symbol)
-        return q if q and q.get("price") is not None else None
-
-    return await _race(f"stock_quote:{symbol}", tt, ib)
+    return await _race(f"stock_quote:{symbol}", tt)
 
 
 async def stock_quotes(symbols: list[str], timeout: float = 3.0) -> dict[str, dict]:
@@ -146,16 +125,11 @@ async def chain_strikes(underlying: str) -> list[float]:
         d = await _tt_chain(underlying)
         return d["strikes"] if d else None
 
-    async def ib():
-        from app.ibkr.options_data import ib_chain_strikes
-        return await ib_chain_strikes(underlying)
-
-    return await _race(f"chain:{underlying}", tt, ib) or []
+    return await _race(f"chain:{underlying}", tt) or []
 
 
 async def chain_strikes_for(underlying: str, expiry: str) -> list[float]:
-    """Strikes listed for ONE expiry (ISO date). Tastytrade's chain is per-expiry;
-    the IBKR fallback only knows the union across expiries, so it returns that."""
+    """Strikes listed for ONE expiry (ISO date), from Tastytrade's per-expiry chain."""
     async def tt():
         d = await _tt_chain(underlying)
         if not d:
@@ -163,11 +137,7 @@ async def chain_strikes_for(underlying: str, expiry: str) -> list[float]:
         ks = sorted({k for (e, k, _r) in d["by_key"] if e == expiry})
         return ks or None
 
-    async def ib():
-        from app.ibkr.options_data import ib_chain_strikes
-        return await ib_chain_strikes(underlying)
-
-    return await _race(f"chain:{underlying}", tt, ib) or []
+    return await _race(f"chain:{underlying}", tt) or []
 
 
 async def chain_expiries(underlying: str) -> list[str]:
@@ -175,15 +145,10 @@ async def chain_expiries(underlying: str) -> list[str]:
         d = await _tt_chain(underlying)
         return d["expiries"] if d else None
 
-    async def ib():
-        from app.options.chain import _ib_option_chain as ib_chain
-        out = await ib_chain(underlying)
-        return out["expirations"] or None
-
-    return await _race(f"chain_expiries:{underlying}", tt, ib) or []
+    return await _race(f"chain_expiries:{underlying}", tt) or []
 
 
-# --- option mid (sanity-guarded for BOTH sources) ---------------------------
+# --- option mid (sanity-guarded) ---------------------------------------------
 async def option_mid(underlying: str, expiry, strike: float, right: str) -> float | None:
     e = expiry.isoformat() if hasattr(expiry, "isoformat") else str(expiry)
     key = f"{underlying}|{e}|{strike:g}|{right.upper()}"
@@ -201,25 +166,7 @@ async def option_mid(underlying: str, expiry, strike: float, right: str) -> floa
             await _warn_sanity(key, q["bid"], q["ask"], reason)
         return mid
 
-    async def ib():
-        from app.ibkr.options_data import ib_option_quote
-        q = await ib_option_quote(underlying, expiry, strike, right)
-        if q is None:
-            return None
-        if q["bid"] is not None and q["ask"] is not None:
-            mid, reason = _sanity.check(key, q["bid"], q["ask"])
-            if reason not in (None, "missing"):
-                await _warn_sanity(key, q["bid"], q["ask"], reason)
-        elif q["price"] is not None:
-            # last/close only: no spread to validate, but the jump rule still protects.
-            mid, reason = _sanity.check(key, q["price"], q["price"])
-            if reason not in (None, "missing"):
-                await _warn_sanity(key, q["price"], q["price"], reason)
-        else:
-            return None
-        return mid
-
-    return await _race(f"option_mid:{key}", tt, ib)
+    return await _race(f"option_mid:{key}", tt)
 
 
 async def _warn_sanity(key: str, bid, ask, reason: str) -> None:
@@ -237,11 +184,7 @@ async def vix() -> float | None:
             return (q["bid"] + q["ask"]) / 2
         return await st.trade_price("VIX")
 
-    async def ib():
-        from app.ibkr.options_data import ib_vix
-        return await ib_vix()
-
-    return await _race("vix", tt, ib)
+    return await _race("vix", tt)
 
 
 # --- historical bars --------------------------------------------------------
@@ -254,11 +197,7 @@ async def bars(symbol: str, timeframe: str, start, end=None) -> list[dict]:
     async def tt():
         return await _get_streamer().candles(symbol, timeframe, start=start, end=end) or None
 
-    async def ib():
-        from app.providers.ibkr_historical import IBKRHistoricalProvider
-        return await IBKRHistoricalProvider().get_bars(symbol, timeframe, start=start, end=end)
-
-    return await _race(f"bars:{symbol}", tt, ib) or []
+    return await _race(f"bars:{symbol}", tt) or []
 
 
 def data_status(window_seconds: float = 900.0) -> dict:

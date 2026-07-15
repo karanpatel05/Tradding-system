@@ -1,6 +1,7 @@
-"""ib_option_quote must not call reqMktData on a contract IBKR couldn't resolve. A strike/expiry
-combo that doesn't exist leaves conId=0 after qualify; the old code then called reqMktData,
-which raises ValueError -> HTTP 500 in the builder /quote. It must degrade to None instead.
+"""facade.option_mid must degrade to None (never raise) when the requested
+(expiry, strike, right) can't be resolved against the Tastytrade chain, or when the
+chain itself is unavailable — this is what protected the builder /quote endpoint from
+a 500 on an unresolved contract, now enforced at the facade level (sole data source).
    Run: python -m pytest tests/test_option_mid_unresolved.py -q
 """
 from __future__ import annotations
@@ -9,34 +10,23 @@ from datetime import date
 
 import pytest
 
-from app.ibkr import options_data
-
-
-class _UnresolvedIB:
-    """Mimics IBKR qualify for an unknown contract: returns the contract but leaves conId=0."""
-    def __init__(self):
-        self.reqmkt_called = False
-
-    async def qualifyContractsAsync(self, c):
-        return [c]  # unknown contract -> conId stays 0 (ib_async does not raise)
-
-    def reqMktData(self, *a, **k):
-        self.reqmkt_called = True
-        raise AssertionError("reqMktData must not be called for an unqualified (conId=0) contract")
-
-    def cancelMktData(self, *a, **k):
-        pass
+from app.marketdata import facade
 
 
 @pytest.mark.asyncio
-async def test_ib_option_quote_returns_none_when_contract_unresolved(monkeypatch):
-    fake = _UnresolvedIB()
+async def test_option_mid_none_when_strike_not_in_chain(monkeypatch):
+    async def fake_chain(underlying):
+        return {"expiries": ["2026-07-18"], "strikes": [500.0],
+                "by_key": {("2026-07-18", 500.0, "C"): ".QQQ260718C500"}}
+    monkeypatch.setattr(facade, "_tt_chain", fake_chain)
+    out = await facade.option_mid("QQQ", date(2026, 7, 18), 999.0, "C")
+    assert out is None, "unresolved strike/right must yield None, not raise"
 
-    class _GW:
-        async def get_ib(self):
-            return fake
 
-    monkeypatch.setattr(options_data, "get_gateway", lambda: _GW())
-    out = await options_data.ib_option_quote("QQQ", date(2026, 7, 18), 500.0, "C")
-    assert out is None, "unresolved option must yield None, not raise"
-    assert fake.reqmkt_called is False, "must not request market data for an unqualified contract"
+@pytest.mark.asyncio
+async def test_option_mid_none_when_chain_unavailable(monkeypatch):
+    async def fake_chain(underlying):
+        return None
+    monkeypatch.setattr(facade, "_tt_chain", fake_chain)
+    out = await facade.option_mid("QQQ", date(2026, 7, 18), 500.0, "C")
+    assert out is None, "a down Tastytrade chain must yield None, not raise"

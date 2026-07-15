@@ -1,5 +1,5 @@
 """TastytradeHistoricalProvider normalizes streamer candles into provider Bars, and the
-factory prefers it only when creds are configured."""
+factory returns it unconditionally (Tastytrade is the sole historical data source)."""
 from datetime import datetime, timezone
 
 import pytest
@@ -19,11 +19,7 @@ async def test_get_bars_delegates_to_streamer(monkeypatch):
     assert bars[0]["close"] == 1.5 and bars[0]["symbol"] == "QQQ"
 
 
-def test_factory_prefers_tt_when_configured(monkeypatch):
+def test_factory_returns_tt_unconditionally():
     providers.get_historical_provider.cache_clear()
-    monkeypatch.setattr(providers, "tt_configured", lambda: True)
     assert providers.get_historical_provider().name == "tastytrade"
-    providers.get_historical_provider.cache_clear()
-    monkeypatch.setattr(providers, "tt_configured", lambda: False)
-    assert providers.get_historical_provider().name != "tastytrade"
     providers.get_historical_provider.cache_clear()
