@@ -26,6 +26,10 @@ from app.routers.ws import router as ws_router
 from app.strategies.registry import seed_strategy_state
 
 logging.basicConfig(level=logging.INFO)
+# The tastytrade SDK logs every DXLink event at DEBUG — with a persistent quote stream
+# that's millions of lines (a 443MB err.log by 2026-07-15). Clamp SDK loggers hard.
+for _noisy in ("tastytrade", "httpx", "httpx_ws", "websockets"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 logger = logging.getLogger("trading")
 
 settings = get_settings()
@@ -38,9 +42,8 @@ async def lifespan(app: FastAPI):
     await seed_strategy_state()
     logger.info("Database initialized")
     logger.info(
-        "[IBKR] backend = IB Gateway %s:%s (clientId=%s). Connect via the API tab "
-        "or POST /api/auth/connect. App boots without a live connection.",
-        settings.ibkr_host, settings.ibkr_port, settings.ibkr_client_id,
+        "[Tastytrade] broker = Tastytrade OAuth. Connect via the API tab "
+        "or POST /api/auth/connect. App boots without a live connection."
     )
     from app.engine.recovery import run_recovery
     try:
@@ -104,7 +107,7 @@ async def health() -> dict:
     return {
         "status": "ok",
         "app": settings.app_name,
-        "broker": "ibkr",
+        "broker": "tastytrade",
         "live_orders_enabled": settings.enable_live_orders,
     }
 
