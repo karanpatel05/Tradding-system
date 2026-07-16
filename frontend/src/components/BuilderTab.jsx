@@ -5,7 +5,7 @@ import PayoffChart from "./PayoffChart.jsx";
 import ChainGrid from "./ChainGrid.jsx";
 import ExpiryTabs from "./builder/ExpiryTabs.jsx";
 import StrikeRuler from "./builder/StrikeRuler.jsx";
-import StatsRow from "./builder/StatsRow.jsx";
+import StatCards from "./builder/StatCards.jsx";
 import { computeStats } from "./builder/payoffStats.js";
 
 const money = (n) => (n == null ? "—" : `${n >= 0 ? "+" : "−"}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
@@ -33,6 +33,7 @@ export default function BuilderTab() {
   const [evalDays, setEvalDays] = useState(null);       // DATE scrubber: null = at expiration
   const [isTheo, setIsTheo] = useState(false);           // net debit built from BS theo values
   const [expiryStrikes, setExpiryStrikes] = useState({}); // iso -> strikes for that expiry
+  const [mkt, setMkt] = useState(null);
 
   const underlyingRef = useRef(underlying);
   useEffect(() => { underlyingRef.current = underlying; }, [underlying]);
@@ -70,6 +71,10 @@ export default function BuilderTab() {
 
   useEffect(() => { loadTrades(); }, []);
   useEffect(() => { const id = setInterval(loadTrades, 15000); return () => clearInterval(id); }, []);
+
+  const loadMarketStatus = () => api.marketStatus().then(setMkt).catch(() => {});
+  useEffect(() => { loadMarketStatus(); }, []);
+  useEffect(() => { const id = setInterval(loadMarketStatus, 30000); return () => clearInterval(id); }, []);
 
   // Any change to the legs invalidates the fetched quote/payoff: net_debit is what the
   // monitor's target/stop uses, so it must never be saved against a different leg set.
@@ -243,6 +248,10 @@ export default function BuilderTab() {
               )}
             </span>
           )}
+          <span className={`mkt-chip ${mkt?.is_open ? "open" : "closed"}`}>
+            <span className="mkt-dot" />
+            {mkt?.is_open ? "Market Open" : (mkt?.session === "closed" ? "Closed" : mkt?.session?.replace("_", "-"))}
+          </span>
           <span className="muted small">{chain.expirations.length} expiries · {chain.strikes.length} strikes</span>
         </div>
 
@@ -260,7 +269,7 @@ export default function BuilderTab() {
           <div className="muted" style={{ marginTop: 10 }}>Load a chain to pick expiry and strike.</div>
         )}
 
-        <StatsRow netDebit={netDebit} stats={stats} chance={payoff?.chance_of_profit} />
+        <StatCards netDebit={netDebit} stats={stats} chance={payoff?.chance_of_profit} />
 
         {payoff ? (
           <PayoffChart curve={payoff.curve} breakevens={payoff.breakevens}
