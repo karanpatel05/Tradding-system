@@ -11,22 +11,24 @@ EXP = (date.today() + timedelta(days=30)).isoformat()
 
 
 def test_payoff_at_stock_linear():
+    # 100 shares = 1.0 per-1x unit: payoff_curve's x100 then yields qty x S dollars.
     legs = [{"action": "BUY", "right": "S", "strike": 0.0, "expiry": "", "qty": 100}]
-    assert payoff_at(legs, 50.0, date.today(), 0.2, 0.04) == pytest.approx(5000.0)
-    assert payoff_at(legs, 60.0, date.today(), 0.2, 0.04) == pytest.approx(6000.0)
+    assert payoff_at(legs, 50.0, date.today(), 0.2, 0.04) == pytest.approx(50.0)
+    assert payoff_at(legs, 60.0, date.today(), 0.2, 0.04) == pytest.approx(60.0)
 
 
 def test_covered_call_value():
     legs = [{"action": "BUY", "right": "S", "strike": 0.0, "expiry": "", "qty": 100},
             {"action": "SELL", "right": "C", "strike": 105.0, "expiry": EXP, "qty": 1}]
-    # deep past expiry, at S=120: stock 12000 - intrinsic short call 15*1 = 11985 (per-1x*qty units)
+    # past expiry at S=120 (per-1x): stock 120 - short-call intrinsic 15 = 105 — the
+    # classic covered-call value S - max(S-K, 0).
     v = payoff_at(legs, 120.0, date.fromisoformat(EXP) + timedelta(days=1), 0.2, 0.0)
-    assert v == pytest.approx(120.0 * 100 - 15.0, abs=0.01)
+    assert v == pytest.approx(105.0, abs=0.01)
 
 
 def test_combo_value_stock_uses_mid():
     legs = [{"action": "BUY", "right": "S", "strike": 0.0, "expiry": "", "qty": 100}]
-    assert combo_value(legs, [101.5]) == pytest.approx(101.5 * 100)
+    assert combo_value(legs, [101.5]) == pytest.approx(101.5)   # per-1x (100 sh = 1.0)
 
 
 @pytest.mark.asyncio
