@@ -12,8 +12,6 @@ asyncpg==0.31.0            # postgres driver
 pydantic==2.13.4
 pydantic-settings==2.14.1
 
-# Interactive Brokers integration
-ib_async==2.1.0
 httpx==0.28.1
 
 # Tastytrade market data

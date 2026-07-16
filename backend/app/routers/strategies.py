@@ -50,12 +50,9 @@ async def _state(key: str) -> StrategyState | None:
 
 
 def _conn_ready() -> bool:
-    """True when the IBKR Gateway has fully recovered (trading-permitted state)."""
-    from app.ibkr.gateway import ConnState, get_gateway
-    try:
-        return get_gateway().state is ConnState.READY
-    except Exception:  # noqa: BLE001 — never fail the page on a gateway hiccup
-        return False
+    """True when the Tastytrade OAuth probe confirms readiness (trading-permitted)."""
+    from app.broker.status import is_ready_cached
+    return is_ready_cached()
 
 
 def _market_open() -> tuple[dict, bool]:

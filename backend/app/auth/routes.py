@@ -72,16 +72,16 @@ async def _safe_mode_info() -> tuple[bool, str | None]:
 
 
 async def _status() -> ConnectionStatus:
-    from app.ibkr.gateway import get_gateway
     result = await probe()
     detail = result if (result and result != "ok") else None
     masked = _mask_account(await _account_number())
     sm_on, sm_reason = await _safe_mode_info()
+    conn_state = "safe_mode" if sm_on else ("ready" if is_ready_cached() else "disconnected")
     return ConnectionStatus(
         connected=is_ready_cached(),
         host=None, port=None, client_id=None,
         account=masked, accounts=[masked] if masked else [], detail=detail,
-        conn_state=get_gateway().state.value, safe_mode=sm_on, safe_mode_reason=sm_reason,
+        conn_state=conn_state, safe_mode=sm_on, safe_mode_reason=sm_reason,
     )
 
 
@@ -131,7 +131,6 @@ def _tt_state() -> dict:
     return {"configured": bool(s.tt_provider_secret and s.tt_refresh_token),
             "has_secret": bool(s.tt_provider_secret),
             "has_refresh": bool(s.tt_refresh_token),
-            "data_primary": s.data_primary,
             **data_status()}
 
 

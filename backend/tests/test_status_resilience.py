@@ -11,10 +11,8 @@ def _run() -> None:
         from app.db.base import init_db
         from app.auth.routes import _status
         from app.engine.safe_mode import trip_safe_mode
-        from app.ibkr.gateway import ConnState, get_gateway
 
         await init_db()
-        get_gateway().set_state(ConnState.SAFE_MODE)
         await trip_safe_mode("orphan position AAPL")
 
         st = await _status()

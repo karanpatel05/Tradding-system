@@ -1,4 +1,4 @@
-"""Manual live check (needs IB Gateway connected + OPRA + market open). NOT a unit test.
+"""Manual live check (needs Tastytrade OAuth creds configured + market open). NOT a unit test.
 
     python -m scripts.triple_calendar_live_smoke           # paper: builds + logs the entry
     ENABLE_LIVE_ORDERS=1 python -m scripts.triple_calendar_live_smoke   # places + flattens
@@ -9,7 +9,6 @@ import asyncio
 from datetime import datetime
 
 from app.engine.execution import flatten_all
-from app.ibkr.gateway import get_gateway
 from app.strategies.triple_calendar.live import entry_legs
 from app.strategies.triple_calendar.live_source import LivePriceSource
 from app.strategies.triple_calendar.strategy import decide_entry
@@ -17,14 +16,12 @@ from app.strategies.triple_calendar.strategy_class import _params, _resolve_snap
 
 
 async def main() -> int:
-    await get_gateway().connect()
     params = _params()
     src = LivePriceSource()
     today = datetime.now().date()
     spot = await src.aunderlying(params.underlying)
     if spot is None:
         print(f"No {params.underlying} quote — check connection/market open.")
-        get_gateway().disconnect()
         return 1
     strikes = await src.achain(params.underlying)
     print(f"{params.underlying} spot {spot} | {len(strikes)} strikes")
@@ -46,7 +43,6 @@ async def main() -> int:
         else:
             print("(paper mode — ENABLE_LIVE_ORDERS off, no orders placed; "
                   "set ENABLE_LIVE_ORDERS=1 to place + flatten a real paper combo)")
-    get_gateway().disconnect()
     return 0
 
 

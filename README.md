@@ -1,18 +1,18 @@
-# Multi-Strategy Automated Trading System (Interactive Brokers)
+# Multi-Strategy Automated Trading System (Tastytrade)
 
-Runs trading strategies (equities + options) against Interactive Brokers via IB Gateway
-(ib_async) — the single source for all market data. Includes a live engine, dashboard,
-journal, equity backtests, and a live Triple Calendar options strategy. Runs as a local
-web app or a hosted Docker stack.
+Runs trading strategies (equities + options) against Tastytrade — the sole broker and
+market-data source (OAuth personal grant). Includes a live engine, dashboard, journal,
+equity backtests, and a live Triple Calendar options strategy. Runs as a local web app
+or a hosted Docker stack.
 
 ## Architecture
 
 ```
-backend/   FastAPI + async SQLAlchemy + ib_async (IB Gateway)
+backend/   FastAPI + async SQLAlchemy + tastytrade SDK
   app/
-    config.py            env-driven settings (IBKR host/port/clientId)
-    auth/                connection-state auth (authenticated == IB Gateway connected)
-    ibkr/                gateway, contracts (stock/option/combo), market data, accounts
+    config.py            env-driven settings (Tastytrade OAuth creds)
+    auth/                connection-state auth (authenticated == Tastytrade OAuth probe verifies)
+    broker/              Tastytrade orders, account, readiness probe (app.broker.status)
     engine/              kill-switch task registry, per-strategy workers, execution (equity + combo)
     strategies/          BaseStrategy + registry; triple_calendar (live options strategy)
     backtest/            pure-Python metrics + historical runner
@@ -26,10 +26,11 @@ docker-compose.yml       postgres + backend + frontend
 
 ## Key guarantees
 
-- **Auth == IBKR Gateway connection** — "authenticated" means the local IB Gateway is
-  connected; the gated REST/WebSocket routes pass while it is. There is **no per-user login**.
-  This is fine for a local browser tool, but anything network-exposed MUST sit behind
-  the Docker stack's Caddy Basic Auth + TLS (see the hosted section below).
+- **Auth == Tastytrade OAuth probe verifies** — "authenticated" means the token-refresh
+  probe against Tastytrade succeeds (see `app/broker/status.py`); the gated REST/WebSocket
+  routes pass while it does. There is **no per-user login**. This is fine for a local
+  browser tool, but anything network-exposed MUST sit behind the Docker stack's Caddy
+  Basic Auth + TLS (see the hosted section below).
 - **"Coming Soon" is enforced server-side** — activation, capital allocation, and backtest are
   rejected with `409` for not-ready strategies. The UI hiding is cosmetic only.
 - **Kill switch is real** — cancels every tracked async worker (even if flatten throws), is
@@ -38,12 +39,12 @@ docker-compose.yml       postgres + backend + frontend
 
 ## Run locally (no Docker)
 
-Backend (boots with zero infra — SQLite; connects to IBKR from the API tab / `/api/auth/connect`):
+Backend (boots with zero infra — SQLite; connect to Tastytrade from the API tab or
+`/api/auth/connect` by saving your OAuth provider secret + refresh token):
 
 ```bash
 cd backend
 ../.venv/bin/pip install -r requirements.txt
-# Run IB Gateway (paper, API enabled, port 4002) separately, then:
 ../.venv/bin/python -m uvicorn app.main:app --port 8000
 ```
 
@@ -80,11 +81,12 @@ docker compose up --build
 # open https://localhost          (self-signed cert by default; accept it)
 ```
 
-**IB Gateway is NOT containerized** (it's a GUI app) — run it on the host (paper, API
-enabled, port 4002); the backend reaches it via `host.docker.internal`.
+Connect Tastytrade via the API tab (or `/api/auth/tastytrade`) after the stack is up —
+no separate gateway process to run.
 
-**Security:** the app has no per-user login (auth == "is the IBKR Gateway connected?"), so
-the Caddy **Basic Auth + TLS** layer is the only thing protecting live trading. The backend
+**Security:** the app has no per-user login (auth == "does the Tastytrade OAuth probe
+verify?"), so the Caddy **Basic Auth + TLS** layer is the only thing protecting live
+trading. The backend
 port is never published to the host. Do not bypass the proxy or expose the backend directly.
 Set a strong `BASIC_AUTH_HASH` (`caddy hash-password`) and a real `APP_SECRET_KEY`. See
 `docs/superpowers/specs/2026-06-26-web-app-migration-design.md`.

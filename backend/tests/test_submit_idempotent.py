@@ -1,16 +1,18 @@
-"""Live equity submit records a durable intent + sets orderRef before transmit.
+"""Live equity submit records a durable intent + sets the perm-id before/after transmit.
    Run: DATABASE_URL=sqlite+aiosqlite:///./_t_idem.db ENABLE_LIVE_ORDERS=1 python -m tests.test_submit_idempotent
 """
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal
+from types import SimpleNamespace
 
 
 def _run() -> None:
     async def _t():
+        from app.broker import orders as ord_mod
         from app.config import get_settings
         from app.db.base import init_db
-        from app.engine import execution
         from app.engine.order_store import open_refs
 
         get_settings().enable_live_orders = True
@@ -18,36 +20,39 @@ def _run() -> None:
 
         captured = {}
 
-        class FakeOrder:
-            def __init__(self, *a, **k):
-                self.orderRef = None
+        class Recorder:
+            async def place_order(self, session, order, dry_run=True):
+                return SimpleNamespace(order=SimpleNamespace(id=555))
 
-        class FakeTrade:
-            class order:  # noqa: N801
-                permId = 555
-                orderId = 1
+        async def sess():
+            return object()
+        async def acct():
+            return Recorder()
+        async def mid(symbol):
+            return 101.25
 
-        class FakeIB:
-            def qualifyContractsAsync(self, *a):
-                async def _n():
-                    return a
-                return _n()
+        from tastytrade.order import InstrumentType, Leg
 
-            def placeOrder(self, contract, order):
-                captured["orderRef"] = order.orderRef
-                return FakeTrade()
+        def _leg(sym, qty, action):
+            return Leg(instrument_type=InstrumentType.EQUITY, symbol=sym, action=action,
+                      quantity=Decimal(qty))
 
-        async def fake_get_ib():
-            return FakeIB()
+        async def fake_equity_get(session, symbols):
+            sym = list(symbols)[0]
+            return [SimpleNamespace(symbol=sym,
+                                    build_leg=lambda qty, action: _leg(sym, qty, action))]
 
-        execution.get_gateway().get_ib = fake_get_ib  # type: ignore[assignment]
-        execution.MarketOrder = FakeOrder              # type: ignore[attr-defined]
+        ord_mod._session = sess
+        ord_mod._account = acct
+        ord_mod._mid = mid
+        ord_mod._equities = fake_equity_get
 
-        res = await execution.submit_equity_order("AAPL", "enter_long", 10, reason="entry")
+        res = await ord_mod.submit_equity_order("AAPL", "enter_long", 10, reason="entry")
         assert res["transmitted"] is True, res
         assert res["ref"] in (await open_refs()), res
-        assert captured["orderRef"] == res["ref"], captured
-        print("PASS: live submit set orderRef + recorded intent")
+        captured["order_id"] = res["order_id"]
+        assert captured["order_id"] == 555, captured
+        print("PASS: live submit recorded a durable intent + set the perm-id")
 
     asyncio.run(_t())
     print("\nALL SUBMIT-IDEMPOTENT TESTS PASSED")
