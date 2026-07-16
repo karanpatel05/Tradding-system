@@ -15,7 +15,8 @@ from datetime import date, datetime
 from sqlalchemy import select
 
 from app.db.base import session_scope
-from app.db.models import JournalNote, LogEntry, TradeRecord
+from app.db.models import (BuilderPositionRecord, JournalNote, LogEntry,
+                           OptionPositionRecord, TradeRecord)
 
 logger = logging.getLogger("trading.journal")
 
@@ -57,6 +58,32 @@ async def get_logs(limit: int = 200, category: str | None = None,
     return [_log_to_dict(r) for r in rows]
 
 
+
+
+def _tc_dollars(rec) -> float:
+    """TC option pnl is stored per-share; dollars = pnl x 100 x contracts."""
+    return round((rec.pnl or 0.0) * 100 * (rec.contracts or 1), 2)
+
+
+async def _option_rows(session) -> list[dict]:
+    """TC + Builder option positions, normalized for calendar aggregation.
+    Builder pnl is already dollars; TC converts per-share -> dollars."""
+    tc = (await session.execute(select(OptionPositionRecord))).scalars().all()
+    br = (await session.execute(select(BuilderPositionRecord))).scalars().all()
+    rows: list[dict] = []
+    for r in tc:
+        rows.append({"source": "triple_calendar", "underlying": r.underlying,
+                     "status": r.status, "entry_time": r.entry_time,
+                     "exit_time": r.exit_time, "contracts": r.contracts or 1,
+                     "pnl": _tc_dollars(r) if r.status == "closed" else None})
+    for r in br:
+        rows.append({"source": "builder", "underlying": r.underlying,
+                     "status": r.status, "entry_time": r.entry_time,
+                     "exit_time": r.exit_time, "contracts": r.contracts or 1,
+                     "pnl": (round(r.pnl, 2) if r.pnl is not None else 0.0)
+                            if r.status == "closed" else None})
+    return rows
+
 async def get_calendar(start: date, end: date) -> list[dict]:
     """Day-by-day summary between start and end (inclusive).
 
@@ -66,9 +93,22 @@ async def get_calendar(start: date, end: date) -> list[dict]:
     are computed from closed trades only."""
     async with session_scope() as session:
         trades = (await session.execute(select(TradeRecord))).scalars().all()
+        options = await _option_rows(session)
 
     closed_by_day: dict[date, list[TradeRecord]] = defaultdict(list)
     open_by_day: dict[date, int] = defaultdict(int)
+    # Options (TC rolls/exits + Builder paper closes) count like trades: closed by
+    # exit day (realized dollars), open by entry day.
+    opt_closed_by_day: dict[date, list[dict]] = defaultdict(list)
+    for o in options:
+        if o["status"] == "closed" and o["exit_time"]:
+            d = o["exit_time"].date()
+            if start <= d <= end:
+                opt_closed_by_day[d].append(o)
+        elif o["status"] == "open" and o["entry_time"]:
+            d = o["entry_time"].date()
+            if start <= d <= end:
+                open_by_day[d] += 1
     for t in trades:
         if t.status == "closed" and t.exit_time:
             d = t.exit_time.date()
@@ -80,12 +120,14 @@ async def get_calendar(start: date, end: date) -> list[dict]:
                 open_by_day[d] += 1
 
     days = []
-    for d in sorted(set(closed_by_day) | set(open_by_day)):
+    for d in sorted(set(closed_by_day) | set(open_by_day) | set(opt_closed_by_day)):
         day_trades = closed_by_day.get(d, [])
+        day_opts = opt_closed_by_day.get(d, [])
         open_n = open_by_day.get(d, 0)
-        pnl = sum(t.pnl or 0.0 for t in day_trades)
-        wins = sum(1 for t in day_trades if (t.pnl or 0.0) > 0)
-        closed_n = len(day_trades)
+        pnl = sum(t.pnl or 0.0 for t in day_trades) + sum(o["pnl"] or 0.0 for o in day_opts)
+        wins = sum(1 for t in day_trades if (t.pnl or 0.0) > 0) \
+             + sum(1 for o in day_opts if (o["pnl"] or 0.0) > 0)
+        closed_n = len(day_trades) + len(day_opts)
         days.append({
             "date": d.isoformat(),
             "realized_pnl": round(pnl, 2),
@@ -106,6 +148,7 @@ async def get_day_detail(day: date) -> dict:
     sums closed trades only."""
     async with session_scope() as session:
         trades = (await session.execute(select(TradeRecord))).scalars().all()
+        options = await _option_rows(session)
         logs = (await session.execute(
             select(LogEntry).order_by(LogEntry.ts.asc())
         )).scalars().all()
@@ -118,13 +161,27 @@ async def get_day_detail(day: date) -> dict:
         or (t.status == "open" and t.entry_time and t.entry_time.date() == day)
     ]
     day_trades.sort(key=lambda t: (t.entry_time or t.exit_time or datetime.min))
+    day_opts = [
+        o for o in options
+        if (o["status"] == "closed" and o["exit_time"] and o["exit_time"].date() == day)
+        or (o["status"] == "open" and o["entry_time"] and o["entry_time"].date() == day)
+    ]
+    day_opts.sort(key=lambda o: (o["entry_time"] or o["exit_time"] or datetime.min))
     day_logs = [r for r in logs if r.ts.date() == day]
-    realized = sum(t.pnl or 0.0 for t in day_trades if t.status == "closed")
+    realized = sum(t.pnl or 0.0 for t in day_trades if t.status == "closed") \
+             + sum(o["pnl"] or 0.0 for o in day_opts if o["status"] == "closed")
 
     return {
         "date": day.isoformat(),
         "realized_pnl": round(realized, 2),
         "trades": [_trade_to_dict(t) for t in day_trades],
+        "option_trades": [
+            {"source": o["source"], "underlying": o["underlying"], "status": o["status"],
+             "contracts": o["contracts"], "pnl": o["pnl"],
+             "entry_time": o["entry_time"].isoformat() if o["entry_time"] else None,
+             "exit_time": o["exit_time"].isoformat() if o["exit_time"] else None}
+            for o in day_opts
+        ],
         "logs": [_log_to_dict(r) for r in day_logs],
         "note": note_text,
     }
