@@ -666,3 +666,12 @@ tr.leg-selected td:first-child { box-shadow: inset 3px 0 0 #2563eb; }
 .sruler-tip { position: absolute; top: -22px; transform: translateX(-50%); padding: 2px 8px;
   border-radius: 8px; background: var(--card-glass); backdrop-filter: blur(8px);
   border: 1px solid var(--border); font-size: 11px; color: var(--text); pointer-events: none; }
+/* --- recent trades cards + builder layout --- */
+.trade-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.trade-card { padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--card-glass); display: flex; flex-direction: column; gap: 6px;
+  transition: transform 160ms ease, box-shadow 160ms ease; }
+.trade-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-1); }
+.trade-head { display: flex; justify-content: space-between; align-items: baseline; }
+.trade-pnl { font-size: 18px; font-weight: 700; }
+.builder-tab { max-width: 1280px; margin: 0 auto; }

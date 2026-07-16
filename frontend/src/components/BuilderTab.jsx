@@ -462,27 +462,29 @@ export default function BuilderTab() {
       </section>
 
       <section className="card">
-        <h2>Tracked trades</h2>
+        <h2>Recent Trades</h2>
         {trades.length === 0 ? <div className="muted">No saved trades yet.</div> : (
-          <div className="table-scroll">
-            <table className="table">
-              <thead><tr><th>Underlying</th><th>Legs</th><th>Net debit</th><th>P&L</th><th>Status</th><th></th></tr></thead>
-              <tbody>
-                {trades.map((t) => (
-                  <tr key={t.id}>
-                    <td>{t.underlying}</td>
-                    <td className="muted small">{t.legs.length} legs</td>
-                    <td className="num">{t.net_debit >= 0 ? `$${t.net_debit.toFixed(2)}` : `($${Math.abs(t.net_debit).toFixed(2)})`}</td>
-                    <td className={`num ${(t.status === "closed" ? t.pnl : t.last_pnl) >= 0 ? "pos" : "neg"}`}>
-                      {money(t.status === "closed" ? t.pnl : t.last_pnl)}
-                      {t.last_pnl_pct != null && t.status === "open" && <span className="muted small"> {(t.last_pnl_pct * 100).toFixed(1)}%</span>}
-                    </td>
-                    <td><span className={`pill tiny ${t.status === "open" ? "live" : "idle"}`}>{t.status}{t.exit_reason ? ` · ${t.exit_reason}` : ""}</span></td>
-                    <td>{t.status === "open" && <button className="btn ghost tiny" onClick={() => closeTrade(t.id)}>Close</button>}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="trade-cards">
+            {trades.map((t) => {
+              const v = t.status === "closed" ? t.pnl : t.last_pnl;
+              return (
+                <div className="trade-card" key={t.id}>
+                  <div className="trade-head">
+                    <b>{t.underlying}</b>
+                    <span className="muted small">{t.legs.length} legs · {t.entry_time?.slice(0, 10) || "—"}</span>
+                  </div>
+                  <div className={`trade-pnl num ${(v ?? 0) >= 0 ? "pos" : "neg"}`}>
+                    {v == null ? "—" : `${v >= 0 ? "+" : "−"}$${Math.abs(v).toFixed(2)}`}
+                    {t.last_pnl_pct != null && t.status === "open" &&
+                      <span className="muted small"> {(t.last_pnl_pct * 100).toFixed(1)}%</span>}
+                  </div>
+                  <div className="row between center">
+                    <span className={`pill tiny ${t.status === "open" ? "live" : "idle"}`}>{t.status}{t.exit_reason ? ` · ${t.exit_reason}` : ""}</span>
+                    {t.status === "open" && <button className="btn ghost tiny" onClick={() => closeTrade(t.id)}>Close</button>}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </section>
