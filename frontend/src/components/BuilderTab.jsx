@@ -6,6 +6,7 @@ import ChainGrid from "./ChainGrid.jsx";
 import ExpiryTabs from "./builder/ExpiryTabs.jsx";
 import StrikeRuler from "./builder/StrikeRuler.jsx";
 import StatCards from "./builder/StatCards.jsx";
+import GreeksPanel from "./builder/GreeksPanel.jsx";
 import { computeStats } from "./builder/payoffStats.js";
 import { buildTemplate, buildHedge } from "./builder/templates.js";
 
@@ -36,6 +37,8 @@ export default function BuilderTab() {
   const [isTheo, setIsTheo] = useState(false);           // net debit built from BS theo values
   const [expiryStrikes, setExpiryStrikes] = useState({}); // iso -> strikes for that expiry
   const [mkt, setMkt] = useState(null);
+  const [greeks, setGreeks] = useState(null);            // {net, legs, delta_curve?}
+  const [showDelta, setShowDelta] = useState(false);     // Δ overlay on the payoff chart
 
   const underlyingRef = useRef(underlying);
   useEffect(() => { underlyingRef.current = underlying; }, [underlying]);
@@ -85,7 +88,7 @@ export default function BuilderTab() {
   // Any change to the legs invalidates the fetched quote/payoff: net_debit is what the
   // monitor's target/stop uses, so it must never be saved against a different leg set.
   // Clearing it forces a re-fetch (Preview/Save are gated on netDebit != null).
-  const invalidateQuote = () => { setNetDebit(null); setPayoff(null); setIsTheo(false); setPanPct(0); };
+  const invalidateQuote = () => { setNetDebit(null); setPayoff(null); setGreeks(null); setIsTheo(false); setPanPct(0); };
   const setLeg = (i, patch) => { setLegs((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch, mid: null } : l))); invalidateQuote(); };
 
   // The expiry tabs + strike ruler edit the SELECTED leg. With no legs yet, first
@@ -169,7 +172,21 @@ export default function BuilderTab() {
         body.eval_date = d.toISOString().slice(0, 10);
       }
       setPayoff(await api.builderPayoff(body));
+      fetchGreeks(showDelta);
     } catch (e) { setMsg(e.message); } finally { setBusy(false); }
+  };
+
+  // Position greeks (same legs/spot/iv as the payoff). `curve` also asks for the
+  // net-delta curve the Δ overlay draws; fire-and-forget, never blocks the payoff.
+  const fetchGreeks = (curve) => {
+    if (!legs.length || spot == null) { setGreeks(null); return; }
+    api.builderGreeks({ legs, spot, iv: Number(iv), curve: !!curve })
+      .then(setGreeks).catch(() => {});
+  };
+  const toggleDelta = () => {
+    const next = !showDelta;
+    setShowDelta(next);
+    if (next && !greeks?.delta_curve) fetchGreeks(true);  // curve wasn't fetched yet
   };
 
   const save = async () => {
@@ -316,6 +333,7 @@ export default function BuilderTab() {
         )}
 
         <StatCards netDebit={netDebit} stats={stats} chance={payoff?.chance_of_profit} />
+        <GreeksPanel greeks={greeks} />
 
         {payoff ? (
           <div className="chart-zone" ref={chartZoneRef}
@@ -333,7 +351,8 @@ export default function BuilderTab() {
             onDoubleClick={() => { setRangePct(8); setPanPct(0); }}
             title="Scroll to zoom · drag to pan · double-click to reset">
             <PayoffChart curve={payoff.curve} breakevens={payoff.breakevens}
-              strikes={legStrikes} spot={spot} window={chartWindow} />
+              strikes={legStrikes} spot={spot} window={chartWindow}
+              deltaCurve={showDelta ? greeks?.delta_curve : null} />
           </div>
         ) : (
           <div className="muted">
@@ -361,7 +380,12 @@ export default function BuilderTab() {
           <input type="range" min="0.05" max="1.5" step="0.01" value={iv}
             onChange={(e) => setIv(e.target.value)}
             onPointerUp={() => { if (netDebit != null) preview(); }} />
-          <button className="btn ghost" disabled title="Greeks overlay — coming in Phase 2">Δ overlay</button>
+          <button className={`btn ghost ${showDelta ? "active" : ""}`} onClick={toggleDelta}
+            disabled={!payoff || spot == null}
+            title="Overlay the net-delta curve on the payoff chart"
+            style={showDelta ? { borderColor: "var(--accent)", color: "var(--accent)" } : undefined}>
+            Δ overlay
+          </button>
         </div>
 
         <div className="legs-toolbar">

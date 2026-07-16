@@ -44,6 +44,16 @@ class PayoffBody(BaseModel):
     spot: float | None = None   # enables chance-of-profit (lognormal mass over profit regions)
 
 
+class GreeksBody(BaseModel):
+    legs: list[Leg] = Field(min_length=1)
+    spot: float
+    iv: float = 0.25
+    r: float = 0.04
+    curve: bool = False
+    lo: float | None = None
+    hi: float | None = None
+
+
 class SaveBody(BaseModel):
     underlying: str
     legs: list[Leg] = Field(min_length=1)
@@ -181,6 +191,41 @@ async def payoff(body: PayoffBody) -> dict:
     cop = chance_of_profit(curve, body.spot, body.iv, r, T)
     return {"curve": curve, "eval_date": ev.isoformat(), "chance_of_profit": cop,
             **curve_stats(curve)}
+
+
+@router.post("/greeks")
+async def greeks(body: GreeksBody) -> dict:
+    """Per-leg + net position greeks (x100 x qty for options; stock legs x qty shares
+    for delta). Optional delta curve across [lo, hi] for the chart overlay."""
+    from app.options.blackscholes import bs_greeks
+    legs = _legs(body.legs)
+    today = date.today()
+
+    def leg_greeks(leg, S):
+        T = 0.0 if leg["right"] == "S" or not leg["expiry"] else max(
+            (date.fromisoformat(leg["expiry"]) - today).days, 0) / 365.0
+        g = bs_greeks(S, leg["strike"] or S, T, body.iv, body.r, leg["right"])
+        sign = 1 if leg["action"] == "BUY" else -1
+        mult = leg["qty"] if leg["right"] == "S" else 100 * leg["qty"]
+        return {k: sign * mult * v for k, v in g.items()}
+
+    per_leg, net = [], {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
+    for leg in legs:
+        g = leg_greeks(leg, body.spot)
+        per_leg.append({**{k: round(v, 4) for k, v in g.items()},
+                        "right": leg["right"], "strike": leg["strike"], "action": leg["action"]})
+        for k in net:
+            net[k] += g[k]
+    out = {"net": {k: round(v, 4) for k, v in net.items()}, "legs": per_leg}
+    if body.curve:
+        lo, hi = (body.lo, body.hi) if body.lo is not None and body.hi is not None \
+            else (body.spot * 0.5, body.spot * 1.5)
+        pts, step = 81, (hi - lo) / 80
+        out["delta_curve"] = [
+            {"price": round(lo + i * step, 2),
+             "delta": round(sum(leg_greeks(l, lo + i * step)["delta"] for l in legs), 2)}
+            for i in range(pts)]
+    return out
 
 
 @router.post("/trades")
