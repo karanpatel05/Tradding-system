@@ -7,6 +7,7 @@ import ExpiryTabs from "./builder/ExpiryTabs.jsx";
 import StrikeRuler from "./builder/StrikeRuler.jsx";
 import StatCards from "./builder/StatCards.jsx";
 import { computeStats } from "./builder/payoffStats.js";
+import { buildTemplate, buildHedge } from "./builder/templates.js";
 
 const money = (n) => (n == null ? "—" : `${n >= 0 ? "+" : "−"}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 const emptyLeg = (expiry, strike) => ({ action: "BUY", right: "C", strike, expiry, qty: 1 });
@@ -118,6 +119,31 @@ export default function BuilderTab() {
   };
   const addLegFromChain = (leg) => { setLegs((ls) => [...ls, { ...leg, mid: null }]); setSelectedLeg(legs.length); invalidateQuote(); };
 
+  // Templates menu: first click on a template arms it ("Replace legs with X?"), a
+  // second click within 5s applies it. Any other click re-arms (or arms a different one).
+  const [tmplOpen, setTmplOpen] = useState(false);
+  const [armedTmpl, setArmedTmpl] = useState(null);
+  const armedAt = useRef(0);
+  const applyTemplate = (name) => {
+    const now = Date.now();
+    if (armedTmpl !== name || now - armedAt.current > 5000) {
+      setArmedTmpl(name); armedAt.current = now; return;      // first click arms
+    }
+    const expiry = sel?.expiry || chain.expirations[0];
+    const built = buildTemplate(name, { expiry, strikes: strikesFor(expiry), spot });
+    if (built) { setLegs(built); setSelectedLeg(0); invalidateQuote(); }
+    setArmedTmpl(null); setTmplOpen(false);
+  };
+  const applyHedge = () => {
+    const h = buildHedge(legs, { spot, strikesFor });
+    if (!h) { setMsg("No hedge suggested (flat bias or no option expiry)."); return; }
+    setLegs((ls) => [...ls, h]); setSelectedLeg(legs.length); invalidateQuote();
+  };
+  const duplicateLeg = (i) => {
+    setLegs((ls) => [...ls.slice(0, i + 1), { ...ls[i], mid: null }, ...ls.slice(i + 1)]);
+    setSelectedLeg(i + 1); invalidateQuote();
+  };
+
   const fetchQuotes = async () => {
     setBusy(true); setMsg(null);
     try {
@@ -192,7 +218,7 @@ export default function BuilderTab() {
     () => JSON.stringify(legs.map((l) => [l.action, l.right, l.strike, l.expiry, l.qty])),
     [legs]);
   useEffect(() => {
-    if (!legs.length || legs.some((l) => !l.expiry || !l.strike)) return;
+    if (!legs.length || legs.some((l) => l.right !== "S" && (!l.expiry || !l.strike))) return;
     const t = setTimeout(() => { fetchQuotes(); }, 600);
     return () => clearTimeout(t);
   }, [legsKey]);
@@ -338,29 +364,82 @@ export default function BuilderTab() {
           <button className="btn ghost" disabled title="Greeks overlay — coming in Phase 2">Δ overlay</button>
         </div>
 
-        <h4>Legs</h4>
+        <div className="legs-toolbar">
+          <h4 style={{ margin: 0 }}>LEGS</h4>
+          <div className="row gap center">
+            <button className="btn ghost" onClick={addLeg} disabled={!chain.expirations.length}>+ Leg</button>
+            <div className="tmpl-wrap">
+              <button className="btn ghost" onClick={() => setTmplOpen((o) => !o)} disabled={!chain.expirations.length || spot == null}>Templates ▾</button>
+              {tmplOpen && (
+                <div className="tmpl-menu" onMouseLeave={() => { setArmedTmpl(null); }}>
+                  {[["vertical", "Vertical Spread"], ["straddle", "Straddle"], ["butterfly", "Butterfly"],
+                    ["iron_condor", "Iron Condor"], ["covered_call", "Covered Call"]].map(([k, label]) => (
+                    <button key={k} className={`tmpl-item ${armedTmpl === k ? "armed" : ""}`}
+                      onClick={() => applyTemplate(k)}>
+                      {armedTmpl === k ? `Replace legs with ${label}?` : label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <button className="btn ghost" onClick={applyHedge} disabled={!legs.length || spot == null}>Add hedge</button>
+            <span className="muted">Net: <b className="num">{isTheo ? "~" : ""}{debitLabel}</b></span>
+          </div>
+        </div>
+        {tmplOpen && <div className="tmpl-backdrop" onClick={() => { setTmplOpen(false); setArmedTmpl(null); }} />}
         <div className="table-scroll">
           <table className="table">
             <thead><tr><th>Side</th><th>Type</th><th>Strike</th><th>Expiry</th><th>Qty</th><th>Mid</th><th></th></tr></thead>
             <tbody>
-              {legs.map((l, i) => (
-                <tr key={i} className={i === selectedLeg ? "leg-selected" : ""}
-                  onClick={() => setSelectedLeg(i)}>
-                  <td><select value={l.action} onChange={(e) => setLeg(i, { action: e.target.value })}><option>BUY</option><option>SELL</option></select></td>
-                  <td><select value={l.right} onChange={(e) => setLeg(i, { right: e.target.value })}><option value="C">Call</option><option value="P">Put</option></select></td>
-                  <td><select value={l.strike} onChange={(e) => setLeg(i, { strike: Number(e.target.value) })}>{(strikesFor(l.expiry)).map((s) => <option key={s} value={s}>{s}</option>)}{!strikesFor(l.expiry).includes(l.strike) && <option value={l.strike}>{l.strike}</option>}</select></td>
-                  <td><select value={l.expiry} onChange={(e) => setLeg(i, { expiry: e.target.value })}>{chain.expirations.map((x) => <option key={x} value={x}>{x}</option>)}</select></td>
-                  <td><input className="input tiny" type="number" min="1" value={l.qty} onChange={(e) => setLeg(i, { qty: Number(e.target.value) })} /></td>
-                  <td className="num">{l.mid == null ? "—" : `${l.theo ? "~" : ""}${l.mid.toFixed(2)}`}</td>
-                  <td><button className="btn ghost tiny" onClick={(e) => { e.stopPropagation(); removeLeg(i); }}>✕</button></td>
-                </tr>
-              ))}
+              {legs.map((l, i) => {
+                const isStock = l.right === "S";
+                const onTypeChange = (newRight) => {
+                  if (newRight === "S" && !isStock) setLeg(i, { right: "S", strike: 0, expiry: "", qty: 100 });
+                  else if (newRight !== "S" && isStock) setLeg(i, { right: newRight, strike: atmStrike(), expiry: chain.expirations[0] || "" });
+                  else setLeg(i, { right: newRight });
+                };
+                return (
+                  <tr key={i} className={i === selectedLeg ? "leg-selected" : ""}
+                    onClick={() => setSelectedLeg(i)}>
+                    <td>
+                      <button className={`side-badge ${l.action === "BUY" ? "buy" : "sell"}`}
+                        onClick={(e) => { e.stopPropagation(); setLeg(i, { action: l.action === "BUY" ? "SELL" : "BUY" }); }}>
+                        {l.action}
+                      </button>
+                    </td>
+                    <td className={`right-${l.right}`}>
+                      <select value={l.right} onChange={(e) => onTypeChange(e.target.value)}>
+                        <option value="C">Call</option><option value="P">Put</option><option value="S">Stock</option>
+                      </select>
+                    </td>
+                    <td>
+                      {isStock ? <span className="muted">—</span> : (
+                        <select value={l.strike} onChange={(e) => setLeg(i, { strike: Number(e.target.value) })}>
+                          {(strikesFor(l.expiry)).map((s) => <option key={s} value={s}>{s}</option>)}
+                          {!strikesFor(l.expiry).includes(l.strike) && <option value={l.strike}>{l.strike}</option>}
+                        </select>
+                      )}
+                    </td>
+                    <td>
+                      {isStock ? <span className="muted">—</span> : (
+                        <select value={l.expiry} onChange={(e) => setLeg(i, { expiry: e.target.value })}>
+                          {chain.expirations.map((x) => <option key={x} value={x}>{x}</option>)}
+                        </select>
+                      )}
+                    </td>
+                    <td><input className="input tiny" type="number" min="1" value={l.qty} onChange={(e) => setLeg(i, { qty: Number(e.target.value) })} /></td>
+                    <td className="num">{l.mid == null ? "—" : `${l.theo ? "~" : ""}${l.mid.toFixed(2)}`}</td>
+                    <td>
+                      <div className="row gap">
+                        <button className="btn ghost tiny" title="Duplicate" onClick={(e) => { e.stopPropagation(); duplicateLeg(i); }}>⧉</button>
+                        <button className="btn ghost tiny" title="Delete" onClick={(e) => { e.stopPropagation(); removeLeg(i); }}>✕</button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
-        </div>
-        <div className="row gap center">
-          <button className="btn ghost" onClick={addLeg} disabled={!chain.expirations.length}>+ Add leg</button>
-          <span className="muted">Net: <b>{isTheo ? "~" : ""}{debitLabel}</b></span>
         </div>
       </section>
 

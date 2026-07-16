@@ -503,6 +503,26 @@ select {
 }
 .builder-tab .table td { padding: 8px 10px; }
 
+/* --- legs toolbar/table --- */
+.legs-toolbar { display: flex; justify-content: space-between; align-items: center; margin: 14px 0 8px; }
+.tmpl-wrap { position: relative; }
+.tmpl-backdrop { position: fixed; inset: 0; z-index: 25; background: transparent; }
+.tmpl-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 30; min-width: 220px;
+  background: var(--card-glass); backdrop-filter: blur(14px); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow-2); overflow: hidden; }
+.tmpl-item { display: block; width: 100%; text-align: left; padding: 10px 14px; background: none;
+  border: none; color: var(--text); font-size: 13px; cursor: pointer; transition: background 140ms ease; }
+.tmpl-item:hover { background: var(--accent-soft); }
+.tmpl-item.armed { color: var(--amber); }
+.side-badge { border: none; border-radius: 8px; padding: 4px 10px; font-size: 11px; font-weight: 700;
+  cursor: pointer; transition: transform 140ms ease; }
+.side-badge:hover { transform: scale(1.06); }
+.side-badge.buy { background: rgba(52,211,153,.16); color: var(--pos); }
+.side-badge.sell { background: rgba(248,113,113,.16); color: var(--neg); }
+td.right-C select, .right-C { color: var(--pos); }
+td.right-P select, .right-P { color: var(--neg); }
+td.right-S select, .right-S { color: var(--blue); }
+
 /* ===================== option chain grid (builder) ===================== */
 .chain-card .badge{display:inline-block;background:var(--surface-3);color:var(--muted);border-radius:6px;padding:1px 7px;font-size:11px;font-family:var(--num);margin-left:8px}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 6px}
