@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 // Horizontal strike ruler: one tick per strike, labels every Nth, scrollable and
 // auto-centered on the selection. EVERY leg gets a badge at its strike ("725C",
@@ -12,6 +12,7 @@ export default function StrikeRuler({ strikes = [], value, right = "C", action =
                                       spot = null, onChange, legs = [], selected = null,
                                       onSelect }) {
   const wrap = useRef(null);
+  const [hover, setHover] = useState(null); // {i, x}
 
   const idx = useMemo(() => {
     if (!strikes.length) return -1;
@@ -61,11 +62,16 @@ export default function StrikeRuler({ strikes = [], value, right = "C", action =
     if (el && idx >= 0) el.scrollLeft = idx * TICK_W - el.clientWidth / 2;
   }, [idx, strikes.length]);
 
-  const pick = (clientX) => {
+  const indexAt = (clientX) => {
     const el = wrap.current;
-    if (!el) return;
+    if (!el) return -1;
     const x = clientX - el.getBoundingClientRect().left + el.scrollLeft;
-    const i = Math.max(0, Math.min(strikes.length - 1, Math.round(x / TICK_W - 0.5)));
+    return Math.max(0, Math.min(strikes.length - 1, Math.round(x / TICK_W - 0.5)));
+  };
+
+  const pick = (clientX) => {
+    const i = indexAt(clientX);
+    if (i < 0) return;
     if (strikes[i] !== value) onChange(strikes[i]);
   };
 
@@ -73,7 +79,12 @@ export default function StrikeRuler({ strikes = [], value, right = "C", action =
   return (
     <div className="sruler" ref={wrap} style={{ paddingTop: 34 + maxLevel * BADGE_H }}
       onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); pick(e.clientX); }}
-      onPointerMove={(e) => { if (e.buttons & 1) pick(e.clientX); }}>
+      onPointerMove={(e) => {
+        if (e.buttons & 1) { pick(e.clientX); return; }
+        const i = indexAt(e.clientX);
+        if (i >= 0) setHover({ i, x: i * TICK_W + TICK_W / 2 });
+      }}
+      onPointerLeave={() => setHover(null)}>
       <div className="sruler-track" style={{ width: strikes.length * TICK_W }}>
         {badges.map((b) => (
           <div key={`${b.i}:${b.strike}${b.right}`}
@@ -86,6 +97,12 @@ export default function StrikeRuler({ strikes = [], value, right = "C", action =
           </div>
         ))}
         {spotIdx >= 0 && <div className="sruler-spot" style={{ left: spotIdx * TICK_W + TICK_W / 2 }} />}
+        {hover != null && strikes[hover.i] != null && (
+          <>
+            <div className="sruler-hovline" style={{ left: hover.x }} />
+            <div className="sruler-tip num" style={{ left: hover.x }}>{strikes[hover.i]}</div>
+          </>
+        )}
         {strikes.map((s, i) => (
           <div key={s} className={`sruler-tick ${i === idx ? "active" : ""}`}
             style={{ left: i * TICK_W }}>
