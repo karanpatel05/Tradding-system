@@ -100,8 +100,12 @@ async def spot(underlying: str) -> dict:
                                  start=datetime.now(timezone.utc) - timedelta(days=7))
         closed = [b for b in bars if b.get("close") is not None]
         if closed:
-            today = datetime.now(timezone.utc).date()
-            last_day = datetime.fromtimestamp(closed[-1]["time"] / 1000, tz=timezone.utc).date()
+            from zoneinfo import ZoneInfo
+            # Dates in EXCHANGE time: past midnight UTC the trading day hasn't rolled,
+            # and comparing in UTC picked today's own close as "previous".
+            et = ZoneInfo("America/New_York")
+            today = datetime.now(et).date()
+            last_day = datetime.fromtimestamp(closed[-1]["time"] / 1000, tz=et).date()
             # If the newest daily bar is today's (still forming), the previous close is
             # the bar before it; otherwise the newest bar IS the previous close.
             if last_day == today and len(closed) >= 2:

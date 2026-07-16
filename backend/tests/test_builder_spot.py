@@ -25,7 +25,8 @@ async def test_change_from_daily_bars_skips_forming_bar(monkeypatch):
     from app.marketdata import facade
     async def fake_quote(sym):
         return {"bid": None, "ask": None, "last": 100.0, "close": None, "price": 100.0}
-    now = datetime.now(timezone.utc)
+    from zoneinfo import ZoneInfo
+    now = datetime.now(ZoneInfo("America/New_York"))   # exchange-time "today"
     today_ms = int(now.timestamp() * 1000)
     yday_ms = int((now - timedelta(days=1)).timestamp() * 1000)
     async def fake_bars(sym, tf, start=None, end=None):
