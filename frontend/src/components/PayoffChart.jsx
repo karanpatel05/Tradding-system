@@ -14,14 +14,17 @@ const splitOffset = (data) => {
   return max / (max - min);
 };
 
-export default function PayoffChart({ curve, breakevens = [], strikes = [], spot = null, window = null }) {
+export default function PayoffChart({
+  curve, breakevens = [], strikes = [], spot = null, window = null,
+  height = 380, animate = true,
+}) {
   if (!curve || curve.length === 0) return <div className="muted">No payoff data.</div>;
   const data = window ? curve.filter((p) => p.price >= window[0] && p.price <= window[1]) : curve;
   if (data.length < 2) return <div className="muted">No payoff data in range.</div>;
   const off = splitOffset(data);
   const inWin = (x) => x >= data[0].price && x <= data[data.length - 1].price;
   return (
-    <ResponsiveContainer width="100%" height={300}>
+    <ResponsiveContainer width="100%" height={height}>
       <AreaChart data={data} margin={{ top: 18, right: 12, bottom: 0, left: 0 }}>
         <defs>
           <linearGradient id="pnlFill" x1="0" y1="0" x2="0" y2="1">
@@ -59,7 +62,7 @@ export default function PayoffChart({ curve, breakevens = [], strikes = [], spot
             label={{ value: `$${be}`, position: "top", fill: "#60a5fa", fontSize: 11 }} />
         ))}
         <Area type="monotone" dataKey="pnl" stroke="url(#pnlStroke)" strokeWidth={2}
-          fill="url(#pnlFill)" isAnimationActive={false} />
+          fill="url(#pnlFill)" isAnimationActive={animate} animationDuration={300} animationEasing="ease" />
       </AreaChart>
     </ResponsiveContainer>
   );

@@ -30,6 +30,7 @@ export default function BuilderTab() {
   const [spot, setSpot] = useState(null);
   const [spotInfo, setSpotInfo] = useState(null);       // {price, change_abs, change_pct}
   const [rangePct, setRangePct] = useState(8);          // chart x-window ±%
+  const [panPct, setPanPct] = useState(0);              // chart x-window pan offset (% of spot)
   const [evalDays, setEvalDays] = useState(null);       // DATE scrubber: null = at expiration
   const [isTheo, setIsTheo] = useState(false);           // net debit built from BS theo values
   const [expiryStrikes, setExpiryStrikes] = useState({}); // iso -> strikes for that expiry
@@ -37,6 +38,10 @@ export default function BuilderTab() {
 
   const underlyingRef = useRef(underlying);
   useEffect(() => { underlyingRef.current = underlying; }, [underlying]);
+
+  const dragRef = useRef(null);          // { x, pan } while a pointer-drag pan is active
+  const chartZoneRef = useRef(null);     // wrapper div — carries a non-passive wheel listener
+  const clampPan = (p) => Math.min(50 - rangePct, Math.max(-(50 - rangePct), p));
 
   // Spot can miss right after a server restart (cold data stream) — retry a few
   // times, but never apply a late result for a symbol the user has moved on from.
@@ -79,7 +84,7 @@ export default function BuilderTab() {
   // Any change to the legs invalidates the fetched quote/payoff: net_debit is what the
   // monitor's target/stop uses, so it must never be saved against a different leg set.
   // Clearing it forces a re-fetch (Preview/Save are gated on netDebit != null).
-  const invalidateQuote = () => { setNetDebit(null); setPayoff(null); setIsTheo(false); };
+  const invalidateQuote = () => { setNetDebit(null); setPayoff(null); setIsTheo(false); setPanPct(0); };
   const setLeg = (i, patch) => { setLegs((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch, mid: null } : l))); invalidateQuote(); };
 
   // The expiry tabs + strike ruler edit the SELECTED leg. With no legs yet, first
@@ -223,9 +228,24 @@ export default function BuilderTab() {
   const chartWindow = useMemo(() => {
     if (!payoff) return null;
     if (spot == null) return null; // full curve
-    return [spot * (1 - rangePct / 100), spot * (1 + rangePct / 100)];
-  }, [payoff, spot, rangePct]);
+    const off = spot * (clampPan(panPct) / 100);
+    return [spot * (1 - rangePct / 100) + off, spot * (1 + rangePct / 100) + off];
+  }, [payoff, spot, rangePct, panPct]);
   const legStrikes = useMemo(() => [...new Set(legs.map((l) => l.strike))], [legs]);
+
+  // React's synthetic onWheel is passive, so e.preventDefault() there throws and the
+  // page scrolls anyway. Attach a real, non-passive DOM listener instead.
+  useEffect(() => {
+    const el = chartZoneRef.current;
+    if (!el) return undefined;
+    const onWheel = (e) => {
+      if (!payoff || spot == null) return;
+      e.preventDefault();
+      setRangePct((r) => Math.min(50, Math.max(2, Math.round(r * (e.deltaY > 0 ? 1.15 : 0.87)))));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [payoff, spot]);
 
   return (
     <div className="builder-tab">
@@ -272,8 +292,23 @@ export default function BuilderTab() {
         <StatCards netDebit={netDebit} stats={stats} chance={payoff?.chance_of_profit} />
 
         {payoff ? (
-          <PayoffChart curve={payoff.curve} breakevens={payoff.breakevens}
-            strikes={legStrikes} spot={spot} window={chartWindow} />
+          <div className="chart-zone" ref={chartZoneRef}
+            onPointerDown={(e) => { dragRef.current = { x: e.clientX, pan: panPct, dragging: false }; }}
+            onPointerMove={(e) => {
+              if (!dragRef.current || spot == null) return;
+              const dx = e.clientX - dragRef.current.x;
+              if (!dragRef.current.dragging && Math.abs(dx) <= 4) return;
+              dragRef.current.dragging = true;
+              const dxPct = (dx / e.currentTarget.clientWidth) * rangePct * 2;
+              setPanPct(clampPan(dragRef.current.pan - dxPct));
+            }}
+            onPointerUp={() => { dragRef.current = null; }}
+            onPointerLeave={() => { dragRef.current = null; }}
+            onDoubleClick={() => { setRangePct(8); setPanPct(0); }}
+            title="Scroll to zoom · drag to pan · double-click to reset">
+            <PayoffChart curve={payoff.curve} breakevens={payoff.breakevens}
+              strikes={legStrikes} spot={spot} window={chartWindow} />
+          </div>
         ) : (
           <div className="muted">
             {legs.length ? (busy ? "Fetching quotes…" : "Waiting for a quote — the payoff renders automatically.")
@@ -300,6 +335,7 @@ export default function BuilderTab() {
           <input type="range" min="0.05" max="1.5" step="0.01" value={iv}
             onChange={(e) => setIv(e.target.value)}
             onPointerUp={() => { if (netDebit != null) preview(); }} />
+          <button className="btn ghost" disabled title="Greeks overlay — coming in Phase 2">Δ overlay</button>
         </div>
 
         <h4>Legs</h4>
