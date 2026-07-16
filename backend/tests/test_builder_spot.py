@@ -26,9 +26,13 @@ async def test_change_from_daily_bars_skips_forming_bar(monkeypatch):
     async def fake_quote(sym):
         return {"bid": None, "ask": None, "last": 100.0, "close": None, "price": 100.0}
     from zoneinfo import ZoneInfo
-    now = datetime.now(ZoneInfo("America/New_York"))   # exchange-time "today"
-    today_ms = int(now.timestamp() * 1000)
-    yday_ms = int((now - timedelta(days=1)).timestamp() * 1000)
+    # dxfeed-style stamps: a session's daily bar is stamped 20:00 ET the PRIOR day.
+    et = ZoneInfo("America/New_York")
+    now = datetime.now(et)
+    today_stamp = (now.replace(hour=20, minute=0, second=0, microsecond=0)
+                   - timedelta(days=1))                  # today's session bar
+    today_ms = int(today_stamp.timestamp() * 1000)
+    yday_ms = int((today_stamp - timedelta(days=1)).timestamp() * 1000)
     async def fake_bars(sym, tf, start=None, end=None):
         return [{"time": yday_ms, "close": 98.0}, {"time": today_ms, "close": 99.5}]
     monkeypatch.setattr(facade, "stock_quote", fake_quote)
