@@ -103,6 +103,33 @@ eq(typeof s.maxProfit, "number", "maxProfit is a finite number, not the string \
 s = computeStats(strangle, [], null, []);
 eq(s.maxLoss, "infinite", "empty legs array falls back to heuristic path");
 
+// Stock legs ("S"): covered call (BUY 100 shares @ cost-basis-95 + SELL 1 call K=100) nets
+// to 0 (netCalls -1 + netStock +1) -> bounded BOTH sides. Below the strike pnl = 100*S - 9500
+// (stock only); above the strike it's capped flat at 500 (stock called away at K).
+//   pnlAtZero (left-edge extrapolation) = 100*0 - 9500 = -9500 (matches hand formula)
+const coveredCall = [
+  { price: 80, pnl: -1500 }, { price: 90, pnl: -500 }, { price: 100, pnl: 500 },
+  { price: 105, pnl: 500 }, { price: 110, pnl: 500 }, { price: 120, pnl: 500 },
+];
+const coveredCallLegs = [
+  { action: "BUY", right: "S", qty: 100 },
+  { action: "SELL", right: "C", qty: 1 },
+];
+s = computeStats(coveredCall, [95], 100, coveredCallLegs);
+eq(s.maxProfit, 500, "covered call maxProfit bounded (flat above strike, capped)");
+eq(s.maxLoss, -9500, "covered call maxLoss bounded (price-0 extrapolation, not infinite)");
+eq(typeof s.maxProfit, "number", "covered call maxProfit is a finite number, not infinite");
+eq(typeof s.maxLoss, "number", "covered call maxLoss is a finite number, not infinite");
+
+// Long stock alone: netStock = +1 (100 shares / 100) -> maxProfit infinite.
+const longStock = [
+  { price: 80, pnl: -2000 }, { price: 90, pnl: -1000 }, { price: 100, pnl: 0 },
+  { price: 110, pnl: 1000 }, { price: 120, pnl: 2000 },
+];
+const longStockLegs = [{ action: "BUY", right: "S", qty: 100 }];
+s = computeStats(longStock, [100], 100, longStockLegs);
+eq(s.maxProfit, "infinite", "long stock alone -> maxProfit infinite");
+
 // Degenerate inputs never crash.
 s = computeStats([], [], null);
 eq(s.maxProfit, null, "empty curve -> null");

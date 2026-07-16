@@ -34,6 +34,9 @@ def payoff_at(legs: list[dict], S: float, eval_date: date, iv: float, r: float) 
     intrinsic; still-open legs are Black-Scholes-valued (so calendars keep their tent)."""
     total = 0.0
     for leg in legs:
+        if leg["right"] == "S":
+            total += LEG_SIGN[leg["action"]] * _qty(leg) * S
+            continue
         T = max((_expiry(leg) - eval_date).days, 0) / 365.0
         price = bs_price(S, leg["strike"], T, iv, r, leg["right"])
         total += LEG_SIGN[leg["action"]] * _qty(leg) * price

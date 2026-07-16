@@ -18,9 +18,9 @@ router = APIRouter(prefix="/api/builder", tags=["builder"])
 
 class Leg(BaseModel):
     action: Literal["BUY", "SELL"]
-    right: Literal["C", "P"]
+    right: Literal["C", "P", "S"]
     strike: float
-    expiry: str  # YYYY-MM-DD
+    expiry: str = ""  # YYYY-MM-DD; ignored (may be "") for stock legs ("S")
     qty: int = 1
 
 
@@ -74,7 +74,7 @@ def _serialize(rec) -> dict:
 
 
 def _strike_span(legs: list[dict]) -> tuple[float, float]:
-    strikes = [leg["strike"] for leg in legs] or [100.0]
+    strikes = [leg["strike"] for leg in legs if leg["right"] != "S"] or [100.0]
     mid = sum(strikes) / len(strikes)
     return round(mid * 0.8, 2), round(mid * 1.2, 2)
 
@@ -145,6 +145,10 @@ async def quote(body: QuoteBody) -> dict:
     legs = _legs(body.legs)
     mids = await chain_mod.get_leg_mids(body.underlying, legs)
     theo = [False] * len(legs)
+    for i, leg in enumerate(legs):
+        if leg["right"] == "S":
+            mids[i] = body.spot if (body.spot or 0) > 0 else None
+            theo[i] = False
     if body.spot and body.spot > 0:
         from app.options.blackscholes import bs_price
         today = date.today()
@@ -165,8 +169,12 @@ async def quote(body: QuoteBody) -> dict:
 async def payoff(body: PayoffBody) -> dict:
     legs = _legs(body.legs)
     r = body.r if body.r is not None else 0.04
-    ev = date.fromisoformat(body.eval_date) if body.eval_date else min(
-        date.fromisoformat(leg["expiry"]) for leg in legs)
+    if body.eval_date:
+        ev = date.fromisoformat(body.eval_date)
+    else:
+        opt_legs = [leg for leg in legs if leg["right"] != "S"]
+        ev = (min(date.fromisoformat(leg["expiry"]) for leg in opt_legs)
+              if opt_legs else date.today())
     lo, hi = (body.lo, body.hi) if body.lo is not None and body.hi is not None else _strike_span(legs)
     curve = payoff_curve(legs, body.net_debit, ev, body.iv, r, lo, hi, body.points)
     T = max(0.0, (ev - date.today()).days / 365.0)
@@ -192,7 +200,9 @@ async def get_trade_route(trade_id: int) -> dict:
     rec = await store.get_trade(trade_id)
     if rec is None:
         raise HTTPException(status_code=404, detail="Unknown trade")
-    ev = min(date.fromisoformat(leg["expiry"]) for leg in rec.legs)
+    opt_legs = [leg for leg in rec.legs if leg["right"] != "S"]
+    ev = (min(date.fromisoformat(leg["expiry"]) for leg in opt_legs)
+          if opt_legs else date.today())
     lo, hi = _strike_span(rec.legs)
     curve = payoff_curve(rec.legs, rec.net_debit, ev, rec.iv, 0.04, lo, hi, 61)
     return {**_serialize(rec), "curve": curve, "eval_date": ev.isoformat(),
