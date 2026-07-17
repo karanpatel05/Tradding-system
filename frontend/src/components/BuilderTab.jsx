@@ -93,6 +93,13 @@ export default function BuilderTab() {
 
   // The expiry tabs + strike ruler edit the SELECTED leg. With no legs yet, first
   // interaction creates leg 0 (BUY CALL at the picked value) and selects it.
+  // Sensible default expiry for new legs/templates: the first listing >=21 days out
+  // (a 0-DTE default renders zero greeks / 0% PoP after the close — correct but useless).
+  const defaultExpiry = () => {
+    const es = chain.expirations;
+    if (!es.length) return "";
+    return es.find((iso) => dteOf(iso) >= 21) || es[es.length - 1];
+  };
   const atmStrike = () => {
     const ks = chain.strikes;
     if (!ks.length) return 0;
@@ -108,13 +115,13 @@ export default function BuilderTab() {
   };
   const pickStrike = (k) => {
     if (selectedLeg == null || !legs[selectedLeg]) {
-      setLegs((ls) => [...ls, { ...emptyLeg(chain.expirations[0] || "", k) }]);
+      setLegs((ls) => [...ls, { ...emptyLeg(defaultExpiry(), k) }]);
       setSelectedLeg(legs.length);
       invalidateQuote();
     } else setLeg(selectedLeg, { strike: k });
   };
 
-  const addLeg = () => { setLegs((ls) => [...ls, emptyLeg(chain.expirations[0] || "", atmStrike())]); setSelectedLeg(legs.length); invalidateQuote(); };
+  const addLeg = () => { setLegs((ls) => [...ls, emptyLeg(defaultExpiry(), atmStrike())]); setSelectedLeg(legs.length); invalidateQuote(); };
   const removeLeg = (i) => {
     setLegs((ls) => ls.filter((_, j) => j !== i));
     setSelectedLeg((sel) => (sel == null ? null : sel === i ? (i > 0 ? i - 1 : null) : sel > i ? sel - 1 : sel));
@@ -131,7 +138,7 @@ export default function BuilderTab() {
     if (armedTmpl !== name || now - armedAt.current > 5000) {
       setArmedTmpl(name); armedAt.current = now; return;      // first click arms
     }
-    const expiry = sel?.expiry || chain.expirations[0];
+    const expiry = sel?.expiry || defaultExpiry();
     const built = buildTemplate(name, { expiry, strikes: strikesFor(expiry), spot });
     if (built) { setLegs(built); setSelectedLeg(0); invalidateQuote(); }
     setArmedTmpl(null); setTmplOpen(false);
