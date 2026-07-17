@@ -6,12 +6,16 @@
 // Two detection paths for right-edge unboundedness:
 //
 //  1. Leg-aware (preferred — pass `legs`, an array of {action:"BUY"|"SELL",
-//     right:"C"|"P", qty}). As price → ∞ only calls matter (puts → 0), so unboundedness
-//     is EXACT from net call quantity: netCalls = Σ over call legs of (BUY: +qty,
-//     SELL: −qty).
-//       netCalls > 0  → net long calls   → maxProfit = "infinite"
-//       netCalls < 0  → net short calls  → maxLoss   = "infinite"
-//       netCalls === 0 → calls cancel out → both sides bounded on the right.
+//     right:"C"|"P"|"S", qty}). As price → ∞ only calls and stock matter (puts → 0), so
+//     unboundedness is EXACT from net exposure: netCalls = Σ over call legs of (BUY: +qty,
+//     SELL: −qty); netStock = Σ over stock ("S") legs of (BUY: +qty, SELL: −qty) / 100 (a
+//     stock leg's qty is shares, normalized to the same per-contract units as netCalls, i.e.
+//     100 shares ≡ 1 call). net = netCalls + netStock:
+//       net > 0  → net long deltas  → maxProfit = "infinite"
+//       net < 0  → net short deltas → maxLoss   = "infinite"
+//       net === 0 → cancels out     → both sides bounded on the right.
+//     A covered call (BUY 100 shares + SELL 1 call) is netCalls −1 + netStock +1 = 0 → bounded
+//     both sides, matching the real flat-above-strike payoff.
 //     This is exact regardless of the sampled curve window, so it can't be fooled either
 //     way: review found that on the backend's narrow default window, bounded spreads can
 //     show residual right-edge slope up to ~9 $/$ while genuinely unbounded structures
@@ -41,6 +45,19 @@ function netCallQty(legs) {
   return net;
 }
 
+// Stock legs ("S") make the right edge unbounded too. Per-contract convention: option legs
+// count +-1 per contract (~=100 shares), so a stock leg's qty (shares) is normalized by /100
+// to the same units before combining with netCalls. A covered call (BUY 100 shares + SELL 1
+// call) nets to 0 -> bounded both sides, matching the real (flat above-strike) payoff.
+function netStockQty(legs) {
+  let net = 0;
+  for (const leg of legs) {
+    if (leg.right !== "S") continue;
+    net += (leg.action === "BUY" ? leg.qty : -leg.qty) / 100;
+  }
+  return net;
+}
+
 export function computeStats(curve, breakevens = [], spot = null, legs = null) {
   const bes = (breakevens || []).map((be) => ({
     price: be,
@@ -61,10 +78,10 @@ export function computeStats(curve, breakevens = [], spot = null, legs = null) {
 
   const haveLegs = Array.isArray(legs) && legs.length > 0;
   if (haveLegs) {
-    const netCalls = netCallQty(legs);
-    if (netCalls > 0) maxProfit = "infinite";
-    else if (netCalls < 0) maxLoss = "infinite";
-    // netCalls === 0: calls cancel out, both sides stay bounded — leave curve-derived values.
+    const net = netCallQty(legs) + netStockQty(legs);
+    if (net > 0) maxProfit = "infinite";
+    else if (net < 0) maxLoss = "infinite";
+    // net === 0: calls/stock cancel out, both sides stay bounded — leave curve-derived values.
   } else {
     if (sR > EPS) maxProfit = "infinite";
     if (sR < -EPS) maxLoss = "infinite";

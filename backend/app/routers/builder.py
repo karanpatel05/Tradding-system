@@ -18,9 +18,9 @@ router = APIRouter(prefix="/api/builder", tags=["builder"])
 
 class Leg(BaseModel):
     action: Literal["BUY", "SELL"]
-    right: Literal["C", "P"]
+    right: Literal["C", "P", "S"]
     strike: float
-    expiry: str  # YYYY-MM-DD
+    expiry: str = ""  # YYYY-MM-DD; ignored (may be "") for stock legs ("S")
     qty: int = 1
 
 
@@ -42,6 +42,16 @@ class PayoffBody(BaseModel):
     hi: float | None = None
     points: int = 61
     spot: float | None = None   # enables chance-of-profit (lognormal mass over profit regions)
+
+
+class GreeksBody(BaseModel):
+    legs: list[Leg] = Field(min_length=1)
+    spot: float
+    iv: float = 0.25
+    r: float = 0.04
+    curve: bool = False
+    lo: float | None = None
+    hi: float | None = None
 
 
 class SaveBody(BaseModel):
@@ -74,7 +84,7 @@ def _serialize(rec) -> dict:
 
 
 def _strike_span(legs: list[dict]) -> tuple[float, float]:
-    strikes = [leg["strike"] for leg in legs] or [100.0]
+    strikes = [leg["strike"] for leg in legs if leg["right"] != "S"] or [100.0]
     mid = sum(strikes) / len(strikes)
     return round(mid * 0.8, 2), round(mid * 1.2, 2)
 
@@ -137,6 +147,30 @@ async def chain_quotes(underlying: str, expiry: str, count: int = 8) -> dict:
     return await chain_mod.get_chain_quotes(underlying, expiry, count)
 
 
+@router.get("/iv-smile")
+async def iv_smile(underlying: str, expiry: str, count: int = 10) -> dict:
+    """Implied-vol smile for one expiry from live mids: put side below spot, call side
+    at/above. Strikes without a usable mid or root are skipped."""
+    from app.options.blackscholes import implied_vol
+    count = max(1, min(int(count), 25))
+    data = await chain_mod.get_chain_quotes(underlying, expiry, count)
+    spot = data.get("spot")
+    points = []
+    if spot and spot > 0:
+        T = max((date.fromisoformat(expiry) - date.today()).days, 0) / 365.0
+        for row in data.get("rows", []):
+            k = row["strike"]
+            side = "P" if k < spot else "C"
+            mid = row["put_mid"] if side == "P" else row["call_mid"]
+            if mid is None or T <= 0:
+                continue
+            iv = implied_vol(mid, spot, k, T, 0.04, side)
+            if iv is not None:
+                points.append({"strike": k, "iv": round(iv, 4), "side": side})
+    return {"underlying": underlying.upper(), "expiry": expiry, "spot": spot,
+            "points": points}
+
+
 @router.post("/quote")
 async def quote(body: QuoteBody) -> dict:
     """Live mids per leg; legs without a live quote fall back to their Black-Scholes
@@ -145,6 +179,10 @@ async def quote(body: QuoteBody) -> dict:
     legs = _legs(body.legs)
     mids = await chain_mod.get_leg_mids(body.underlying, legs)
     theo = [False] * len(legs)
+    for i, leg in enumerate(legs):
+        if leg["right"] == "S":
+            mids[i] = body.spot if (body.spot or 0) > 0 else None
+            theo[i] = False
     if body.spot and body.spot > 0:
         from app.options.blackscholes import bs_price
         today = date.today()
@@ -165,14 +203,53 @@ async def quote(body: QuoteBody) -> dict:
 async def payoff(body: PayoffBody) -> dict:
     legs = _legs(body.legs)
     r = body.r if body.r is not None else 0.04
-    ev = date.fromisoformat(body.eval_date) if body.eval_date else min(
-        date.fromisoformat(leg["expiry"]) for leg in legs)
+    if body.eval_date:
+        ev = date.fromisoformat(body.eval_date)
+    else:
+        opt_legs = [leg for leg in legs if leg["right"] != "S"]
+        ev = (min(date.fromisoformat(leg["expiry"]) for leg in opt_legs)
+              if opt_legs else date.today())
     lo, hi = (body.lo, body.hi) if body.lo is not None and body.hi is not None else _strike_span(legs)
     curve = payoff_curve(legs, body.net_debit, ev, body.iv, r, lo, hi, body.points)
     T = max(0.0, (ev - date.today()).days / 365.0)
     cop = chance_of_profit(curve, body.spot, body.iv, r, T)
     return {"curve": curve, "eval_date": ev.isoformat(), "chance_of_profit": cop,
             **curve_stats(curve)}
+
+
+@router.post("/greeks")
+async def greeks(body: GreeksBody) -> dict:
+    """Per-leg + net position greeks (x100 x qty for options; stock legs x qty shares
+    for delta). Optional delta curve across [lo, hi] for the chart overlay."""
+    from app.options.blackscholes import bs_greeks
+    legs = _legs(body.legs)
+    today = date.today()
+
+    def leg_greeks(leg, S):
+        T = 0.0 if leg["right"] == "S" or not leg["expiry"] else max(
+            (date.fromisoformat(leg["expiry"]) - today).days, 0) / 365.0
+        g = bs_greeks(S, leg["strike"] or S, T, body.iv, body.r, leg["right"])
+        sign = 1 if leg["action"] == "BUY" else -1
+        mult = leg["qty"] if leg["right"] == "S" else 100 * leg["qty"]
+        return {k: sign * mult * v for k, v in g.items()}
+
+    per_leg, net = [], {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
+    for leg in legs:
+        g = leg_greeks(leg, body.spot)
+        per_leg.append({**{k: round(v, 4) for k, v in g.items()},
+                        "right": leg["right"], "strike": leg["strike"], "action": leg["action"]})
+        for k in net:
+            net[k] += g[k]
+    out = {"net": {k: round(v, 4) for k, v in net.items()}, "legs": per_leg}
+    if body.curve:
+        lo, hi = (body.lo, body.hi) if body.lo is not None and body.hi is not None \
+            else (body.spot * 0.5, body.spot * 1.5)
+        pts, step = 81, (hi - lo) / 80
+        out["delta_curve"] = [
+            {"price": round(lo + i * step, 2),
+             "delta": round(sum(leg_greeks(l, lo + i * step)["delta"] for l in legs), 2)}
+            for i in range(pts)]
+    return out
 
 
 @router.post("/trades")
@@ -192,7 +269,9 @@ async def get_trade_route(trade_id: int) -> dict:
     rec = await store.get_trade(trade_id)
     if rec is None:
         raise HTTPException(status_code=404, detail="Unknown trade")
-    ev = min(date.fromisoformat(leg["expiry"]) for leg in rec.legs)
+    opt_legs = [leg for leg in rec.legs if leg["right"] != "S"]
+    ev = (min(date.fromisoformat(leg["expiry"]) for leg in opt_legs)
+          if opt_legs else date.today())
     lo, hi = _strike_span(rec.legs)
     curve = payoff_curve(rec.legs, rec.net_debit, ev, rec.iv, 0.04, lo, hi, 61)
     return {**_serialize(rec), "curve": curve, "eval_date": ev.isoformat(),

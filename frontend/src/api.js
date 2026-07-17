@@ -105,6 +105,12 @@ export const api = {
     request(`/api/builder/quote`, { method: "POST", body: JSON.stringify({ underlying, legs, spot, iv: Number(iv) || 0.25 }) }),
   builderPayoff: (body) =>
     request(`/api/builder/payoff`, { method: "POST", body: JSON.stringify(body) }),
+  // Per-leg + net position greeks; body.curve requests the net-delta curve overlay.
+  builderGreeks: (body) =>
+    request("/api/builder/greeks", { method: "POST", body: JSON.stringify(body) }),
+  // Implied-vol smile for one expiry (live mids -> bisection-inverted IV per strike).
+  builderIvSmile: (u, expiry, count = 10) =>
+    request(`/api/builder/iv-smile?underlying=${encodeURIComponent(u)}&expiry=${expiry}&count=${count}`),
   builderSaveTrade: (body) =>
     request(`/api/builder/trades`, { method: "POST", body: JSON.stringify(body) }),
   builderTrades: (status) =>

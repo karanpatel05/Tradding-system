@@ -25,13 +25,29 @@ const Icon = ({ name }) => {
   );
 };
 
-const TABS = ["Dashboard", "Strategies", "Builder", "Journal", "API"];
+const NAV_GROUPS = [
+  { label: "TRADING", tabs: ["Dashboard", "Strategies", "Builder"] },
+  { label: "ANALYSIS", tabs: ["Journal", "API"] },
+];
 
 export default function App() {
   const [auth, setAuth] = useState(null); // null = loading
   const [tab, setTab] = useState("Dashboard");
   const [focusKey, setFocusKey] = useState(null); // strategy to open from the dashboard
   const [connecting, setConnecting] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("navCollapsed") || "{}"); } catch { return {}; }
+  });
+  const toggleGroup = (label) => setCollapsed((c) => {
+    const next = { ...c, [label]: !c[label] };
+    localStorage.setItem("navCollapsed", JSON.stringify(next));
+    return next;
+  });
+  const [acct, setAcct] = useState(null);
+  useEffect(() => {
+    const load = () => api.account().then((d) => setAcct(d.account || d)).catch(() => {});
+    load(); const id = setInterval(load, 60000); return () => clearInterval(id);
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -96,17 +112,34 @@ export default function App() {
         </div>
 
         <nav className="nav">
-          {TABS.map((t) => (
-            <button
-              key={t}
-              className={t === tab ? "nav-item active" : "nav-item"}
-              onClick={() => setTab(t)}
-            >
-              <Icon name={t} />
-              <span>{t}</span>
-            </button>
+          {NAV_GROUPS.map((g) => (
+            <div className="nav-group" key={g.label}>
+              <button className="nav-group-head" onClick={() => toggleGroup(g.label)}>
+                <span>{g.label}</span>
+                <span className={`chev ${collapsed[g.label] ? "closed" : ""}`}>▾</span>
+              </button>
+              {!collapsed[g.label] && g.tabs.map((t) => (
+                <button
+                  key={t}
+                  className={t === tab ? "nav-item active" : "nav-item"}
+                  onClick={() => setTab(t)}
+                >
+                  <Icon name={t} />
+                  <span>{t}</span>
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
+
+        <div className="side-foot">
+          <div className="avatar">{(auth?.account || "T").replace(/[^A-Za-z0-9]/g, "").slice(-1) || "T"}</div>
+          <div className="side-foot-meta">
+            <div className="side-foot-acct">{auth?.account || "—"}</div>
+            <div className="side-foot-nl num">{acct?.net_liquidation != null ? `$${Number(acct.net_liquidation).toLocaleString()}` : "—"}</div>
+          </div>
+          <span className={`dot ${auth?.connected ? "on" : ""}`} title={auth?.connected ? "Broker verified" : "Broker not verified"} />
+        </div>
 
         <div className="sidebar-foot">
           <div className="feed-state">

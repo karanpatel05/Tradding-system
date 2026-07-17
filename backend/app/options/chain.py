@@ -19,11 +19,14 @@ async def get_option_chain(underlying: str) -> dict:
 
 async def get_leg_mids(underlying: str, legs: list[dict]) -> list[float | None]:
     src = LivePriceSource()
-    return list(await asyncio.gather(*[
-        src.aoption_mid(underlying, date.fromisoformat(leg["expiry"]),
-                        leg["strike"], leg["right"])
-        for leg in legs
-    ]))
+
+    async def _one(leg: dict) -> float | None:
+        if leg["right"] == "S":
+            return None  # stock legs are priced by the router from spot, not quoted here
+        return await src.aoption_mid(underlying, date.fromisoformat(leg["expiry"]),
+                                     leg["strike"], leg["right"])
+
+    return list(await asyncio.gather(*[_one(leg) for leg in legs]))
 
 
 async def get_chain_quotes(underlying: str, expiry: str, count: int = 8) -> dict:

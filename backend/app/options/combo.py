@@ -25,7 +25,11 @@ def combo_value(legs: list[dict], mids: list[float | None]) -> float | None:
     for leg, mid in zip(legs, mids):
         if mid is None:
             return None
-        total += LEG_SIGN[leg["action"]] * _qty(leg) * mid
+        # Stock legs: qty is SHARES, and the structure's per-1x unit is one option
+        # contract (=100 shares) — scale by qty/100 so payoff_curve's ×100 yields
+        # qty × price dollars (covered call per-1x debit = S − C, the classic form).
+        scale = (_qty(leg) / 100.0) if leg["right"] == "S" else _qty(leg)
+        total += LEG_SIGN[leg["action"]] * scale * mid
     return total
 
 
@@ -34,6 +38,10 @@ def payoff_at(legs: list[dict], S: float, eval_date: date, iv: float, r: float) 
     intrinsic; still-open legs are Black-Scholes-valued (so calendars keep their tent)."""
     total = 0.0
     for leg in legs:
+        if leg["right"] == "S":
+            # Shares → per-1x structure units (100 shares = 1.0); see combo_value.
+            total += LEG_SIGN[leg["action"]] * (_qty(leg) / 100.0) * S
+            continue
         T = max((_expiry(leg) - eval_date).days, 0) / 365.0
         price = bs_price(S, leg["strike"], T, iv, r, leg["right"])
         total += LEG_SIGN[leg["action"]] * _qty(leg) * price

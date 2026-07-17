@@ -32,8 +32,9 @@ async def _run() -> None:
     # $2500 pool caps it to 25 sh — that cap is the thing under test.
     alloc = 5000.0
 
-    from app.ibkr.gateway import ConnState, get_gateway
-    get_gateway().set_state(ConnState.READY)    # workers only act when READY
+    import time
+    from app.broker import status as _st
+    _st._cache.update(result="ok", at=time.monotonic())  # workers only act when broker-ready
     import app.services.market as _mkt
     _mkt.get_market_status = lambda: {"is_open": False}  # closed → gap gate is pass-through
 

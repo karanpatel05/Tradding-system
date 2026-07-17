@@ -47,23 +47,14 @@ class Settings(BaseSettings):
     # docker-compose overrides this with a Postgres URL.
     database_url: str = f"sqlite+aiosqlite:///{_BASE_DIR / 'trading.db'}"
 
-    # --- Interactive Brokers (IB Gateway, paper trading) ---
-    # Single backend for live quotes/streaming/accounts/orders AND forward-refresh
-    # historical bars, via ib_async against a running IB Gateway. "Authenticated"
-    # means the Gateway is connected. Bulk backtests still read cached data_cache/*.
-    ibkr_host: str = "127.0.0.1"
-    ibkr_port: int = 4002            # paper Gateway (TWS paper = 7497)
-    ibkr_client_id: int = 1
-    ibkr_account: str = ""           # blank -> first managed account
-    ibkr_market_data_type: int = 1   # 1=live, 2=frozen, 3=delayed, 4=delayed-frozen
-    ibkr_reconnect_interval_seconds: int = 5   # fixed reconnect retry cadence (always-connect)
-    ibkr_account_settle_seconds: float = 2.0   # wait after reconnect before reconciling (data re-sync)
-
-    # --- Tastytrade market data (OAuth personal grant; my.tastytrade.com → API access) ---
+    # --- Tastytrade (OAuth personal grant; my.tastytrade.com → API access) ---
+    # Sole broker and data source: live quotes/streaming/accounts/orders AND
+    # historical bars, all via the Tastytrade SDK. "Authenticated" means the OAuth
+    # pair verifies (see app/broker/status.py). Bulk backtests still read cached
+    # data_cache/*.
     tt_provider_secret: str = ""     # env TT_PROVIDER_SECRET
     tt_refresh_token: str = ""       # env TT_REFRESH_TOKEN
     tt_account_number: str = ""      # blank -> first account on the login
-    data_primary: str = "tastytrade"  # "tastytrade" | "ibkr" — facade try order
     # Mid sanity guard: reject crossed/wide/jumpy option mids (see marketdata/sanity.py).
     sanity_rel_spread: float = 0.35
     sanity_abs_spread: float = 2.50

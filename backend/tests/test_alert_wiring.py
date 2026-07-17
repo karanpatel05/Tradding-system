@@ -1,4 +1,10 @@
-"""Recovery SAFE_MODE sends a safe_mode alert; disconnect fires one.
+"""Recovery SAFE_MODE sends a safe_mode alert.
+
+   Note: the old "disconnect" alert was fired only by the IBKR Gateway's own event
+   wiring (app.ibkr.gateway.Gateway._on_disconnect), deleted with the rest of that
+   tree — Tastytrade-only has no equivalent yet (a failed OAuth probe currently
+   fails silently; see app/broker/status.py). Left for a future task to decide
+   whether a probe-failure alert is wanted.
    Run: DATABASE_URL=sqlite+aiosqlite:///./_t_aw.db python -m tests.test_alert_wiring
 """
 from __future__ import annotations
@@ -12,7 +18,6 @@ def _run() -> None:
         from app.db.models import TradeRecord
         from app.engine import reconciliation as recon_mod
         from app.engine import recovery
-        from app.ibkr.gateway import Gateway
         from app.services import alerts
 
         await init_db()
@@ -37,13 +42,7 @@ def _run() -> None:
         ok = await recovery.run_recovery()
         assert ok is False
         assert "safe_mode" in seen, seen
-
-        # Disconnect alert is Gateway's own event wiring — unrelated to recovery.
-        gw = Gateway()
-        gw._on_disconnect()
-        await asyncio.sleep(0.2)   # let fire_alert's scheduled task run to completion
-        assert "disconnect" in seen, seen
-        print("PASS: safe_mode + disconnect alerts fired")
+        print("PASS: safe_mode alert fired")
     asyncio.run(_t())
     print("\nALL ALERT-WIRING TESTS PASSED")
 

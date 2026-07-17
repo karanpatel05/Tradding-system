@@ -8,20 +8,28 @@ import asyncio
 
 def _run() -> None:
     async def _t():
+        from app.broker import status as st
         from app.db.base import init_db
+        from app.engine import recovery as rec_mod
         from app.engine.safe_mode import is_safe_mode, trip_safe_mode
-        from app.ibkr.gateway import ConnState, get_gateway
         from app.routers.system import resume
 
         await init_db()
         await trip_safe_mode("orphan AAPL")
-        get_gateway().set_state(ConnState.SAFE_MODE)
 
-        class CleanIB:
-            async def reqPositionsAsync(self): return []
-            async def reqExecutionsAsync(self, flt): return []
-            async def reqAllOpenOrdersAsync(self): return []
-        get_gateway()._ib = CleanIB()
+        # Clean broker snapshot -> recovery clears (no discrepancies).
+        async def clean_snap():
+            return {"positions": [], "fills": [], "orders": []}
+        async def no_local():
+            return {}
+        rec_mod.fetch_snapshot = clean_snap
+        rec_mod.local_open_positions = no_local
+
+        # Tastytrade OAuth probe succeeds (see test_broker_status.py's pattern).
+        async def ok_probe(force):
+            return "ok"
+        st._do_probe = ok_probe
+        st._cache.update(result=None, at=0.0)
 
         res = await resume()
         assert res["conn_state"] == "ready", res

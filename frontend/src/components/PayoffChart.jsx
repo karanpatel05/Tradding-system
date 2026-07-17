@@ -1,11 +1,12 @@
 import {
-  Area, AreaChart, CartesianGrid, ReferenceLine, ResponsiveContainer,
+  Area, CartesianGrid, ComposedChart, Line, ReferenceLine, ResponsiveContainer,
   Tooltip, XAxis, YAxis,
 } from "recharts";
 
 // Payoff diagram: P&L (dollars) across underlying price at the chosen evaluation date.
 // Green above zero / red below via a gradient split at the zero crossing; dotted lines
-// at leg strikes, blue line + label at each breakeven, thin marker at spot.
+// at leg strikes, blue line + label at each breakeven, thin marker at spot. Optional
+// `deltaCurve` ([{price, delta}]) draws the net-delta line on its own hidden right axis.
 const splitOffset = (data) => {
   const max = Math.max(...data.map((d) => d.pnl));
   const min = Math.min(...data.map((d) => d.pnl));
@@ -14,15 +15,21 @@ const splitOffset = (data) => {
   return max / (max - min);
 };
 
-export default function PayoffChart({ curve, breakevens = [], strikes = [], spot = null, window = null }) {
+export default function PayoffChart({
+  curve, breakevens = [], strikes = [], spot = null, window = null,
+  height = 380, animate = true, deltaCurve = null,
+}) {
   if (!curve || curve.length === 0) return <div className="muted">No payoff data.</div>;
   const data = window ? curve.filter((p) => p.price >= window[0] && p.price <= window[1]) : curve;
   if (data.length < 2) return <div className="muted">No payoff data in range.</div>;
   const off = splitOffset(data);
   const inWin = (x) => x >= data[0].price && x <= data[data.length - 1].price;
+  // Clip the delta overlay to the visible window so it can't stretch the x domain.
+  const deltaData = deltaCurve?.length
+    ? deltaCurve.filter((p) => inWin(p.price)) : null;
   return (
-    <ResponsiveContainer width="100%" height={300}>
-      <AreaChart data={data} margin={{ top: 18, right: 12, bottom: 0, left: 0 }}>
+    <ResponsiveContainer width="100%" height={height}>
+      <ComposedChart data={data} margin={{ top: 18, right: 12, bottom: 0, left: 0 }}>
         <defs>
           <linearGradient id="pnlFill" x1="0" y1="0" x2="0" y2="1">
             <stop offset={0} stopColor="#22c55e" stopOpacity={0.45} />
@@ -59,8 +66,16 @@ export default function PayoffChart({ curve, breakevens = [], strikes = [], spot
             label={{ value: `$${be}`, position: "top", fill: "#60a5fa", fontSize: 11 }} />
         ))}
         <Area type="monotone" dataKey="pnl" stroke="url(#pnlStroke)" strokeWidth={2}
-          fill="url(#pnlFill)" isAnimationActive={false} />
-      </AreaChart>
+          fill="url(#pnlFill)" isAnimationActive={animate} animationDuration={300} animationEasing="ease" />
+        {deltaData && deltaData.length >= 2 && (
+          <>
+            <YAxis yAxisId="delta" orientation="right" hide />
+            <Line yAxisId="delta" type="monotone" dataKey="delta" data={deltaData}
+              stroke="var(--accent)" strokeWidth={1.5} dot={false}
+              isAnimationActive={animate} animationDuration={300} />
+          </>
+        )}
+      </ComposedChart>
     </ResponsiveContainer>
   );
 }

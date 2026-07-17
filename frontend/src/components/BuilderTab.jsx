@@ -2,11 +2,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import PayoffChart from "./PayoffChart.jsx";
-import ChainGrid from "./ChainGrid.jsx";
 import ExpiryTabs from "./builder/ExpiryTabs.jsx";
 import StrikeRuler from "./builder/StrikeRuler.jsx";
-import StatsRow from "./builder/StatsRow.jsx";
+import StatCards from "./builder/StatCards.jsx";
+import GreeksPanel from "./builder/GreeksPanel.jsx";
+import IvSmile from "./builder/IvSmile.jsx";
 import { computeStats } from "./builder/payoffStats.js";
+import { buildTemplate, buildHedge } from "./builder/templates.js";
 
 const money = (n) => (n == null ? "—" : `${n >= 0 ? "+" : "−"}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 const emptyLeg = (expiry, strike) => ({ action: "BUY", right: "C", strike, expiry, qty: 1 });
@@ -30,12 +32,20 @@ export default function BuilderTab() {
   const [spot, setSpot] = useState(null);
   const [spotInfo, setSpotInfo] = useState(null);       // {price, change_abs, change_pct}
   const [rangePct, setRangePct] = useState(8);          // chart x-window ±%
+  const [panPct, setPanPct] = useState(0);              // chart x-window pan offset (% of spot)
   const [evalDays, setEvalDays] = useState(null);       // DATE scrubber: null = at expiration
   const [isTheo, setIsTheo] = useState(false);           // net debit built from BS theo values
   const [expiryStrikes, setExpiryStrikes] = useState({}); // iso -> strikes for that expiry
+  const [mkt, setMkt] = useState(null);
+  const [greeks, setGreeks] = useState(null);            // {net, legs, delta_curve?}
+  const [showDelta, setShowDelta] = useState(false);     // Δ overlay on the payoff chart
 
   const underlyingRef = useRef(underlying);
   useEffect(() => { underlyingRef.current = underlying; }, [underlying]);
+
+  const dragRef = useRef(null);          // { x, pan } while a pointer-drag pan is active
+  const chartZoneRef = useRef(null);     // wrapper div — carries a non-passive wheel listener
+  const clampPan = (p) => Math.min(50 - rangePct, Math.max(-(50 - rangePct), p));
 
   // Spot can miss right after a server restart (cold data stream) — retry a few
   // times, but never apply a late result for a symbol the user has moved on from.
@@ -71,14 +81,25 @@ export default function BuilderTab() {
   useEffect(() => { loadTrades(); }, []);
   useEffect(() => { const id = setInterval(loadTrades, 15000); return () => clearInterval(id); }, []);
 
+  const loadMarketStatus = () => api.marketStatus().then(setMkt).catch(() => {});
+  useEffect(() => { loadMarketStatus(); }, []);
+  useEffect(() => { const id = setInterval(loadMarketStatus, 30000); return () => clearInterval(id); }, []);
+
   // Any change to the legs invalidates the fetched quote/payoff: net_debit is what the
   // monitor's target/stop uses, so it must never be saved against a different leg set.
   // Clearing it forces a re-fetch (Preview/Save are gated on netDebit != null).
-  const invalidateQuote = () => { setNetDebit(null); setPayoff(null); setIsTheo(false); };
+  const invalidateQuote = () => { setNetDebit(null); setPayoff(null); setGreeks(null); setIsTheo(false); setPanPct(0); };
   const setLeg = (i, patch) => { setLegs((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch, mid: null } : l))); invalidateQuote(); };
 
   // The expiry tabs + strike ruler edit the SELECTED leg. With no legs yet, first
   // interaction creates leg 0 (BUY CALL at the picked value) and selects it.
+  // Sensible default expiry for new legs/templates: the first listing >=21 days out
+  // (a 0-DTE default renders zero greeks / 0% PoP after the close — correct but useless).
+  const defaultExpiry = () => {
+    const es = chain.expirations;
+    if (!es.length) return "";
+    return es.find((iso) => dteOf(iso) >= 21) || es[es.length - 1];
+  };
   const atmStrike = () => {
     const ks = chain.strikes;
     if (!ks.length) return 0;
@@ -94,19 +115,43 @@ export default function BuilderTab() {
   };
   const pickStrike = (k) => {
     if (selectedLeg == null || !legs[selectedLeg]) {
-      setLegs((ls) => [...ls, { ...emptyLeg(chain.expirations[0] || "", k) }]);
+      setLegs((ls) => [...ls, { ...emptyLeg(defaultExpiry(), k) }]);
       setSelectedLeg(legs.length);
       invalidateQuote();
     } else setLeg(selectedLeg, { strike: k });
   };
 
-  const addLeg = () => { setLegs((ls) => [...ls, emptyLeg(chain.expirations[0] || "", atmStrike())]); setSelectedLeg(legs.length); invalidateQuote(); };
+  const addLeg = () => { setLegs((ls) => [...ls, emptyLeg(defaultExpiry(), atmStrike())]); setSelectedLeg(legs.length); invalidateQuote(); };
   const removeLeg = (i) => {
     setLegs((ls) => ls.filter((_, j) => j !== i));
     setSelectedLeg((sel) => (sel == null ? null : sel === i ? (i > 0 ? i - 1 : null) : sel > i ? sel - 1 : sel));
     invalidateQuote();
   };
-  const addLegFromChain = (leg) => { setLegs((ls) => [...ls, { ...leg, mid: null }]); setSelectedLeg(legs.length); invalidateQuote(); };
+
+  // Templates menu: first click on a template arms it ("Replace legs with X?"), a
+  // second click within 5s applies it. Any other click re-arms (or arms a different one).
+  const [tmplOpen, setTmplOpen] = useState(false);
+  const [armedTmpl, setArmedTmpl] = useState(null);
+  const armedAt = useRef(0);
+  const applyTemplate = (name) => {
+    const now = Date.now();
+    if (armedTmpl !== name || now - armedAt.current > 5000) {
+      setArmedTmpl(name); armedAt.current = now; return;      // first click arms
+    }
+    const expiry = sel?.expiry || defaultExpiry();
+    const built = buildTemplate(name, { expiry, strikes: strikesFor(expiry), spot });
+    if (built) { setLegs(built); setSelectedLeg(0); invalidateQuote(); }
+    setArmedTmpl(null); setTmplOpen(false);
+  };
+  const applyHedge = () => {
+    const h = buildHedge(legs, { spot, strikesFor });
+    if (!h) { setMsg("No hedge suggested (flat bias or no option expiry)."); return; }
+    setLegs((ls) => [...ls, h]); setSelectedLeg(legs.length); invalidateQuote();
+  };
+  const duplicateLeg = (i) => {
+    setLegs((ls) => [...ls.slice(0, i + 1), { ...ls[i], mid: null }, ...ls.slice(i + 1)]);
+    setSelectedLeg(i + 1); invalidateQuote();
+  };
 
   const fetchQuotes = async () => {
     setBusy(true); setMsg(null);
@@ -133,7 +178,21 @@ export default function BuilderTab() {
         body.eval_date = d.toISOString().slice(0, 10);
       }
       setPayoff(await api.builderPayoff(body));
+      fetchGreeks(showDelta);
     } catch (e) { setMsg(e.message); } finally { setBusy(false); }
+  };
+
+  // Position greeks (same legs/spot/iv as the payoff). `curve` also asks for the
+  // net-delta curve the Δ overlay draws; fire-and-forget, never blocks the payoff.
+  const fetchGreeks = (curve) => {
+    if (!legs.length || spot == null) { setGreeks(null); return; }
+    api.builderGreeks({ legs, spot, iv: Number(iv), curve: !!curve })
+      .then(setGreeks).catch(() => {});
+  };
+  const toggleDelta = () => {
+    const next = !showDelta;
+    setShowDelta(next);
+    if (next && !greeks?.delta_curve) fetchGreeks(true);  // curve wasn't fetched yet
   };
 
   const save = async () => {
@@ -182,7 +241,7 @@ export default function BuilderTab() {
     () => JSON.stringify(legs.map((l) => [l.action, l.right, l.strike, l.expiry, l.qty])),
     [legs]);
   useEffect(() => {
-    if (!legs.length || legs.some((l) => !l.expiry || !l.strike)) return;
+    if (!legs.length || legs.some((l) => l.right !== "S" && (!l.expiry || !l.strike))) return;
     const t = setTimeout(() => { fetchQuotes(); }, 600);
     return () => clearTimeout(t);
   }, [legsKey]);
@@ -218,9 +277,24 @@ export default function BuilderTab() {
   const chartWindow = useMemo(() => {
     if (!payoff) return null;
     if (spot == null) return null; // full curve
-    return [spot * (1 - rangePct / 100), spot * (1 + rangePct / 100)];
-  }, [payoff, spot, rangePct]);
+    const off = spot * (clampPan(panPct) / 100);
+    return [spot * (1 - rangePct / 100) + off, spot * (1 + rangePct / 100) + off];
+  }, [payoff, spot, rangePct, panPct]);
   const legStrikes = useMemo(() => [...new Set(legs.map((l) => l.strike))], [legs]);
+
+  // React's synthetic onWheel is passive, so e.preventDefault() there throws and the
+  // page scrolls anyway. Attach a real, non-passive DOM listener instead.
+  useEffect(() => {
+    const el = chartZoneRef.current;
+    if (!el) return undefined;
+    const onWheel = (e) => {
+      if (!payoff || spot == null) return;
+      e.preventDefault();
+      setRangePct((r) => Math.min(50, Math.max(2, Math.round(r * (e.deltaY > 0 ? 1.15 : 0.87)))));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [payoff, spot]);
 
   return (
     <div className="builder-tab">
@@ -243,6 +317,10 @@ export default function BuilderTab() {
               )}
             </span>
           )}
+          <span className={`mkt-chip ${mkt?.is_open ? "open" : "closed"}`}>
+            <span className="mkt-dot" />
+            {mkt?.is_open ? "Market Open" : (mkt?.session === "closed" ? "Closed" : mkt?.session?.replace("_", "-"))}
+          </span>
           <span className="muted small">{chain.expirations.length} expiries · {chain.strikes.length} strikes</span>
         </div>
 
@@ -260,11 +338,28 @@ export default function BuilderTab() {
           <div className="muted" style={{ marginTop: 10 }}>Load a chain to pick expiry and strike.</div>
         )}
 
-        <StatsRow netDebit={netDebit} stats={stats} chance={payoff?.chance_of_profit} />
+        <StatCards netDebit={netDebit} stats={stats} chance={payoff?.chance_of_profit} />
+        <GreeksPanel greeks={greeks} />
 
         {payoff ? (
-          <PayoffChart curve={payoff.curve} breakevens={payoff.breakevens}
-            strikes={legStrikes} spot={spot} window={chartWindow} />
+          <div className="chart-zone" ref={chartZoneRef}
+            onPointerDown={(e) => { dragRef.current = { x: e.clientX, pan: panPct, dragging: false }; }}
+            onPointerMove={(e) => {
+              if (!dragRef.current || spot == null) return;
+              const dx = e.clientX - dragRef.current.x;
+              if (!dragRef.current.dragging && Math.abs(dx) <= 4) return;
+              dragRef.current.dragging = true;
+              const dxPct = (dx / e.currentTarget.clientWidth) * rangePct * 2;
+              setPanPct(clampPan(dragRef.current.pan - dxPct));
+            }}
+            onPointerUp={() => { dragRef.current = null; }}
+            onPointerLeave={() => { dragRef.current = null; }}
+            onDoubleClick={() => { setRangePct(8); setPanPct(0); }}
+            title="Scroll to zoom · drag to pan · double-click to reset">
+            <PayoffChart curve={payoff.curve} breakevens={payoff.breakevens}
+              strikes={legStrikes} spot={spot} window={chartWindow}
+              deltaCurve={showDelta ? greeks?.delta_curve : null} />
+          </div>
         ) : (
           <div className="muted">
             {legs.length ? (busy ? "Fetching quotes…" : "Waiting for a quote — the payoff renders automatically.")
@@ -291,36 +386,94 @@ export default function BuilderTab() {
           <input type="range" min="0.05" max="1.5" step="0.01" value={iv}
             onChange={(e) => setIv(e.target.value)}
             onPointerUp={() => { if (netDebit != null) preview(); }} />
+          <button className={`btn ghost ${showDelta ? "active" : ""}`} onClick={toggleDelta}
+            disabled={!payoff || spot == null}
+            title="Overlay the net-delta curve on the payoff chart"
+            style={showDelta ? { borderColor: "var(--accent)", color: "var(--accent)" } : undefined}>
+            Δ overlay
+          </button>
         </div>
 
-        <h4>Legs</h4>
+        <div className="legs-toolbar">
+          <h4 style={{ margin: 0 }}>LEGS</h4>
+          <div className="row gap center">
+            <button className="btn ghost" onClick={addLeg} disabled={!chain.expirations.length}>+ Leg</button>
+            <div className="tmpl-wrap">
+              <button className="btn ghost" onClick={() => setTmplOpen((o) => !o)} disabled={!chain.expirations.length || spot == null}>Templates ▾</button>
+              {tmplOpen && (
+                <div className="tmpl-menu" onMouseLeave={() => { setArmedTmpl(null); }}>
+                  {[["vertical", "Vertical Spread"], ["straddle", "Straddle"], ["butterfly", "Butterfly"],
+                    ["iron_condor", "Iron Condor"], ["covered_call", "Covered Call"]].map(([k, label]) => (
+                    <button key={k} className={`tmpl-item ${armedTmpl === k ? "armed" : ""}`}
+                      onClick={() => applyTemplate(k)}>
+                      {armedTmpl === k ? `Replace legs with ${label}?` : label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <button className="btn ghost" onClick={applyHedge} disabled={!legs.length || spot == null}>Add hedge</button>
+            <span className="muted">Net: <b className="num">{isTheo ? "~" : ""}{debitLabel}</b></span>
+          </div>
+        </div>
+        {tmplOpen && <div className="tmpl-backdrop" onClick={() => { setTmplOpen(false); setArmedTmpl(null); }} />}
         <div className="table-scroll">
           <table className="table">
             <thead><tr><th>Side</th><th>Type</th><th>Strike</th><th>Expiry</th><th>Qty</th><th>Mid</th><th></th></tr></thead>
             <tbody>
-              {legs.map((l, i) => (
-                <tr key={i} className={i === selectedLeg ? "leg-selected" : ""}
-                  onClick={() => setSelectedLeg(i)}>
-                  <td><select value={l.action} onChange={(e) => setLeg(i, { action: e.target.value })}><option>BUY</option><option>SELL</option></select></td>
-                  <td><select value={l.right} onChange={(e) => setLeg(i, { right: e.target.value })}><option value="C">Call</option><option value="P">Put</option></select></td>
-                  <td><select value={l.strike} onChange={(e) => setLeg(i, { strike: Number(e.target.value) })}>{(strikesFor(l.expiry)).map((s) => <option key={s} value={s}>{s}</option>)}{!strikesFor(l.expiry).includes(l.strike) && <option value={l.strike}>{l.strike}</option>}</select></td>
-                  <td><select value={l.expiry} onChange={(e) => setLeg(i, { expiry: e.target.value })}>{chain.expirations.map((x) => <option key={x} value={x}>{x}</option>)}</select></td>
-                  <td><input className="input tiny" type="number" min="1" value={l.qty} onChange={(e) => setLeg(i, { qty: Number(e.target.value) })} /></td>
-                  <td className="num">{l.mid == null ? "—" : `${l.theo ? "~" : ""}${l.mid.toFixed(2)}`}</td>
-                  <td><button className="btn ghost tiny" onClick={(e) => { e.stopPropagation(); removeLeg(i); }}>✕</button></td>
-                </tr>
-              ))}
+              {legs.map((l, i) => {
+                const isStock = l.right === "S";
+                const onTypeChange = (newRight) => {
+                  if (newRight === "S" && !isStock) setLeg(i, { right: "S", strike: 0, expiry: "", qty: 100 });
+                  else if (newRight !== "S" && isStock) setLeg(i, { right: newRight, strike: atmStrike(), expiry: chain.expirations[0] || "" });
+                  else setLeg(i, { right: newRight });
+                };
+                return (
+                  <tr key={i} className={i === selectedLeg ? "leg-selected" : ""}
+                    onClick={() => setSelectedLeg(i)}>
+                    <td>
+                      <button className={`side-badge ${l.action === "BUY" ? "buy" : "sell"}`}
+                        onClick={(e) => { e.stopPropagation(); setLeg(i, { action: l.action === "BUY" ? "SELL" : "BUY" }); }}>
+                        {l.action}
+                      </button>
+                    </td>
+                    <td className={`right-${l.right}`}>
+                      <select value={l.right} onChange={(e) => onTypeChange(e.target.value)}>
+                        <option value="C">Call</option><option value="P">Put</option><option value="S">Stock</option>
+                      </select>
+                    </td>
+                    <td>
+                      {isStock ? <span className="muted">—</span> : (
+                        <select value={l.strike} onChange={(e) => setLeg(i, { strike: Number(e.target.value) })}>
+                          {(strikesFor(l.expiry)).map((s) => <option key={s} value={s}>{s}</option>)}
+                          {!strikesFor(l.expiry).includes(l.strike) && <option value={l.strike}>{l.strike}</option>}
+                        </select>
+                      )}
+                    </td>
+                    <td>
+                      {isStock ? <span className="muted">—</span> : (
+                        <select value={l.expiry} onChange={(e) => setLeg(i, { expiry: e.target.value })}>
+                          {chain.expirations.map((x) => <option key={x} value={x}>{x}</option>)}
+                        </select>
+                      )}
+                    </td>
+                    <td><input className="input tiny" type="number" min="1" value={l.qty} onChange={(e) => setLeg(i, { qty: Number(e.target.value) })} /></td>
+                    <td className="num">{l.mid == null ? "—" : `${l.theo ? "~" : ""}${l.mid.toFixed(2)}`}</td>
+                    <td>
+                      <div className="row gap">
+                        <button className="btn ghost tiny" title="Duplicate" onClick={(e) => { e.stopPropagation(); duplicateLeg(i); }}>⧉</button>
+                        <button className="btn ghost tiny" title="Delete" onClick={(e) => { e.stopPropagation(); removeLeg(i); }}>✕</button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
-        <div className="row gap center">
-          <button className="btn ghost" onClick={addLeg} disabled={!chain.expirations.length}>+ Add leg</button>
-          <span className="muted">Net: <b>{isTheo ? "~" : ""}{debitLabel}</b></span>
-        </div>
       </section>
 
-      <ChainGrid key={underlying} underlying={underlying} expirations={chain.expirations}
-        onAddLeg={addLegFromChain} onSpot={setSpot} />
+      {sel?.expiry && <IvSmile underlying={underlying} expiry={sel.expiry} />}
 
       <section className="card">
         <h2>Save as tracked trade</h2>
@@ -338,27 +491,29 @@ export default function BuilderTab() {
       </section>
 
       <section className="card">
-        <h2>Tracked trades</h2>
+        <h2>Recent Trades</h2>
         {trades.length === 0 ? <div className="muted">No saved trades yet.</div> : (
-          <div className="table-scroll">
-            <table className="table">
-              <thead><tr><th>Underlying</th><th>Legs</th><th>Net debit</th><th>P&L</th><th>Status</th><th></th></tr></thead>
-              <tbody>
-                {trades.map((t) => (
-                  <tr key={t.id}>
-                    <td>{t.underlying}</td>
-                    <td className="muted small">{t.legs.length} legs</td>
-                    <td className="num">{t.net_debit >= 0 ? `$${t.net_debit.toFixed(2)}` : `($${Math.abs(t.net_debit).toFixed(2)})`}</td>
-                    <td className={`num ${(t.status === "closed" ? t.pnl : t.last_pnl) >= 0 ? "pos" : "neg"}`}>
-                      {money(t.status === "closed" ? t.pnl : t.last_pnl)}
-                      {t.last_pnl_pct != null && t.status === "open" && <span className="muted small"> {(t.last_pnl_pct * 100).toFixed(1)}%</span>}
-                    </td>
-                    <td><span className={`pill tiny ${t.status === "open" ? "live" : "idle"}`}>{t.status}{t.exit_reason ? ` · ${t.exit_reason}` : ""}</span></td>
-                    <td>{t.status === "open" && <button className="btn ghost tiny" onClick={() => closeTrade(t.id)}>Close</button>}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="trade-cards">
+            {trades.map((t) => {
+              const v = t.status === "closed" ? t.pnl : t.last_pnl;
+              return (
+                <div className="trade-card" key={t.id}>
+                  <div className="trade-head">
+                    <b>{t.underlying}</b>
+                    <span className="muted small">{t.legs.length} legs · {t.entry_time?.slice(0, 10) || "—"}</span>
+                  </div>
+                  <div className={`trade-pnl num ${(v ?? 0) >= 0 ? "pos" : "neg"}`}>
+                    {v == null ? "—" : `${v >= 0 ? "+" : "−"}$${Math.abs(v).toFixed(2)}`}
+                    {t.last_pnl_pct != null && t.status === "open" &&
+                      <span className="muted small"> {(t.last_pnl_pct * 100).toFixed(1)}%</span>}
+                  </div>
+                  <div className="row between center">
+                    <span className={`pill tiny ${t.status === "open" ? "live" : "idle"}`}>{t.status}{t.exit_reason ? ` · ${t.exit_reason}` : ""}</span>
+                    {t.status === "open" && <button className="btn ghost tiny" onClick={() => closeTrade(t.id)}>Close</button>}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </section>
