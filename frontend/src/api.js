@@ -108,6 +108,9 @@ export const api = {
   // Per-leg + net position greeks; body.curve requests the net-delta curve overlay.
   builderGreeks: (body) =>
     request("/api/builder/greeks", { method: "POST", body: JSON.stringify(body) }),
+  // Implied-vol smile for one expiry (live mids -> bisection-inverted IV per strike).
+  builderIvSmile: (u, expiry, count = 10) =>
+    request(`/api/builder/iv-smile?underlying=${encodeURIComponent(u)}&expiry=${expiry}&count=${count}`),
   builderSaveTrade: (body) =>
     request(`/api/builder/trades`, { method: "POST", body: JSON.stringify(body) }),
   builderTrades: (status) =>

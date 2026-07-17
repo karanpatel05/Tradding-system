@@ -6,6 +6,7 @@ import ExpiryTabs from "./builder/ExpiryTabs.jsx";
 import StrikeRuler from "./builder/StrikeRuler.jsx";
 import StatCards from "./builder/StatCards.jsx";
 import GreeksPanel from "./builder/GreeksPanel.jsx";
+import IvSmile from "./builder/IvSmile.jsx";
 import { computeStats } from "./builder/payoffStats.js";
 import { buildTemplate, buildHedge } from "./builder/templates.js";
 
@@ -464,6 +465,8 @@ export default function BuilderTab() {
           </table>
         </div>
       </section>
+
+      {sel?.expiry && <IvSmile underlying={underlying} expiry={sel.expiry} />}
 
       <section className="card">
         <h2>Save as tracked trade</h2>

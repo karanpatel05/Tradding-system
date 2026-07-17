@@ -51,3 +51,25 @@ def bs_price(S: float, K: float, T: float, iv: float, r: float, kind: str) -> fl
     if kind == "C":
         return S * norm_cdf(d1) - K * math.exp(-r * T) * norm_cdf(d2)
     return K * math.exp(-r * T) * norm_cdf(-d2) - S * norm_cdf(-d1)
+
+
+def implied_vol(price: float, S: float, K: float, T: float, r: float, kind: str,
+                lo: float = 0.01, hi: float = 4.0, tol: float = 1e-4,
+                max_iter: int = 60) -> float | None:
+    """Invert bs_price by bisection. None when no root brackets [lo, hi]."""
+    if price <= 0 or T <= 0:
+        return None
+    f_lo = bs_price(S, K, T, lo, r, kind) - price
+    f_hi = bs_price(S, K, T, hi, r, kind) - price
+    if f_lo * f_hi > 0:
+        return None
+    for _ in range(max_iter):
+        mid = (lo + hi) / 2
+        f_mid = bs_price(S, K, T, mid, r, kind) - price
+        if abs(f_mid) < tol or (hi - lo) / 2 < tol:
+            return mid
+        if f_lo * f_mid < 0:
+            hi = mid
+        else:
+            lo, f_lo = mid, f_mid
+    return (lo + hi) / 2

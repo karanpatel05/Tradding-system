@@ -147,6 +147,30 @@ async def chain_quotes(underlying: str, expiry: str, count: int = 8) -> dict:
     return await chain_mod.get_chain_quotes(underlying, expiry, count)
 
 
+@router.get("/iv-smile")
+async def iv_smile(underlying: str, expiry: str, count: int = 10) -> dict:
+    """Implied-vol smile for one expiry from live mids: put side below spot, call side
+    at/above. Strikes without a usable mid or root are skipped."""
+    from app.options.blackscholes import implied_vol
+    count = max(1, min(int(count), 25))
+    data = await chain_mod.get_chain_quotes(underlying, expiry, count)
+    spot = data.get("spot")
+    points = []
+    if spot and spot > 0:
+        T = max((date.fromisoformat(expiry) - date.today()).days, 0) / 365.0
+        for row in data.get("rows", []):
+            k = row["strike"]
+            side = "P" if k < spot else "C"
+            mid = row["put_mid"] if side == "P" else row["call_mid"]
+            if mid is None or T <= 0:
+                continue
+            iv = implied_vol(mid, spot, k, T, 0.04, side)
+            if iv is not None:
+                points.append({"strike": k, "iv": round(iv, 4), "side": side})
+    return {"underlying": underlying.upper(), "expiry": expiry, "spot": spot,
+            "points": points}
+
+
 @router.post("/quote")
 async def quote(body: QuoteBody) -> dict:
     """Live mids per leg; legs without a live quote fall back to their Black-Scholes
