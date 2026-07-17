@@ -1,9 +1,9 @@
 """Data-provider abstraction.
 
-Market data comes from Interactive Brokers (IB Gateway via ib_async):
-  • HISTORICAL forward-refresh / scanner → ``providers/ibkr_historical.py``
+Market data comes from Tastytrade:
+  • HISTORICAL forward-refresh / scanner → ``providers/tastytrade_historical.py``
     (bulk backtests read cached ``data_cache/*.json`` directly, not a live provider)
-  • LIVE quotes / stream / accounts / positions / orders → ``app/ibkr/`` + ``engine/execution.py``
+  • LIVE quotes / stream / accounts / positions / orders → ``app/tastytrade/`` + ``engine/execution.py``
 
 ``HistoricalDataProvider`` is the seam: swapping historical sources is a
 config/factory change, not a rewrite of every caller. Bars are normalized to one

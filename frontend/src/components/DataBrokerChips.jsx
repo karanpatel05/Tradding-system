@@ -3,7 +3,7 @@ import { api } from "../api.js";
 
 // Dashboard header chips separating the two health signals that used to be conflated:
 // Data (which market-data source is actually serving) and Broker (IBKR Gateway, orders).
-const DATA_LABEL = { tastytrade: "Tastytrade", ibkr: "IBKR fallback" };
+const DATA_LABEL = { tastytrade: "Tastytrade" };
 
 export default function DataBrokerChips() {
   const [tt, setTt] = useState(null);
@@ -21,17 +21,16 @@ export default function DataBrokerChips() {
 
   const dataTone = tt == null ? "idle"
     : tt.serving === "tastytrade" ? "live"
-    : tt.serving === "ibkr" ? "warn"
     : tt.configured ? "idle" : "down";
   const dataText = tt == null ? "…"
-    : tt.serving !== "idle" ? DATA_LABEL[tt.serving]
+    : tt.serving === "tastytrade" ? DATA_LABEL[tt.serving]
     : tt.configured ? "Tastytrade · idle" : "not configured";
 
-  const brokerReady = auth?.conn_state === "ready" || (auth?.connected && !auth?.conn_state);
-  const brokerText = auth == null ? "…"
-    : brokerReady ? "Gateway connected"
-    : auth.conn_state === "safe_mode" ? "SAFE MODE"
-    : "disconnected";
+  const brokerReady = tt?.probe === "ok";
+  const brokerText = tt == null ? "…"
+    : auth?.conn_state === "safe_mode" ? "SAFE MODE"
+    : brokerReady ? "Tastytrade verified"
+    : "not verified";
 
   return (
     <div className="src-chips">

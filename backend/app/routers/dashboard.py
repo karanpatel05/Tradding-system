@@ -16,7 +16,7 @@ from app.auth.manager import session_manager
 from app.engine.execution import flatten_all
 from app.engine.manager import engine_manager
 from app.engine.worker import close_open_trades
-from app.ibkr.account import get_account_summary, get_positions
+from app.broker.account import balances as get_account_summary, positions as get_positions
 from app.services.market import get_market_overview, get_market_status
 
 logger = logging.getLogger("trading.dashboard")

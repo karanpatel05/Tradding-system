@@ -48,10 +48,8 @@ async def _main():
     sc_ns["manage_step"] = boom
     sc_ns["LivePriceSource"] = _Src
 
-    class _GW:  # NOT READY
-        state = type("S", (), {"name": "CONNECTED"})()
-    sc_ns_gw = sc_ns["get_gateway"]
-    sc_ns["get_gateway"] = lambda: _GW()
+    sc_ns_broker_ready = sc_ns["broker_ready"]
+    sc_ns["broker_ready"] = lambda: False  # NOT READY
     sc_ns["get_market_status"] = lambda: {"is_open": True}
 
     task = asyncio.create_task(strat.run_live())
@@ -61,7 +59,7 @@ async def _main():
         await task
     except asyncio.CancelledError:
         pass
-    sc_ns.update(orig); sc_ns["get_gateway"] = sc_ns_gw
+    sc_ns.update(orig); sc_ns["broker_ready"] = sc_ns_broker_ready
 
     assert calls["manage"] == 0
     async with session_scope() as s:

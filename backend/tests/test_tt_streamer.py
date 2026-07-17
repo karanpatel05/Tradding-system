@@ -81,3 +81,24 @@ def _fake_connect(fake, s):
 async def _push_later(fake, cls, ev):
     await asyncio.sleep(0.05)
     await fake._q(cls).put(ev)
+
+
+@pytest.mark.asyncio
+async def test_candles_match_dxfeed_normalized_symbol(monkeypatch):
+    """dxfeed echoes "QQQ{=d,tho=true}" for a "1d" subscription (observed live 2026-07-15);
+    collection must match by prefix, and a forming candle with close=0.0 is dropped."""
+    fake = _FakeDx()
+    s = st_mod.TTStreamer()
+    monkeypatch.setattr(s, "_connect", _fake_connect(fake, s))
+    from tastytrade.dxfeed import Candle
+    t0 = datetime(2026, 7, 14, 20, 0, tzinfo=timezone.utc)
+    ms = int(t0.timestamp() * 1000)
+    good = SimpleNamespace(event_symbol="QQQ{=d,tho=true}", time=ms, open=1.0, high=2.0,
+                           low=0.5, close=719.65, volume=100)
+    forming = SimpleNamespace(event_symbol="QQQ{=d,tho=true}", time=ms + 86_400_000,
+                              open=1.0, high=2.0, low=0.5, close=0.0, volume=0)
+    task = asyncio.create_task(_push_later(fake, Candle, good))
+    task2 = asyncio.create_task(_push_later(fake, Candle, forming))
+    bars = await s.candles("QQQ", "1d", start=t0 - timedelta(days=3), idle_seconds=0.5)
+    await task; await task2; await s.teardown()
+    assert [b["close"] for b in bars] == [719.65]      # normalized symbol matched, 0.0 dropped

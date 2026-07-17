@@ -1,26 +1,29 @@
-"""Auth = IBKR Gateway connection state (no OAuth, no per-user secrets).
+"""Auth = Tastytrade OAuth pair readiness (probe-backed, cached).
 
 Kept as a ``session_manager`` singleton so existing callers (kill switch, gate,
-routers) keep working unchanged; ``is_authenticated()`` now means "Gateway
-connected." There are no secrets to store — the Gateway login happens in IBKR's
-own software, and the API connects to it locally."""
+routers) keep working unchanged. ``is_authenticated()`` reads the cached probe
+result (see ``app.broker.status``); ``connect()`` forces a fresh probe;
+``disconnect()`` is a no-op (kept for API compat — there is no persistent broker
+session to tear down, readiness is simply re-derived by the next probe)."""
 from __future__ import annotations
 
-from app.ibkr.gateway import get_gateway
+from app.broker.status import is_ready_cached, probe
 
 
 class SessionManager:
-    """Process-wide auth state, backed by the IBKR Gateway connection."""
+    """Process-wide auth state, backed by the Tastytrade OAuth probe."""
 
     def is_authenticated(self) -> bool:
-        return get_gateway().is_connected()
+        return is_ready_cached()
 
     async def connect(self) -> bool:
-        await get_gateway().connect()
-        return self.is_authenticated()
+        await probe(force=True)
+        return is_ready_cached()
 
     def disconnect(self) -> None:
-        get_gateway().disconnect()
+        # No-op: kept for API compat. There is no persistent session to tear down;
+        # the next probe (cached or forced) re-derives readiness independently.
+        pass
 
 
 session_manager = SessionManager()

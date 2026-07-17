@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ib_async import ExecutionFilter
-
 
 @dataclass
 class BrokerPosition:
@@ -30,23 +28,29 @@ class BrokerOrder:
     status: str
 
 
-async def fetch_snapshot(ib) -> dict:
-    positions = [
-        BrokerPosition(p.contract.symbol, int(p.position), float(p.avgCost or 0.0))
-        for p in await ib.reqPositionsAsync() if int(p.position) != 0
-    ]
-    fills = []
-    for f in await ib.reqExecutionsAsync(ExecutionFilter()):
-        ex = f.execution
-        fills.append(BrokerFill(f.contract.symbol, int(ex.shares), float(ex.price),
-                                str(ex.permId) if ex.permId else None, ex.execId))
-    orders = [
-        BrokerOrder(t.contract.symbol,
-                    str(t.order.permId) if t.order.permId else None,
-                    t.order.orderRef or None, t.orderStatus.status)
-        for t in await ib.reqAllOpenOrdersAsync()
-    ]
-    return {"positions": positions, "fills": fills, "orders": orders}
+async def _positions():
+    from app.broker.account import positions
+    return await positions()
+
+
+async def _live_orders():
+    from app.broker.account import live_orders
+    return await live_orders()
+
+
+async def fetch_snapshot() -> dict:
+    """Broker truth from Tastytrade: positions + live orders (fills come with order
+    history and are not needed for the position reconcile — kept as an empty list to
+    preserve the snapshot shape)."""
+    positions = [BrokerPosition(p.symbol, p.quantity, p.avg_price)
+                 for p in await _positions() if p.quantity != 0]
+    orders = []
+    for o in await _live_orders():
+        legs = getattr(o, "legs", []) or []
+        sym = getattr(legs[0], "symbol", "?") if legs else "?"
+        orders.append(BrokerOrder(sym, str(getattr(o, "id", "")) or None, None,
+                                  str(getattr(o, "status", ""))))
+    return {"positions": positions, "fills": [], "orders": orders}
 
 
 @dataclass

@@ -1,6 +1,7 @@
 # backend/tests/test_consumers_facade.py
 """Consumers read through the facade: overview builds rows without IBKR auth; the
-builder chain composes facade expiries+strikes and falls back to IBKR shape."""
+builder chain composes facade expiries+strikes (facade-only; empty lists when
+Tastytrade is down)."""
 import pytest
 
 from app.marketdata import facade

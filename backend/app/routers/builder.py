@@ -1,5 +1,6 @@
-"""Options Strategy Builder API. Read-only IBKR (chain + quotes); saved trades are tracked
-(paper) only — NO orders are ever transmitted."""
+"""Options Strategy Builder API. Read-only market data (chain + quotes) via the
+Tastytrade-backed facade; saved trades are tracked (paper) only — NO orders are ever
+transmitted."""
 from __future__ import annotations
 
 from typing import Literal
@@ -99,8 +100,15 @@ async def spot(underlying: str) -> dict:
                                  start=datetime.now(timezone.utc) - timedelta(days=7))
         closed = [b for b in bars if b.get("close") is not None]
         if closed:
-            today = datetime.now(timezone.utc).date()
-            last_day = datetime.fromtimestamp(closed[-1]["time"] / 1000, tz=timezone.utc).date()
+            from zoneinfo import ZoneInfo
+            # dxfeed stamps a daily bar at 20:00 ET of the PRIOR calendar day (the
+            # extended session start), so the bar's SESSION date = timestamp + 4h in
+            # exchange time. Compare session dates, in ET, or "previous close" picks
+            # today's own close.
+            et = ZoneInfo("America/New_York")
+            today = datetime.now(et).date()
+            last_day = (datetime.fromtimestamp(closed[-1]["time"] / 1000, tz=et)
+                        + timedelta(hours=4)).date()
             # If the newest daily bar is today's (still forming), the previous close is
             # the bar before it; otherwise the newest bar IS the previous close.
             if last_day == today and len(closed) >= 2:

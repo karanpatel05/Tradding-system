@@ -21,10 +21,10 @@ import logging
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+from app.broker.status import is_ready_cached as broker_ready
 from app.config import get_settings
 from app.db.base import session_scope
 from app.db.models import StrategyState, TradeRecord
-from app.ibkr.gateway import ConnState, get_gateway
 from app.services.journal import log_event
 from app.strategies.base import BaseStrategy
 
@@ -33,8 +33,8 @@ settings = get_settings()
 
 
 def _trading_allowed() -> bool:
-    """Workers act only when the connection is READY (recovery passed, not safe-mode)."""
-    return get_gateway().state is ConnState.READY
+    """Workers act only when the broker probe confirms readiness."""
+    return broker_ready()
 
 
 async def _entry_blocked_by_gap(strategy, bars) -> bool:

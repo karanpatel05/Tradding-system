@@ -16,7 +16,6 @@ def _run() -> None:
         from app.db.base import session_scope
         from app.db.base import init_db
         from app.db.models import OptionPositionRecord
-        from app.ibkr.gateway import ConnState, get_gateway
         from app.strategies.triple_calendar import live_source, strategy_class
         from app.strategies.triple_calendar.legs import Calendar, Position
         from app.strategies.triple_calendar.store import save_position
@@ -49,7 +48,7 @@ def _run() -> None:
         live_source.LivePriceSource.aoption_mid = fake_mid          # type: ignore[assignment]
         live_source.LivePriceSource.avix = fake_vix                 # type: ignore[assignment]
         strategy_class.get_market_status = lambda: {"is_open": True}  # type: ignore[assignment]
-        get_gateway().set_state(ConnState.READY)
+        strategy_class.broker_ready = lambda: True  # type: ignore[assignment]
 
         strat = strategy_class.TripleCalendarStrategy()
         task = asyncio.create_task(strat.run_live())

@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     # --- Tastytrade market data (OAuth personal grant; my.tastytrade.com → API access) ---
     tt_provider_secret: str = ""     # env TT_PROVIDER_SECRET
     tt_refresh_token: str = ""       # env TT_REFRESH_TOKEN
+    tt_account_number: str = ""      # blank -> first account on the login
     data_primary: str = "tastytrade"  # "tastytrade" | "ibkr" — facade try order
     # Mid sanity guard: reject crossed/wide/jumpy option mids (see marketdata/sanity.py).
     sanity_rel_spread: float = 0.35

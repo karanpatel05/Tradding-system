@@ -108,6 +108,23 @@ export default function CalendarTab() {
               </tbody>
             </table>
           )}
+          <h4>Options ({(detail.option_trades || []).length})</h4>
+          {(detail.option_trades || []).length === 0 ? <div className="muted">No option trades.</div> : (
+            <table className="table">
+              <thead><tr><th>Underlying</th><th>Source</th><th>Contracts</th><th>P&L</th><th>Status</th></tr></thead>
+              <tbody>
+                {detail.option_trades.map((o, i) => (
+                  <tr key={i}>
+                    <td>{o.underlying}</td>
+                    <td className="muted small">{o.source === "triple_calendar" ? "Triple Calendar" : "Builder"}</td>
+                    <td className="num">{o.contracts}</td>
+                    <td className={o.pnl == null ? "" : o.pnl >= 0 ? "pos" : "neg"}>{o.pnl != null ? `$${o.pnl.toFixed(2)}` : "—"}</td>
+                    <td><span className={`pill tiny ${o.status === "open" ? "live" : "idle"}`}>{o.status}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
           <h4>Log ({detail.logs.length})</h4>
           <div className="log-list">
             {detail.logs.map((l) => (

@@ -1,21 +1,17 @@
-"""Provider factory. Historical/forward-refresh data prefers Tastytrade (DXLink candles)
-when creds are configured; IBKR remains the fallback. Bulk backtests read cached files
-directly via history_cache."""
+"""Provider factory. Historical/forward-refresh data is served exclusively by
+Tastytrade (DXLink candles). Bulk backtests read cached files directly via
+history_cache."""
 
 from __future__ import annotations
 
 from functools import lru_cache
 
 from app.providers.base import HistoricalDataProvider, ProviderError
-from app.providers.ibkr_historical import IBKRHistoricalProvider
-from app.tastytrade.session import tt_configured
 
 __all__ = ["get_historical_provider", "HistoricalDataProvider", "ProviderError"]
 
 
 @lru_cache
 def get_historical_provider() -> HistoricalDataProvider:
-    if tt_configured():
-        from app.providers.tastytrade_historical import TastytradeHistoricalProvider
-        return TastytradeHistoricalProvider()
-    return IBKRHistoricalProvider()
+    from app.providers.tastytrade_historical import TastytradeHistoricalProvider
+    return TastytradeHistoricalProvider()

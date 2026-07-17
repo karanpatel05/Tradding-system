@@ -18,7 +18,7 @@ async def resume() -> dict:
         return {"conn_state": gw.state.value, "safe_mode": await is_safe_mode(),
                 "detail": "not connected"}
     await clear_safe_mode()
-    await run_recovery(gw._ib, gw)
+    await run_recovery()
     from app.db.base import session_scope
     from app.db.models import SystemFlag
     reason = None

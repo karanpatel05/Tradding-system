@@ -138,14 +138,22 @@ class TTStreamer:
         dx_interval = _INTERVALS.get(interval)
         if dx_interval is None or not await self._ensure():
             return []
-        key = f"{symbol}{{={dx_interval}}}"
+        # dxfeed NORMALIZES the echoed candle symbol: subscribe "QQQ{=1d}" and events
+        # arrive as "QQQ{=d,tho=true}" (canonical interval + trading-hours flag). Match
+        # buckets by PREFIX, never by the exact subscription string.
+        prefix = f"{symbol}{{="
+
+        def _bucket_count() -> int:
+            return sum(len(b) for k, b in self._candles.items() if k.startswith(prefix))
+
         async with self._candle_lock:            # one candle collection at a time
-            self._candles[key] = {}
+            for k in [k for k in self._candles if k.startswith(prefix)]:
+                del self._candles[k]
             await self._dx.subscribe_candle([symbol], dx_interval, start_time=start)
             seen = -1
             while True:
                 await asyncio.sleep(idle_seconds)
-                n = len(self._candles.get(key, {}))
+                n = _bucket_count()
                 if n == seen:
                     break
                 seen = n
@@ -153,11 +161,15 @@ class TTStreamer:
                 await self._dx.unsubscribe_candle([symbol], dx_interval)
             except Exception:  # noqa: BLE001
                 pass
-            bars = sorted(self._candles.pop(key, {}).values(), key=lambda b: b["time"])
+            merged: dict[int, dict] = {}
+            for k in [k for k in self._candles if k.startswith(prefix)]:
+                merged.update(self._candles.pop(k))
+            bars = sorted(merged.values(), key=lambda b: b["time"])
         lo = int(start.timestamp() * 1000)
         hi = int((end or datetime.now(timezone.utc)).timestamp() * 1000)
+        # close must be a POSITIVE number: a still-forming candle can arrive with 0.0.
         return [{**b, "symbol": symbol} for b in bars
-                if lo <= b["time"] <= hi and b["close"] is not None]
+                if lo <= b["time"] <= hi and (b["close"] or 0) > 0]
 
 
 _streamer: TTStreamer | None = None

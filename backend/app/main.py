@@ -26,6 +26,10 @@ from app.routers.ws import router as ws_router
 from app.strategies.registry import seed_strategy_state
 
 logging.basicConfig(level=logging.INFO)
+# The tastytrade SDK logs every DXLink event at DEBUG — with a persistent quote stream
+# that's millions of lines (a 443MB err.log by 2026-07-15). Clamp SDK loggers hard.
+for _noisy in ("tastytrade", "httpx", "httpx_ws", "websockets"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 logger = logging.getLogger("trading")
 
 settings = get_settings()
@@ -38,22 +42,19 @@ async def lifespan(app: FastAPI):
     await seed_strategy_state()
     logger.info("Database initialized")
     logger.info(
-        "[IBKR] backend = IB Gateway %s:%s (clientId=%s). Connect via the API tab "
-        "or POST /api/auth/connect. App boots without a live connection.",
-        settings.ibkr_host, settings.ibkr_port, settings.ibkr_client_id,
+        "[Tastytrade] broker = Tastytrade OAuth. Connect via the API tab "
+        "or POST /api/auth/connect. App boots without a live connection."
     )
-    # Best-effort connect + recovery sequence (reconcile broker truth → READY/SAFE_MODE).
-    # Boot even if the Gateway is down: workers stay paused until the supervisor reaches READY.
-    from app.ibkr.gateway import get_gateway
-    gw = get_gateway()
+    from app.engine.recovery import run_recovery
     try:
-        await gw.connect_and_recover()
-    except Exception:  # noqa: BLE001 — boot even if the Gateway is down
-        logger.warning("IBKR not connected at startup; workers stay paused until READY")
-    asyncio.create_task(gw.supervise())
+        await run_recovery()
+    except Exception:  # noqa: BLE001 — recovery is best-effort at boot
+        logger.warning("startup recovery failed", exc_info=True)
     await _resume_active_workers()
     from app.options.monitor import run_builder_monitor
     asyncio.create_task(run_builder_monitor())
+    from app.broker.status import refresher
+    asyncio.create_task(refresher())
     yield
     logger.info("Shutting down")
 
@@ -106,7 +107,7 @@ async def health() -> dict:
     return {
         "status": "ok",
         "app": settings.app_name,
-        "broker": "ibkr",
+        "broker": "tastytrade",
         "live_orders_enabled": settings.enable_live_orders,
     }
 
