@@ -2,7 +2,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import PayoffChart from "./PayoffChart.jsx";
-import ChainGrid from "./ChainGrid.jsx";
 import ExpiryTabs from "./builder/ExpiryTabs.jsx";
 import StrikeRuler from "./builder/StrikeRuler.jsx";
 import StatCards from "./builder/StatCards.jsx";
@@ -120,7 +119,6 @@ export default function BuilderTab() {
     setSelectedLeg((sel) => (sel == null ? null : sel === i ? (i > 0 ? i - 1 : null) : sel > i ? sel - 1 : sel));
     invalidateQuote();
   };
-  const addLegFromChain = (leg) => { setLegs((ls) => [...ls, { ...leg, mid: null }]); setSelectedLeg(legs.length); invalidateQuote(); };
 
   // Templates menu: first click on a template arms it ("Replace legs with X?"), a
   // second click within 5s applies it. Any other click re-arms (or arms a different one).
@@ -466,9 +464,6 @@ export default function BuilderTab() {
           </table>
         </div>
       </section>
-
-      <ChainGrid key={underlying} underlying={underlying} expirations={chain.expirations}
-        onAddLeg={addLegFromChain} onSpot={setSpot} />
 
       <section className="card">
         <h2>Save as tracked trade</h2>
