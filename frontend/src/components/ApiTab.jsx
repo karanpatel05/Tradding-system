@@ -177,7 +177,7 @@ export default function ApiTab({ onChange }) {
         </p>
         {!liveOn && !arming && (
           <button className="btn primary" style={{ marginTop: 10 }}
-            onClick={() => setArming(true)}>
+            onClick={() => { setOrdersMsg(null); setArming(true); }}>
             Enable live orders…
           </button>
         )}
@@ -190,7 +190,7 @@ export default function ApiTab({ onChange }) {
               Arm live orders
             </button>
             <button className="btn ghost"
-              onClick={() => { setArming(false); setConfirmText(""); }}>
+              onClick={() => { setOrdersMsg(null); setArming(false); setConfirmText(""); }}>
               Cancel
             </button>
           </div>
