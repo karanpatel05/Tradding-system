@@ -40,6 +40,14 @@ export const api = {
   ttSave: (body) =>
     request("/api/auth/tastytrade", { method: "PUT", body: JSON.stringify(body) }),
   resume: () => request("/api/system/resume", { method: "POST" }),
+  health: () => request("/health"),
+  // Master ENABLE_LIVE_ORDERS gate. Confirmation UX lives in the frontend;
+  // the endpoint takes a plain boolean.
+  setLiveOrders: (enabled) =>
+    request("/api/system/live-orders", {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
 
   account: () => request("/api/account"),
   marketStatus: () => request("/api/market/status"),
@@ -195,7 +203,6 @@ export const api = {
     }
     return result;
   },
-  health: () => request("/health"),
   selectionHistory: (key, cfg = {}) => {
     const q = new URLSearchParams();
     Object.entries(cfg).forEach(([k, v]) => {
