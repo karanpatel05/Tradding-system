@@ -44,6 +44,27 @@ export default function ApiTab({ onChange }) {
     } catch (e) { setTtMsg(e.message || "Save failed"); }
   };
 
+  // --- Order routing (ENABLE_LIVE_ORDERS master gate) ---
+  const [health, setHealth] = useState(null);
+  const [arming, setArming] = useState(false);      // confirm row visible
+  const [confirmText, setConfirmText] = useState("");
+  const [ordersMsg, setOrdersMsg] = useState(null);
+  useEffect(() => { api.health().then(setHealth).catch(() => {}); }, []);
+
+  const liveOn = !!health?.live_orders_enabled;
+  const setLive = async (enabled) => {
+    setOrdersMsg(null);
+    try {
+      const res = await api.setLiveOrders(enabled);
+      setHealth((h) => ({ ...(h || {}), live_orders_enabled: res.live_orders_enabled }));
+      setArming(false);
+      setConfirmText("");
+      onChange?.();
+    } catch (e) {
+      setOrdersMsg(e.message || "Update failed");
+    }
+  };
+
   const reprobe = async () => {
     setErr(null); setBusy(true);
     try {
@@ -139,6 +160,47 @@ export default function ApiTab({ onChange }) {
           </button>
         </div>
         {ttMsg && <div className="muted small" style={{ marginTop: 8 }}>{ttMsg}</div>}
+      </section>
+
+      <section className="card">
+        <div className="card-head">
+          <h2>Order Routing</h2>
+          <span className={`mode-badge ${liveOn ? "danger" : "disabled"}`}>
+            {liveOn ? "LIVE" : "PAPER"}
+          </span>
+        </div>
+        <p className="muted small">
+          Master safety gate (<code>ENABLE_LIVE_ORDERS</code>). In <b>paper</b> mode
+          strategies run their full logic but orders are logged, never transmitted.
+          In <b>LIVE</b> mode real orders go to Tastytrade. The setting persists in{" "}
+          <code>.env</code> across restarts. SAFE MODE and the kill switch are unaffected.
+        </p>
+        {!liveOn && !arming && (
+          <button className="btn primary" style={{ marginTop: 10 }}
+            onClick={() => { setOrdersMsg(null); setArming(true); }}>
+            Enable live orders…
+          </button>
+        )}
+        {!liveOn && arming && (
+          <div className="row gap center" style={{ marginTop: 10 }}>
+            <input className="input" placeholder="Type LIVE to arm" value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)} />
+            <button className="btn danger" disabled={confirmText !== "LIVE"}
+              onClick={() => setLive(true)}>
+              Arm live orders
+            </button>
+            <button className="btn ghost"
+              onClick={() => { setOrdersMsg(null); setArming(false); setConfirmText(""); }}>
+              Cancel
+            </button>
+          </div>
+        )}
+        {liveOn && (
+          <button className="btn" style={{ marginTop: 10 }} onClick={() => setLive(false)}>
+            Switch to paper
+          </button>
+        )}
+        {ordersMsg && <div className="banner error" style={{ marginTop: 10 }}>{ordersMsg}</div>}
       </section>
     </div>
   );
