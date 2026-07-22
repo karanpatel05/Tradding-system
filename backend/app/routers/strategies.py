@@ -334,6 +334,32 @@ async def options_position(key: str) -> dict:
     return {**base, "tickers": out_tickers}
 
 
+@router.get("/{key}/options-position/payoff")
+async def options_position_payoff(key: str, ticker: str) -> dict:
+    """Payoff diagram + stats + net greeks for one open Triple Calendar position.
+    Read-only; {"has_position": false} when flat (200, not 404)."""
+    from sqlalchemy import select
+
+    from app.db.models import OptionPositionRecord
+    from app.options.position_payoff import build_position_payoff
+
+    _require_ready(key)
+    tk = ticker.upper()
+    st = await _state(key)
+    raw = (st.tc_tickers if st else None) or []
+    cmap = {str(t["ticker"]).upper(): max(1, int(t.get("contracts", 1)))
+            for t in raw if t.get("ticker")}
+    contracts = cmap.get(tk, max(1, int(getattr(st, "contracts", 1) or 1)) if st else 1)
+    async with session_scope() as session:
+        rec = (await session.execute(select(OptionPositionRecord).where(
+            OptionPositionRecord.strategy_key == key,
+            OptionPositionRecord.underlying == tk,
+            OptionPositionRecord.status == "open"))).scalars().first()
+    if rec is None:
+        return {"has_position": False, "ticker": tk}
+    return build_position_payoff(rec, contracts)
+
+
 async def _trades_today_count(key: str) -> int:
     """Trades this strategy has taken today (open + closed), by entry/exit date."""
     from datetime import datetime, timezone
