@@ -9,9 +9,10 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from app.auth.gate import require_auth
 from app.auth.manager import session_manager
 from app.broker.status import is_ready_cached, probe
 from app.config import get_settings
@@ -140,7 +141,7 @@ async def tt_status(probe: bool = False) -> dict:
     return {**_tt_state(), "probe": await _bstatus.probe(force=probe)}
 
 
-@router.put("/tastytrade")
+@router.put("/tastytrade", dependencies=[Depends(require_auth)])
 async def tt_save(body: TTCredsBody) -> dict:
     """Persist Tastytrade OAuth creds to backend/.env and apply them live (no restart)."""
     s = get_settings()

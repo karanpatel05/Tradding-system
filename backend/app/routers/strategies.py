@@ -398,7 +398,7 @@ class AllocationBody(BaseModel):
     amount: float = Field(..., ge=0, description="Dollar capital allocated to this strategy")
 
 
-@router.put("/{key}/allocation")
+@router.put("/{key}/allocation", dependencies=[Depends(require_auth)])
 async def set_allocation(key: str, body: AllocationBody) -> dict:
     _require_ready(key)  # rejected for Coming-Soon strategies
     async with session_scope() as session:
@@ -413,7 +413,7 @@ class ContractsBody(BaseModel):
     contracts: int = 1  # clamped to >= 1 in the handler (0/neg → 1)
 
 
-@router.put("/{key}/contracts")
+@router.put("/{key}/contracts", dependencies=[Depends(require_auth)])
 async def set_contracts(key: str, body: ContractsBody) -> dict:
     """How many of the whole spread to open per entry. Applies to the NEXT entry; an open
     position keeps the contracts it was opened with."""
@@ -459,7 +459,7 @@ async def get_tickers(key: str) -> dict:
     return {"key": key, "tickers": (st.tc_tickers if st else []) or []}
 
 
-@router.put("/{key}/tickers")
+@router.put("/{key}/tickers", dependencies=[Depends(require_auth)])
 async def set_tickers(key: str, body: TickersBody) -> dict:
     strat = _require_ready(key)
     tickers = _normalize_tickers(body.tickers)
@@ -490,7 +490,7 @@ class DirectionBody(BaseModel):
     direction: str = Field(..., description="Trade-direction mode: long | short | both")
 
 
-@router.put("/{key}/direction")
+@router.put("/{key}/direction", dependencies=[Depends(require_auth)])
 async def set_direction(key: str, body: DirectionBody) -> dict:
     """Set which sides may OPEN new positions (long / short / both). Live-editable:
     the worker re-reads it each cycle. Changing it only gates NEW entries — open
@@ -745,7 +745,7 @@ async def selection_history(
     return await strat.selection_history(universe, start=start, end=end, capital=capital)
 
 
-@router.post("/{key}/stop")
+@router.post("/{key}/stop", dependencies=[Depends(require_auth)])
 async def stop(key: str) -> dict:
     if get_strategy(key) is None:
         raise HTTPException(status_code=404, detail="Unknown strategy")

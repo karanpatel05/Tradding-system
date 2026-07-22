@@ -17,8 +17,6 @@ from app.auth.gate import require_auth
 from app.main import app
 from app.strategies.ema_crossover.signals import direction_gates
 
-app.dependency_overrides[require_auth] = lambda: None
-
 
 def _test_direction_gates() -> None:
     # direction AND HTF, the single shared gate for live + backtest.
@@ -123,6 +121,10 @@ def _test_endpoints() -> None:
 
 
 def _run() -> None:
+    # Bypass the caller-auth gate for this module-runner's endpoint checks. Set here
+    # (not at import) so importing the module under pytest doesn't leak the override
+    # into the shared app singleton and disable auth for the whole session.
+    app.dependency_overrides[require_auth] = lambda: None
     _test_direction_gates()
     _test_migration()
     _test_endpoints()

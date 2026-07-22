@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     environment: str = "development"
     # Secret used to sign the app session cookie. Override in production.
     app_secret_key: str = "dev-insecure-change-me"
+    # Shared caller token for the dangerous mutating routes (arm live orders, kill,
+    # activate, resume, credential-write). Sent by the client as the X-App-Token header
+    # and compared to this value. FAIL CLOSED: while this is empty those routes deny all
+    # callers — set APP_AUTH_TOKEN in backend/.env and paste it in the API tab to enable
+    # them. Reads (dashboard/backtest/journal) stay open regardless (no-gate landing).
+    app_auth_token: str = ""
     # Comma-separated list of allowed CORS origins (the Vite dev server by default).
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 

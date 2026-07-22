@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../api.js";
+import { api, getAppToken, setAppToken } from "../api.js";
 
 // Broker tab: Tastytrade is the sole broker AND market-data source. Shows the account
 // (masked) + probe-verified connection state, and the OAuth credential card. There is
@@ -42,6 +42,15 @@ export default function ApiTab({ onChange }) {
       else setTtMsg(res.configured ? (res.probe === "ok" ? "Saved — verified with Tastytrade ✓" : "Saved.") : "Saved.");
       onChange?.();
     } catch (e) { setTtMsg(e.message || "Save failed"); }
+  };
+
+  // --- App access token (gates the dangerous mutating actions) ---
+  const [appToken, setAppTokenInput] = useState(getAppToken());
+  const [tokenMsg, setTokenMsg] = useState(null);
+  const hasToken = !!getAppToken();
+  const saveAppToken = () => {
+    setAppToken(appToken.trim());
+    setTokenMsg(appToken.trim() ? "Saved on this device." : "Cleared.");
   };
 
   // --- Order routing (ENABLE_LIVE_ORDERS master gate) ---
@@ -160,6 +169,27 @@ export default function ApiTab({ onChange }) {
           </button>
         </div>
         {ttMsg && <div className="muted small" style={{ marginTop: 8 }}>{ttMsg}</div>}
+      </section>
+
+      <section className="card">
+        <div className="card-head">
+          <h2>App Access Token</h2>
+          <span className={`mode-badge ${hasToken ? "live" : "warn"}`}>
+            {hasToken ? "Set" : "Not set"}
+          </span>
+        </div>
+        <p className="muted small">
+          Gates the dangerous actions — arming live orders, the kill switch, activating a
+          strategy, resuming from SAFE MODE, and saving broker credentials. Must match{" "}
+          <code>APP_AUTH_TOKEN</code> in <code>backend/.env</code>. Stored only in this
+          browser; until it's set (matching the server) those actions return 401.
+        </p>
+        <div className="row gap center" style={{ marginTop: 10 }}>
+          <input className="input" type="password" placeholder={hasToken ? "App token (saved)" : "App token"}
+            value={appToken} onChange={(e) => setAppTokenInput(e.target.value)} />
+          <button className="btn primary" onClick={saveAppToken}>Save</button>
+        </div>
+        {tokenMsg && <div className="muted small" style={{ marginTop: 8 }}>{tokenMsg}</div>}
       </section>
 
       <section className="card">

@@ -1,10 +1,12 @@
-"""Auth = the Tastytrade OAuth probe cache (see app.broker.status), not the IBKR
-Gateway. Repointed from the old gateway-connected seam onto the probe cache that
-session_manager.is_authenticated()/require_auth() now read."""
+"""``is_authenticated`` = the Tastytrade OAuth probe cache (see app.broker.status): a
+BROKER-readiness check, not a caller check. ``require_auth`` no longer reads the probe —
+it authenticates the caller via the app token (covered in test_app_auth_token.py); the
+test here just pins that the probe no longer authorizes callers."""
 import pytest
 
 from app.auth.manager import session_manager
 from app.broker import status as st
+from app.config import get_settings
 
 
 def test_is_authenticated_tracks_probe_cache(monkeypatch):
@@ -15,17 +17,17 @@ def test_is_authenticated_tracks_probe_cache(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_require_auth_raises_when_not_ready(monkeypatch):
+async def test_require_auth_ignores_probe_cache(monkeypatch):
+    """A 'ready' broker probe must NOT authorize an anonymous caller."""
     from fastapi import HTTPException
 
     from app.auth.gate import require_auth
-    monkeypatch.setattr(st, "_cache", {"result": None, "at": 0.0})
-    with pytest.raises(HTTPException):
-        await require_auth()
-
-
-@pytest.mark.asyncio
-async def test_require_auth_passes_when_ready(monkeypatch):
-    from app.auth.gate import require_auth
-    monkeypatch.setattr(st, "_cache", {"result": "ok", "at": 1e9})
-    assert await require_auth() is None
+    monkeypatch.setattr(st, "_cache", {"result": "ok", "at": 1e9})  # probe ready
+    s = get_settings()
+    old = s.app_auth_token
+    s.app_auth_token = "sekret"
+    try:
+        with pytest.raises(HTTPException):
+            await require_auth(x_app_token=None)
+    finally:
+        s.app_auth_token = old

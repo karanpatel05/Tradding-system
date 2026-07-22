@@ -8,10 +8,26 @@
 // dead-code-eliminated from the bundle.
 const API_BASE = import.meta.env.DEV ? "http://localhost:8000" : "";
 
+// Shared caller token for the dangerous mutating routes (arm live orders, kill,
+// activate, resume, credential-write). Stored locally and sent as X-App-Token; the
+// backend fails closed, so these actions 401 until the token is set here to match
+// APP_AUTH_TOKEN in backend/.env. Reads work without it.
+const APP_TOKEN_KEY = "ts_app_token";
+export const getAppToken = () => localStorage.getItem(APP_TOKEN_KEY) || "";
+export const setAppToken = (t) => {
+  if (t) localStorage.setItem(APP_TOKEN_KEY, t);
+  else localStorage.removeItem(APP_TOKEN_KEY);
+};
+
+function authHeaders() {
+  const t = getAppToken();
+  return t ? { "X-App-Token": t } : {};
+}
+
 async function request(path, options = {}) {
   const res = await fetch(`${API_BASE}${path}`, {
     credentials: "include",
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    headers: { "Content-Type": "application/json", ...authHeaders(), ...(options.headers || {}) },
     ...options,
   });
   if (!res.ok) {
@@ -139,7 +155,7 @@ export const api = {
     const qs = q.toString();
     const res = await fetch(`${API_BASE}/api/strategies/${key}/backtest/stream${qs ? `?${qs}` : ""}`, {
       credentials: "include",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders() },
     });
     if (!res.ok || !res.body) {
       let detail;
@@ -175,7 +191,7 @@ export const api = {
     const res = await fetch(`${API_BASE}/api/strategies/${key}/optimize/stream`, {
       method: "POST",
       credentials: "include",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify(body),
     });
     if (!res.ok || !res.body) {
