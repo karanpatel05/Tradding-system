@@ -55,3 +55,30 @@ def fit_iv(legs: list[dict], spot: float | None, live_value: float | None, *,
         else:
             b = m
     return round((a + b) / 2, 4), "fit"
+
+
+def _leg_expiry(leg: dict) -> date:
+    e = leg["expiry"]
+    return e if isinstance(e, date) else date.fromisoformat(e)
+
+
+def net_position_greeks(legs: list[dict], spot: float | None, iv: float, contracts: int,
+                        *, today: date | None = None, r: float = RATE) -> dict:
+    """Position greeks at the current spot: per-leg bs_greeks, signed by BUY/SELL, ×100
+    per contract-share × qty, summed and scaled by `contracts`."""
+    from app.options.blackscholes import bs_greeks
+    from app.options.combo import LEG_SIGN
+
+    net = {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
+    if spot is None or spot <= 0:
+        return net
+    today = today or date.today()
+    for leg in legs:
+        T = max((_leg_expiry(leg) - today).days, 0) / 365.0
+        g = bs_greeks(spot, leg["strike"], T, iv, r, leg["right"])
+        sign = LEG_SIGN[leg["action"]]
+        qty = int(leg.get("qty", 1) or 1)
+        for k in net:
+            net[k] += sign * 100 * qty * g[k]
+    net_rounded = {k: round(v, 4) for k, v in net.items()}
+    return {k: net_rounded[k] * contracts for k, v in net_rounded.items()}
