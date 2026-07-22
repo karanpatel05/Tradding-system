@@ -278,8 +278,8 @@ async def poll_bracket_fill(symbol: str, ref=None) -> dict | None:
         return None
     try:
         history = await account.get_order_history(session, per_page=50)
-    except Exception:  # noqa: BLE001
-        return {"price": None, "ms": None, "reason": "bracket"}
+    except Exception:  # noqa: BLE001 — transient lookup error, distinct from "no fill found"
+        return {"price": None, "ms": None, "reason": "error"}
     from tastytrade.order import OrderType
     for o in history:
         legs = getattr(o, "legs", []) or []

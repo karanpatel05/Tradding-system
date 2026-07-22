@@ -37,6 +37,14 @@ def _trading_allowed() -> bool:
     return broker_ready()
 
 
+def _order_failed(order: dict) -> bool:
+    """True only for a GENUINE transmission failure (dry-run reject / broker
+    unavailable / quantity-skip). ``transmitted: False`` alone is NOT failure — it is
+    the normal paper-mode return, which also carries ``paper: True``. Entry paths must
+    not open a position, consume risk budget, or record an open trade when this is True."""
+    return not order.get("transmitted") and not order.get("paper")
+
+
 async def _entry_blocked_by_gap(strategy, bars) -> bool:
     """True when the market is open and the symbol's series is missing its latest bar."""
     import time
@@ -162,6 +170,17 @@ async def _handle_action(strategy, symbol, action, state, bars, open_qty, open_t
             return 0, None
         intent = "enter_long" if action.side == "long" else "enter_short"
         order = await submit_equity_order(symbol, intent, sizing.quantity, reason="entry")
+        if _order_failed(order):
+            # Genuine transmission failure: stay flat. Do NOT set a position or record a
+            # trade — that would strand a phantom position the broker never opened.
+            state.pending = None
+            await log_event(
+                f"Entry NOT transmitted {action.side} {symbol}: {order.get('detail')}",
+                level="error", category="trade", strategy_key=strategy.key, symbol=symbol,
+                data={"order": order, "entry": action.price},
+            )
+            await _persist_worker_state(strategy.key, symbol, state, None, bar.get("time"))
+            return 0, None
         apply_action(action, state, idx, bar)  # sets state.position
         trade_id = await _open_trade(strategy.key, symbol, action.side,
                                      sizing.quantity, action.price, bar.get("time"),
@@ -341,6 +360,15 @@ async def _open_bracket(strategy, symbol, action, state, bars, engine) -> dict |
 
     order = await submit_bracket_order(symbol, action.side, sizing.quantity, action.price,
                                        action.stop, action.target, reason="entry")
+    if _order_failed(order):
+        # Genuine transmission failure: stay flat. Do NOT set a position, consume risk
+        # budget, or record a trade — that would strand a phantom (broker holds nothing).
+        await log_event(
+            f"Entry NOT transmitted {action.side} {symbol}: {order.get('detail')}",
+            level="error", category="trade", strategy_key=strategy.key, symbol=symbol,
+            data={"order": order, "entry": action.price, "stop": action.stop},
+        )
+        return None
     apply_action(action, state, idx, bar, symbol)  # sets state.position
     engine.register_open(symbol, sizing.quantity, action.price, action.stop)
     entry_ms = bar.get("time")
@@ -372,9 +400,27 @@ async def _reconcile_open(strategy, symbol, state, engine, tr) -> bool:
         fill = await poll_bracket_fill(symbol, tr.get("broker_id"))
         if not fill:
             return False
-        price = fill["price"] if fill["price"] is not None else (state.position.stop)
+        if fill.get("price") is None:
+            # The real fill price is unknown. NEVER fabricate the stop as the fill — that
+            # books a fake worst-case loss and can trip the daily-loss halt on a phantom.
+            if fill.get("reason") == "error":
+                # Transient lookup error: leave the position open and retry next cycle.
+                logger.warning("bracket fill lookup errored for %s — retrying next cycle", symbol)
+                await log_event(f"Bracket fill lookup errored for {symbol} — retrying",
+                                level="warning", category="trade",
+                                strategy_key=strategy.key, symbol=symbol)
+                return False
+            # Broker shows flat but no matching fill was found: an unresolvable broker/local
+            # mismatch. Escalate to SAFE_MODE for a human rather than guess a price.
+            from app.engine.safe_mode import trip_safe_mode
+            reason = f"undetermined bracket fill for {symbol} — manual reconcile required"
+            await trip_safe_mode(reason)
+            await log_event(f"SAFE MODE: {reason}", level="error", category="trade",
+                            strategy_key=strategy.key, symbol=symbol)
+            return False
         await _finalize_exit(strategy, symbol, state, engine, tr,
-                             price, fill.get("ms"), fill["reason"], detail="broker bracket fill")
+                             fill["price"], fill.get("ms"), fill["reason"],
+                             detail="broker bracket fill")
         return True
 
     # Paper: simulate the bracket on 1m bars accumulated since the last check.
