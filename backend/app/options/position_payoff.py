@@ -82,3 +82,53 @@ def net_position_greeks(legs: list[dict], spot: float | None, iv: float, contrac
             net[k] += sign * 100 * qty * g[k]
     net_rounded = {k: round(v, 4) for k, v in net.items()}
     return {k: round(v * contracts, 4) for k, v in net_rounded.items()}
+
+
+def build_position_payoff(record, contracts: int, *, today: date | None = None,
+                          r: float = RATE, points: int = 61) -> dict:
+    """Assemble the payoff response for one open TC position record."""
+    from app.options.combo import chance_of_profit, curve_stats, payoff_curve
+
+    calendars = getattr(record, "calendars", None) or []
+    ticker = (getattr(record, "underlying", "") or "").upper()
+    if not calendars:
+        return {"has_position": False, "ticker": ticker}
+
+    today = today or date.today()
+    legs = legs_from_calendars(calendars)
+    strikes = sorted({float(c["strike"]) for c in calendars})
+    eval_date = min(date.fromisoformat(c["sell"]) for c in calendars)
+    spot = record.last_spot
+    net_debit = record.net_debit or 0.0
+    live_value = record.last_value
+
+    iv, iv_source = fit_iv(legs, spot, live_value, today=today, r=r)
+    lo, hi = strikes[0] * 0.9, strikes[-1] * 1.1
+    raw = payoff_curve(legs, net_debit, eval_date, iv, r, lo, hi, points)
+    curve = [{"price": p["price"], "pnl": round(p["pnl"] * contracts, 2)} for p in raw]
+    stats = curve_stats(curve)
+    T = max((eval_date - today).days, 0) / 365.0
+    cop = chance_of_profit(curve, spot, iv, r, T)
+    greeks = net_position_greeks(legs, spot, iv, contracts, today=today, r=r)
+    current_pnl = (round((live_value - net_debit) * 100 * contracts, 2)
+                   if live_value is not None else None)
+
+    return {
+        "has_position": True,
+        "ticker": ticker,
+        "eval_date": eval_date.isoformat(),
+        "spot": round(spot, 4) if spot is not None else None,
+        "iv": round(iv, 4),
+        "iv_source": iv_source,
+        "contracts": contracts,
+        "net_debit": round(net_debit, 4),
+        "live_value": round(live_value, 4) if live_value is not None else None,
+        "current_pnl": current_pnl,
+        "curve": curve,
+        "strikes": strikes,
+        "breakevens": stats["breakevens"],
+        "max_profit": stats["max_profit"],
+        "max_loss": stats["max_loss"],
+        "chance_of_profit": cop,
+        "greeks": greeks,
+    }

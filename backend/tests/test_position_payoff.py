@@ -1,7 +1,13 @@
 from datetime import date
+from types import SimpleNamespace
 
 from app.options.combo import payoff_at
-from app.options.position_payoff import fit_iv, legs_from_calendars, net_position_greeks
+from app.options.position_payoff import (
+    build_position_payoff,
+    fit_iv,
+    legs_from_calendars,
+    net_position_greeks,
+)
 
 TODAY = date(2026, 7, 21)
 CALS = [
@@ -61,3 +67,35 @@ def test_net_greeks_zero_without_spot():
     legs = legs_from_calendars(CALS)
     assert net_position_greeks(legs, None, 0.22, 1, today=TODAY) == {
         "delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
+
+
+def _rec(**kw):
+    base = dict(calendars=CALS, net_debit=4.0, last_spot=480.0, last_value=4.6,
+                underlying="QQQ")
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def test_build_payoff_full_shape_and_scaling():
+    out1 = build_position_payoff(_rec(), 1, today=TODAY)
+    assert out1["has_position"] is True
+    assert out1["ticker"] == "QQQ"
+    assert out1["eval_date"] == "2026-08-21"      # nearest sell expiry
+    assert out1["iv_source"] == "fit"
+    assert out1["strikes"] == [470.0, 480.0, 490.0]
+    assert len(out1["curve"]) == 61
+    # current mark P&L = (live_value - net_debit) * 100 * contracts
+    assert out1["current_pnl"] == round((4.6 - 4.0) * 100 * 1, 2)
+    assert 0.0 <= out1["chance_of_profit"] <= 1.0
+    # A long calendar peaks near the middle strike (positive max profit).
+    assert out1["max_profit"] > 0
+
+    out2 = build_position_payoff(_rec(), 2, today=TODAY)
+    assert out2["current_pnl"] == round((4.6 - 4.0) * 100 * 2, 2)
+    assert abs(out2["max_profit"] - 2 * out1["max_profit"]) < 0.05  # dollar stats ×contracts
+    assert out2["strikes"] == out1["strikes"]                        # price-space unchanged
+
+
+def test_build_payoff_flat_when_no_calendars():
+    assert build_position_payoff(_rec(calendars=[]), 1, today=TODAY) == {
+        "has_position": False, "ticker": "QQQ"}
