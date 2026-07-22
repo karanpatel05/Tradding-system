@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
+import PayoffChart from "./PayoffChart.jsx";
 
 // Options-aware strategy page (Triple Calendar): strategy overview on top, controls, then the
 // live open-position section at the bottom (legs, P&L, target/stop progress, breach). No
@@ -13,6 +14,15 @@ const clamp01 = (n) => Math.max(0, Math.min(1, n));
 export default function OptionsStrategyDetail({ keyName, onBack }) {
   const [detail, setDetail] = useState(null); // strategy detail (controls/overview)
   const [op, setOp] = useState(null);         // options-position (structure/live/status)
+  const [payoffs, setPayoffs] = useState({}); // { [ticker]: payoffResponse }
+  const loadPayoffs = (tickers) => {
+    (tickers || []).forEach((t) => {
+      if (!t.has_position) return;
+      api.optionsPositionPayoff(keyName, t.ticker)
+        .then((p) => setPayoffs((prev) => ({ ...prev, [t.ticker]: p })))
+        .catch(() => {});
+    });
+  };
   const [alloc, setAlloc] = useState("");
   const [contracts, setContracts] = useState("");
   const [msg, setMsg] = useState(null);
@@ -27,7 +37,10 @@ export default function OptionsStrategyDetail({ keyName, onBack }) {
   }, [detail, op, tickerRows]);
 
   const loadDetail = () => api.strategy(keyName).then(setDetail).catch(() => {});
-  const loadOp = () => api.optionsPosition(keyName).then(setOp).catch(() => setOp(null));
+  const loadOp = () =>
+    api.optionsPosition(keyName)
+      .then((d) => { setOp(d); loadPayoffs(d?.tickers); })
+      .catch(() => setOp(null));
 
   useEffect(() => { loadDetail(); loadOp(); }, [keyName]);
   // Poll the live valuation/status while the page is open.
@@ -232,6 +245,49 @@ export default function OptionsStrategyDetail({ keyName, onBack }) {
           </div>
         </section>
       ))}
+
+      {tks.filter((t) => t.has_position).map((t) => {
+        const p = payoffs[t.ticker];
+        if (!p || !p.has_position) return null;
+        const g = p.greeks || {};
+        return (
+          <section className="card" key={`payoff-${t.ticker}`}>
+            <div className="card-head">
+              <h2>Payoff — {t.ticker}</h2>
+              <span className="pill tiny idle">
+                IV {(p.iv * 100).toFixed(1)}% ({p.iv_source === "fit" ? "live-fit" : "assumed"})
+              </span>
+            </div>
+            <PayoffChart curve={p.curve} breakevens={p.breakevens}
+              strikes={p.strikes} spot={p.spot} />
+            <div className="deploy-grid" style={{ marginTop: 12 }}>
+              <div><div className="stat-label">Breakevens</div>
+                <div className="stat-value">
+                  {(p.breakevens || []).map((b) => money0(b)).join(" · ") || "—"}</div></div>
+              <div><div className="stat-label">Max profit (range)</div>
+                <div className="stat-value pos">{money(p.max_profit)}</div></div>
+              <div><div className="stat-label">Max loss (range)</div>
+                <div className="stat-value neg">{money(p.max_loss)}</div></div>
+              <div><div className="stat-label">Chance of profit</div>
+                <div className="stat-value">{pct(p.chance_of_profit)}</div></div>
+            </div>
+            <div className="deploy-grid" style={{ marginTop: 8 }}>
+              <div><div className="stat-label">Delta</div>
+                <div className="stat-value">{g.delta ?? "—"}</div></div>
+              <div><div className="stat-label">Gamma</div>
+                <div className="stat-value">{g.gamma ?? "—"}</div></div>
+              <div><div className="stat-label">Theta</div>
+                <div className="stat-value">{g.theta ?? "—"}</div></div>
+              <div><div className="stat-label">Vega</div>
+                <div className="stat-value">{g.vega ?? "—"}</div></div>
+            </div>
+            <p className="muted small" style={{ marginTop: 8 }}>
+              Model payoff at {p.eval_date} (front-month expiry). Max profit/loss are over the
+              plotted price range, not the theoretical tails.
+            </p>
+          </section>
+        );
+      })}
     </div>
   );
 }

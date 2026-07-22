@@ -100,6 +100,9 @@ export const api = {
   // Options-aware detail for a multi-leg strategy (Triple Calendar): legs, DTE, net
   // debit, live value/P&L, target/stop progress, breach distances + operational status.
   optionsPosition: (key) => request(`/api/strategies/${key}/options-position`),
+  // Payoff diagram + stats + net greeks for one open Triple Calendar position.
+  optionsPositionPayoff: (key, ticker) =>
+    request(`/api/strategies/${key}/options-position/payoff?ticker=${encodeURIComponent(ticker)}`),
   // Options Strategy Builder (tracked paper trades — no orders transmitted).
   builderChain: (underlying) => request(`/api/builder/chain?underlying=${encodeURIComponent(underlying)}`),
   // Header quote: last price + day change vs previous close.
