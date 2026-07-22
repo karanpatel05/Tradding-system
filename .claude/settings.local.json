@@ -32,7 +32,17 @@
       "Bash(../.venv/bin/python *)",
       "Bash(rm -f _test_kill_ledger.db)",
       "Bash(DATABASE_URL=sqlite+aiosqlite:///./_test_kill_ledger.db python -m tests.test_kill_flatten_ledger)",
-      "Bash(xargs ls -lt)"
+      "Bash(xargs ls -lt)",
+      "Bash(pkill -f \"run_triple_calendar\")",
+      "Bash(echo \"exit: $?  \\(empty = live path is clean\\)\")",
+      "Bash(sed -i '' 's/source=\"polygon\"/source=\"ibkr\"/' scripts/run_vol_donchian.py scripts/run_bollinger.py)",
+      "Bash(sed -i '' 's/Load 15m polygon bars/Load 15m bars/' scripts/run_bollinger.py)",
+      "Skill(run)",
+      "Bash(curl -s http://127.0.0.1:8765/api/strategies)",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s http://127.0.0.1:8765/api/strategies/strategy_2)",
+      "Bash(curl -s http://127.0.0.1:8765/api/strategies/strategy_2/position)",
+      "Bash(curl -s http://127.0.0.1:8765/api/strategies/strategy_2/backtest)"
     ]
   }
 }

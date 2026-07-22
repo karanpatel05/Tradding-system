@@ -3,7 +3,9 @@ __pycache__/
 *.pyc
 data_cache/
 *.db
+*.db.bak-*
 .session_store.json
 .env
 desktop/build/
 desktop/dist/
+.DS_Store
