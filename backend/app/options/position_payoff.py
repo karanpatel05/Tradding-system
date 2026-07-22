@@ -81,4 +81,4 @@ def net_position_greeks(legs: list[dict], spot: float | None, iv: float, contrac
         for k in net:
             net[k] += sign * 100 * qty * g[k]
     net_rounded = {k: round(v, 4) for k, v in net.items()}
-    return {k: net_rounded[k] * contracts for k, v in net_rounded.items()}
+    return {k: round(v * contracts, 4) for k, v in net_rounded.items()}
