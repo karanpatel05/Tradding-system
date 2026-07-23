@@ -675,10 +675,12 @@ tr.leg-selected td:first-child { box-shadow: inset 3px 0 0 #2563eb; }
 .trade-pnl { font-size: 18px; font-weight: 700; }
 .builder-tab { max-width: 1280px; margin: 0 auto; }
 
-/* Builder Trades — selected card + inline payoff detail */
-.trade-card.selected { outline: 1px solid var(--accent, #6366f1); }
-.trade-detail {
+/* Builder Trades — selected card spans the row so its payoff detail has full width */
+.trade-card.selected {
+  outline: 1px solid var(--accent, #6366f1);
   grid-column: 1 / -1;
+}
+.trade-detail {
   margin-top: 10px;
   padding-top: 10px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
