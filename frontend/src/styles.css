@@ -674,3 +674,12 @@ tr.leg-selected td:first-child { box-shadow: inset 3px 0 0 #2563eb; }
 .trade-head { display: flex; justify-content: space-between; align-items: baseline; }
 .trade-pnl { font-size: 18px; font-weight: 700; }
 .builder-tab { max-width: 1280px; margin: 0 auto; }
+
+/* Builder Trades — selected card + inline payoff detail */
+.trade-card.selected { outline: 1px solid var(--accent, #6366f1); }
+.trade-detail {
+  grid-column: 1 / -1;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
