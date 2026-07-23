@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import PayoffChart from "./PayoffChart.jsx";
+import BuilderTrades from "./BuilderTrades.jsx";
 import ExpiryTabs from "./builder/ExpiryTabs.jsx";
 import StrikeRuler from "./builder/StrikeRuler.jsx";
 import StatCards from "./builder/StatCards.jsx";
@@ -25,7 +26,7 @@ export default function BuilderTab() {
   const [target, setTarget] = useState(10);
   const [stop, setStop] = useState(25);
   const [contracts, setContracts] = useState(1);
-  const [trades, setTrades] = useState([]);
+  const [view, setView] = useState("build");  // "build" | "trades"
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
   const [selectedLeg, setSelectedLeg] = useState(null); // index into legs
@@ -76,11 +77,6 @@ export default function BuilderTab() {
     }, 500);
     return () => clearTimeout(t);
   }, [underlying]);
-  const loadTrades = () => api.builderTrades().then((d) => setTrades(d.trades)).catch(() => {});
-
-  useEffect(() => { loadTrades(); }, []);
-  useEffect(() => { const id = setInterval(loadTrades, 15000); return () => clearInterval(id); }, []);
-
   const loadMarketStatus = () => api.marketStatus().then(setMkt).catch(() => {});
   useEffect(() => { loadMarketStatus(); }, []);
   useEffect(() => { const id = setInterval(loadMarketStatus, 30000); return () => clearInterval(id); }, []);
@@ -206,11 +202,9 @@ export default function BuilderTab() {
         contracts: Math.max(1, Number(contracts) || 1),
       });
       setMsg("Saved as a tracked paper trade.");
-      loadTrades();
+      setView("trades");
     } catch (e) { setMsg(e.message); } finally { setBusy(false); }
   };
-
-  const closeTrade = async (id) => { await api.builderCloseTrade(id).catch(() => {}); loadTrades(); };
 
   // Strikes for one expiry (fallback: the whole-chain union while loading).
   const strikesFor = (iso) => (iso && expiryStrikes[iso]) || chain.strikes;
@@ -301,6 +295,16 @@ export default function BuilderTab() {
       <h1>Options Builder</h1>
       <p className="muted small">Build a multi-leg structure, preview its payoff, and save it as a
         tracked <b>paper</b> trade. Nothing is transmitted to the broker.</p>
+
+      <div className="seg-toggle" style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        <button className={`btn ${view === "build" ? "primary" : "ghost"}`}
+          onClick={() => setView("build")}>Build</button>
+        <button className={`btn ${view === "trades" ? "primary" : "ghost"}`}
+          onClick={() => setView("trades")}>Trades</button>
+      </div>
+
+      {view === "trades" ? <BuilderTrades /> : (
+      <>
 
       <section className="card">
         <div className="row gap center">
@@ -490,33 +494,8 @@ export default function BuilderTab() {
         {msg && <div className="banner ok">{msg}</div>}
       </section>
 
-      <section className="card">
-        <h2>Recent Trades</h2>
-        {trades.length === 0 ? <div className="muted">No saved trades yet.</div> : (
-          <div className="trade-cards">
-            {trades.map((t) => {
-              const v = t.status === "closed" ? t.pnl : t.last_pnl;
-              return (
-                <div className="trade-card" key={t.id}>
-                  <div className="trade-head">
-                    <b>{t.underlying}</b>
-                    <span className="muted small">{t.legs.length} legs · {t.entry_time?.slice(0, 10) || "—"}</span>
-                  </div>
-                  <div className={`trade-pnl num ${(v ?? 0) >= 0 ? "pos" : "neg"}`}>
-                    {v == null ? "—" : `${v >= 0 ? "+" : "−"}$${Math.abs(v).toFixed(2)}`}
-                    {t.last_pnl_pct != null && t.status === "open" &&
-                      <span className="muted small"> {(t.last_pnl_pct * 100).toFixed(1)}%</span>}
-                  </div>
-                  <div className="row between center">
-                    <span className={`pill tiny ${t.status === "open" ? "live" : "idle"}`}>{t.status}{t.exit_reason ? ` · ${t.exit_reason}` : ""}</span>
-                    {t.status === "open" && <button className="btn ghost tiny" onClick={() => closeTrade(t.id)}>Close</button>}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
+      </>
+      )}
     </div>
   );
 }
