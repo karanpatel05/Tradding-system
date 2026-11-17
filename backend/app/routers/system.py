@@ -72,7 +72,7 @@ async def set_live_orders(body: LiveOrdersBody) -> dict:
         logger.warning(
             "[LIVE-ORDERS] switched %s -> %s (%s)",
             "ON" if old else "OFF", "ON" if body.enabled else "OFF",
-            "REAL ORDERS ARMED" if body.enabled else "paper mode",
+            "ORDERS -> ALPACA PAPER" if body.enabled else "simulated fills",
         )
     return {"live_orders_enabled": s.enable_live_orders}
 

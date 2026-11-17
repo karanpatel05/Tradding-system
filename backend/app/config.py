@@ -101,11 +101,12 @@ class Settings(BaseSettings):
     # How often (seconds) each active strategy worker re-scans the universe.
     scan_interval_seconds: int = 60
 
-    # --- Live order routing (SAFETY GATE) ---
-    # Master switch for transmitting REAL orders to Tastytrade. Default False:
-    # the EMA scalper runs its full logic (signals, sizing, trade records) but
-    # logs orders as a no-op until this is explicitly set True. Flipping this on
-    # = real money. Combine with TASTYTRADE_IS_TEST=true to route to the cert env.
+    # --- Order routing (SAFETY GATE) ---
+    # Master switch for transmitting orders to the Alpaca PAPER account. Default False:
+    # strategies run their full logic (signals, sizing, trade records) with simulated
+    # fills and no order is sent until this is explicitly set True. Orders only ever go
+    # to Alpaca paper — live (real-money) Alpaca is locked in code (broker/alpaca_client).
+    # Tastytrade is market data only and never receives orders.
     enable_live_orders: bool = False
 
     # --- 9/15 EMA Scalping strategy (strategy_1) ---

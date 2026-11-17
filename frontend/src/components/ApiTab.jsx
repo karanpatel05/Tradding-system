@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { api, getAppToken, setAppToken } from "../api.js";
 
-// Broker tab: Tastytrade is the sole broker AND market-data source. Shows the account
-// (masked) + probe-verified connection state, plus read-only Tastytrade and Alpaca API
-// status. No credentials are entered here — they live in backend/.env only.
+// Broker tab: Alpaca paper is the broker (orders, account); Tastytrade is market data
+// only. Shows probe-verified connection state, read-only Tastytrade and Alpaca API status
+// (masked Alpaca account), and the order-routing gate. No credentials are entered here —
+// they live in backend/.env only.
 export default function ApiTab({ onChange }) {
   const [info, setInfo] = useState(null);
   const [busy, setBusy] = useState(false);

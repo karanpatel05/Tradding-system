@@ -1,7 +1,6 @@
-"""Price accessors for live Triple Calendar trading, served by the marketdata facade
-(Tastytrade is the sole data source). The Phase-1 core needs SYNC reads; run_live
-builds a per-tick snapshot (see _Snapshot in strategy_class) from these async
-accessors."""
+"""Live option/stock price accessors used by the options Builder chain
+(app/options/chain.py), served by the marketdata facade. Tastytrade is the market-data
+source only; orders go to Alpaca paper."""
 from __future__ import annotations
 
 from app.marketdata import facade

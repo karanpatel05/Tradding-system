@@ -42,8 +42,9 @@ async def lifespan(app: FastAPI):
     await seed_strategy_state()
     logger.info("Database initialized")
     logger.info(
-        "[Tastytrade] broker = Tastytrade OAuth. Connect via the API tab "
-        "or POST /api/auth/connect. App boots without a live connection."
+        "Orders -> Alpaca paper (APCA_* keys in backend/.env; live Alpaca is locked in "
+        "code). Market data -> Tastytrade OAuth (API tab or POST /api/auth/connect). "
+        "App boots without either connection."
     )
     await _startup_recovery()
     await _resume_active_workers()
@@ -120,7 +121,7 @@ async def health() -> dict:
     return {
         "status": "ok",
         "app": settings.app_name,
-        "broker": "tastytrade",
+        "broker": "alpaca-paper",
         "live_orders_enabled": settings.enable_live_orders,
     }
 

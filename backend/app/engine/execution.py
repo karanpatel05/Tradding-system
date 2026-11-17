@@ -1,7 +1,7 @@
 """Order execution + flatten — served by the broker layer (Alpaca paper order routing).
 
-This module keeps its historical import path and public API (the worker, Triple
-Calendar executor, kill switch, and routers all import from here); the implementation
+This module keeps its historical import path and public API (the worker, kill switch,
+and routers all import from here); the implementation
 lives in app/broker/orders.py. ENABLE_LIVE_ORDERS gating, SAFE_MODE blocking, and
 return-dict shapes are preserved there verbatim."""
 from __future__ import annotations

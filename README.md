@@ -1,20 +1,23 @@
-# Multi-Strategy Automated Trading System (Tastytrade)
+# Multi-Strategy Automated Trading System (Alpaca paper orders, Tastytrade data)
 
-Runs trading strategies (equities + options) against Tastytrade — the sole broker and
-market-data source (OAuth personal grant). Includes a live engine, dashboard, journal,
-equity backtests, and a live Triple Calendar options strategy. Runs as a local web app
-or a hosted Docker stack.
+Runs trading strategies with **orders routed to an Alpaca paper account** (paper-locked in
+code; live Alpaca is a deliberate future code change) and **Tastytrade for market data
+only** (quotes, option chains, history; OAuth personal grant). The Alpaca paper account
+may be shared with other tools: the app only touches orders it tagged (`tsys-`
+client_order_id). Includes a live engine, dashboard, journal, equity backtests and an
+options Builder (paper-tracked, never places orders). Strategy slots are currently empty
+(Coming Soon). Runs as a local web app or a hosted Docker stack.
 
 ## Architecture
 
 ```
-backend/   FastAPI + async SQLAlchemy + tastytrade SDK
+backend/   FastAPI + async SQLAlchemy + httpx (Alpaca) + tastytrade SDK (data)
   app/
-    config.py            env-driven settings (Tastytrade OAuth creds)
+    config.py            env-driven settings (APCA_* Alpaca keys, Tastytrade OAuth creds)
     auth/                connection-state auth (authenticated == Tastytrade OAuth probe verifies)
-    broker/              Tastytrade orders, account, readiness probe (app.broker.status)
-    engine/              kill-switch task registry, per-strategy workers, execution (equity + combo)
-    strategies/          BaseStrategy + registry; triple_calendar (live options strategy)
+    broker/              Alpaca paper orders (paper lock, tsys- tag), app-owned ledger, account
+    engine/              kill-switch task registry, per-strategy workers, execution, recovery
+    strategies/          BaseStrategy + registry (slots Coming Soon)
     backtest/            pure-Python metrics + historical runner
     services/            market status/overview, logging + journal/calendar
     routers/             dashboard, strategies, journal, websocket
@@ -33,14 +36,19 @@ docker-compose.yml       postgres + backend + frontend
   Basic Auth + TLS (see the hosted section below).
 - **"Coming Soon" is enforced server-side** — activation, capital allocation, and backtest are
   rejected with `409` for not-ready strategies. The UI hiding is cosmetic only.
+- **Orders go to Alpaca paper only** — `ENABLE_LIVE_ORDERS` OFF (default) = simulated fills,
+  no order sent; ON = tagged orders to `https://paper-api.alpaca.markets`. Any other
+  `APCA_API_BASE_URL` refuses every write. No code path sends orders to Tastytrade.
 - **Kill switch is real** — cancels every tracked async worker (even if flatten throws), is
-  idempotent, and reports partial failure (`fully_flat`). Position flattening is a labelled stub
-  until order routing is enabled.
+  idempotent, and reports partial failure (`fully_flat`). Flatten cancels and closes only
+  the app's own (`tsys-`) orders and quantities on the shared Alpaca account.
 
 ## Run locally (no Docker)
 
-Backend (boots with zero infra — SQLite; connect to Tastytrade from the API tab or
-`/api/auth/connect` by saving your OAuth provider secret + refresh token):
+Backend (boots with zero infra — SQLite). Put the Alpaca paper keys in `backend/.env`
+(`APCA_API_KEY_ID`, `APCA_API_SECRET_KEY`; `APCA_API_BASE_URL` defaults to
+`https://paper-api.alpaca.markets`) for orders, and the Tastytrade OAuth provider secret +
+refresh token for market data; the API tab shows both connections:
 
 ```bash
 cd backend
@@ -81,12 +89,12 @@ docker compose up --build
 # open https://localhost          (self-signed cert by default; accept it)
 ```
 
-Connect Tastytrade via the API tab (or `/api/auth/tastytrade`) after the stack is up —
-no separate gateway process to run.
+Set the Alpaca paper keys (`APCA_*`) and Tastytrade OAuth creds in the backend env; the API
+tab shows both connections after the stack is up — no separate gateway process to run.
 
 **Security:** the app has no per-user login (auth == "does the Tastytrade OAuth probe
-verify?"), so the Caddy **Basic Auth + TLS** layer is the only thing protecting live
-trading. The backend
+verify?"), so the Caddy **Basic Auth + TLS** layer is the only thing protecting order
+routing. The backend
 port is never published to the host. Do not bypass the proxy or expose the backend directly.
 Set a strong `BASIC_AUTH_HASH` (`caddy hash-password`) and a real `APP_SECRET_KEY`. See
 `docs/superpowers/specs/2026-06-26-web-app-migration-design.md`.
