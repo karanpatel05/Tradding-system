@@ -45,11 +45,7 @@ async def lifespan(app: FastAPI):
         "[Tastytrade] broker = Tastytrade OAuth. Connect via the API tab "
         "or POST /api/auth/connect. App boots without a live connection."
     )
-    from app.engine.recovery import run_recovery
-    try:
-        await run_recovery()
-    except Exception:  # noqa: BLE001 — recovery is best-effort at boot
-        logger.warning("startup recovery failed", exc_info=True)
+    await _startup_recovery()
     await _resume_active_workers()
     from app.options.monitor import run_builder_monitor
     asyncio.create_task(run_builder_monitor())
@@ -59,6 +55,21 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(alpaca_refresher())
     yield
     logger.info("Shutting down")
+
+
+async def _startup_recovery() -> None:
+    """Reconcile at boot. A recovery that RAISES proves nothing about the broker, so it
+    trips SAFE_MODE (orders blocked until a human resumes) instead of leaving the engine
+    armed. Never raises: the app must still boot so the UI can show why."""
+    from app.engine import recovery, safe_mode
+    try:
+        await recovery.run_recovery()
+    except Exception as exc:  # noqa: BLE001 — boot must continue
+        logger.error("startup recovery failed", exc_info=True)
+        try:
+            await safe_mode.trip_safe_mode(f"startup recovery failed: {type(exc).__name__}")
+        except Exception:  # noqa: BLE001
+            logger.exception("could not trip safe mode after startup recovery failure")
 
 
 async def _resume_active_workers() -> None:

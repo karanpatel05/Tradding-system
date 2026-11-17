@@ -76,3 +76,41 @@ def test_builder_chain_imports_live_source():
     import app.options.live_source as ls
 
     assert chain.LivePriceSource is ls.LivePriceSource
+
+
+@pytest.mark.asyncio
+async def test_init_db_closes_stale_tc_rows_only_once():
+    """The stale-TC cleanup is a one-shot data fix guarded by a SystemFlag: it runs on the
+    first boot after the removal, then never again — slot 2 is reusable, so a future
+    options strategy's open rows there must survive every later restart."""
+    from app.db.models import SystemFlag
+
+    await init_db()
+    async with session_scope() as s:
+        for r in (await s.execute(select(OptionPositionRecord).where(
+                OptionPositionRecord.strategy_key == "strategy_2"))).scalars():
+            await s.delete(r)
+        flag = await s.get(SystemFlag, "tc_stale_rows_closed")
+        if flag is not None:
+            await s.delete(flag)
+        stale = OptionPositionRecord(strategy_key="strategy_2", underlying="QQQ",
+                                     status="open", calendars=[], order_ids=[])
+        s.add(stale)
+        await s.flush()
+        stale_id = stale.id
+    await init_db()                                   # first boot after the removal
+    async with session_scope() as s:
+        assert (await s.get(OptionPositionRecord, stale_id)).status == "closed"
+        flag = await s.get(SystemFlag, "tc_stale_rows_closed")
+        assert flag is not None and flag.on is True
+        fresh = OptionPositionRecord(strategy_key="strategy_2", underlying="SPY",
+                                     status="open", calendars=[], order_ids=[])
+        s.add(fresh)
+        await s.flush()
+        fresh_id = fresh.id
+    await init_db()                                   # a later restart
+    async with session_scope() as s:
+        row = await s.get(OptionPositionRecord, fresh_id)
+        assert row.status == "open" and row.exit_time is None
+        await s.delete(row)
+        await s.delete(await s.get(OptionPositionRecord, stale_id))

@@ -126,7 +126,7 @@ async def _resolve_duplicate(ref: str, what: str) -> dict:
 async def _transmit(body: dict, ref: str, what: str) -> dict:
     """POST a tagged order. Rejections and transport errors become transmitted: False
     (never paper) so the worker stays flat; the intent row keeps the ref for recon.
-    A transport error is flagged `unknown_state` (the POST may have landed): retry with
+    A transport error or 5xx is flagged `unknown_state` (the POST may have landed): retry with
     the same `ref` so the client_order_id is identical; a duplicate-id rejection is then
     resolved to the existing order."""
     from app.engine.order_store import mark_perm_id
@@ -139,6 +139,14 @@ async def _transmit(body: dict, ref: str, what: str) -> dict:
     except AlpacaError as exc:
         if _is_duplicate_coid(exc):
             return await _resolve_duplicate(ref, what)
+        if exc.status >= 500:
+            # A server error does not prove the order was refused: it may have landed.
+            # Keep the ref (unknown_state) so a retry reuses the same client_order_id.
+            logger.error("%s: Alpaca HTTP %d (ref %s): %s", what, exc.status, ref,
+                         exc.message)
+            return {"transmitted": False, "ref": ref, "unknown_state": True,
+                    "detail": f"Alpaca HTTP {exc.status} ({exc.message}); order state "
+                              f"unknown, ref {ref}"}
         logger.error("%s rejected by Alpaca (ref %s): %s", what, ref, exc.message)
         return {"transmitted": False, "detail": f"rejected by Alpaca: {exc.message}",
                 "ref": ref}
@@ -374,9 +382,11 @@ def _epoch_ms(ts: str | None) -> int | None:
         return None
 
 
-async def poll_bracket_fill(symbol: str, ref=None) -> dict | None:
+async def poll_bracket_fill(symbol: str, ref=None, *, since_ms: int | None = None) -> dict | None:
     """Decided from the APP'S bracket order (the account is shared, so its position says
-    nothing). `ref` is the stored parent_order_id (Alpaca order id).
+    nothing). `ref` is the stored parent_order_id (Alpaca order id). When `ref` is not
+    found, the fallback takes the latest app bracket for the symbol submitted at/after
+    `since_ms` (the trade's entry time), never an older one from a previous trade.
     - an exit child filled -> {price, ms, reason: "stop" | "target"}
     - None only while genuinely holding: an exit child is still live (or the entry is
       still working)
@@ -397,8 +407,14 @@ async def poll_bracket_fill(symbol: str, ref=None) -> dict | None:
     want = ac.occ_unpadded(symbol).upper()
     parent = next((o for o in orders if ref and o.get("id") == ref), None)
     if parent is None:   # newest first -> the latest app bracket for the symbol
+        def recent(o: dict) -> bool:
+            if since_ms is None:
+                return True
+            at = _epoch_ms(o.get("submitted_at") or o.get("created_at"))
+            return at is not None and at >= since_ms
         parent = next((o for o in orders if o.get("order_class") == "bracket"
-                       and ac.occ_unpadded(o.get("symbol") or "").upper() == want), None)
+                       and ac.occ_unpadded(o.get("symbol") or "").upper() == want
+                       and recent(o)), None)
     dead = {"price": None, "ms": None, "reason": "bracket"}
     if parent is None:
         logger.error("No app bracket found for %s (ref %s)", symbol, ref)
@@ -483,6 +499,22 @@ async def _cancel_app_orders() -> tuple[int, list[str], list[dict] | None]:
     return cancelled, failures, still
 
 
+async def _transmitted_open_trades() -> dict[str, int]:
+    """Open TradeRecords that were actually sent to Alpaca, as {symbol: signed qty}."""
+    from sqlalchemy import select
+
+    from app.db.base import session_scope
+    from app.db.models import TradeRecord
+    out: dict[str, int] = {}
+    async with session_scope() as session:
+        rows = (await session.execute(select(TradeRecord).where(
+            TradeRecord.status == "open", TradeRecord.transmitted.is_(True)))).scalars().all()
+        for r in rows:
+            sign = 1 if (r.side or "").lower() in ("buy", "long") else -1
+            out[r.symbol] = out.get(r.symbol, 0) + sign * int(r.quantity or 0)
+    return out          # any transmitted open row counts, even if it nets to zero
+
+
 async def flatten_all() -> str:
     """Kill-switch flatten of what the APP opened on the shared paper account.
 
@@ -492,12 +524,18 @@ async def flatten_all() -> str:
     the account's same-direction position (options: single leg, *_to_close) -> poll the
     app ledger up to _FLATTEN_WAIT seconds. SAFE_MODE does not block it (closing only).
     Gate OFF: transmits nothing; raises if the app holds anything.
-    Alpaca not configured (no keys): the app can never have transmitted, so it is flat
-    by construction -> "No open positions." with no Alpaca call (gate ON or OFF).
+    Alpaca not configured (no keys): "No open positions." with no Alpaca call (gate ON or
+    OFF) unless an open trade is marked transmitted — then the keys were removed after
+    the app sent orders, the broker may still hold them, and it raises (not flat).
     Raises RuntimeError("Flatten incomplete: ...") when anything app-owned remains or the
     configured broker cannot be read, so the kill switch never reports flat on a guess."""
     from app.broker.ledger import account_positions, app_net_positions
     if not ac.configured():
+        sent = await _transmitted_open_trades()
+        if sent:
+            raise RuntimeError(f"Flatten incomplete: Alpaca is not configured but the app "
+                               f"has transmitted open trade(s): {_fmt(sent)} (broker "
+                               f"unreadable; not flat)")
         return "No open positions."
     s = get_settings()
     if not s.enable_live_orders:

@@ -58,3 +58,71 @@ def _run() -> None:
 
 if __name__ == "__main__":
     _run()
+
+
+# ---------------------------------------------------------------- pytest: I5a
+import pytest  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
+from sqlalchemy import update  # noqa: E402
+
+
+async def _close_all_open_trades():
+    from app.db.base import init_db, session_scope
+    from app.db.models import TradeRecord
+    await init_db()
+    async with session_scope() as s:
+        await s.execute(update(TradeRecord).where(TradeRecord.status == "open")
+                        .values(status="closed"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("start", [False, True])
+async def test_flip_refused_while_a_trade_is_open(monkeypatch, tmp_path, start):
+    """Flipping the gate mid-position would route real orders for a trade Alpaca never
+    saw (simulated -> ON) or strand a transmitted one (ON -> OFF): 409, nothing changes."""
+    from app.config import get_settings
+    from app.db.base import session_scope
+    from app.db.models import TradeRecord
+    from app.routers import system as sys_mod
+
+    await _close_all_open_trades()
+    env = tmp_path / ".env"
+    env.write_text(f"ENABLE_LIVE_ORDERS={'true' if start else 'false'}\n")
+    monkeypatch.setattr(sys_mod, "_ENV_PATH", env)
+    monkeypatch.setattr(get_settings(), "enable_live_orders", start)
+    async with session_scope() as s:
+        row = TradeRecord(strategy_key="strategy_1", symbol="AAPL", side="buy", quantity=1,
+                          entry_price=100.0, status="open", transmitted=start)
+        s.add(row)
+        await s.flush()
+        rid = row.id
+    try:
+        with pytest.raises(HTTPException) as ei:
+            await sys_mod.set_live_orders(sys_mod.LiveOrdersBody(enabled=not start))
+        assert ei.value.status_code == 409
+        assert "open trade" in ei.value.detail
+        assert get_settings().enable_live_orders is start, "gate must not flip"
+        assert env.read_text() == f"ENABLE_LIVE_ORDERS={'true' if start else 'false'}\n"
+        # re-asserting the current value is not a flip
+        res = await sys_mod.set_live_orders(sys_mod.LiveOrdersBody(enabled=start))
+        assert res == {"live_orders_enabled": start}
+    finally:
+        async with session_scope() as s:
+            await s.delete(await s.get(TradeRecord, rid))
+
+
+@pytest.mark.asyncio
+async def test_flip_allowed_when_no_trade_is_open(monkeypatch, tmp_path):
+    from app.config import get_settings
+    from app.routers import system as sys_mod
+
+    await _close_all_open_trades()
+    env = tmp_path / ".env"
+    env.write_text("EXISTING=1\n")
+    monkeypatch.setattr(sys_mod, "_ENV_PATH", env)
+    monkeypatch.setattr(get_settings(), "enable_live_orders", False)
+    assert await sys_mod.set_live_orders(sys_mod.LiveOrdersBody(enabled=True)) == \
+        {"live_orders_enabled": True}
+    assert "ENABLE_LIVE_ORDERS=true" in env.read_text()
+    assert await sys_mod.set_live_orders(sys_mod.LiveOrdersBody(enabled=False)) == \
+        {"live_orders_enabled": False}

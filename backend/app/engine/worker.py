@@ -201,6 +201,16 @@ async def _handle_action(strategy, symbol, action, state, bars, open_qty, open_t
         side = state.position.side
         intent = "exit_long" if side == "long" else "exit_short"
         order = await submit_equity_order(symbol, intent, open_qty, reason=action.reason)
+        if settings.enable_live_orders and _order_failed(order):
+            # Mirrors _exit_via_signal: the broker may still hold the shares, so book
+            # nothing — the position and TradeRecord stay open for the next signal.
+            await log_event(
+                f"Exit NOT transmitted {side} {symbol}: {order.get('detail')} — position "
+                f"left open", level="error", category="trade", strategy_key=strategy.key,
+                symbol=symbol, data={"order": order})
+            await _persist_worker_state(strategy.key, symbol, state, open_trade_id,
+                                        bar.get("time"))
+            return open_qty, open_trade_id
         trade = apply_action(action, state, idx, bar)
         pnl = (action.price - trade.entry_price) * open_qty * (1 if side == "long" else -1) if trade else None
         if open_trade_id is not None:
@@ -412,15 +422,16 @@ async def _reconcile_open(strategy, symbol, state, engine, tr) -> bool:
     from app.strategies.ema_crossover.signals import resolve_intrabar_exit
 
     if get_settings().enable_live_orders:
-        fill = await poll_bracket_fill(symbol, tr.get("broker_id"))
+        fill = await poll_bracket_fill(symbol, tr.get("broker_id"), since_ms=tr.get("entry_ms"))
         if not fill:
             return False
         if fill.get("price") is None:
             # The real fill price is unknown. NEVER fabricate the stop as the fill — that
             # books a fake worst-case loss and can trip the daily-loss halt on a phantom.
-            if tr.get("exit_pending"):
-                # Our own held signal exit cancelled the bracket legs, so a dead bracket
+            if tr.get("exit_pending") and fill.get("reason") == "bracket":
+                # Our own held signal exit cancelled the bracket legs, so a DEAD bracket
                 # is expected here: let the exit retry instead of tripping SAFE_MODE.
+                # (A stop/target that filled without a price is a real exit: below.)
                 logger.warning("bracket for %s is dead while its signal exit is held — "
                                "retrying the exit", symbol)
                 return False
@@ -478,8 +489,14 @@ async def _exit_via_signal(strategy, symbol, state, engine, tr, action, bars) ->
             level="error", category="trade", strategy_key=strategy.key, symbol=symbol,
             data={"cancel": cancel})
         return False
+    qty = tr.get("qty", 0)
+    if live:
+        settled = await _settle_after_cancel(strategy, symbol, state, engine, tr, action, side)
+        if settled is not None:
+            return settled
+        qty = tr.get("qty", 0)      # possibly capped at what the app actually holds
     intent = "exit_long" if side == "long" else "exit_short"
-    order = await submit_equity_order(symbol, intent, tr.get("qty", 0), reason=action.reason,
+    order = await submit_equity_order(symbol, intent, qty, reason=action.reason,
                                       ref=tr.get("exit_ref"))
     if live and _order_failed(order):
         # Unknown state (the POST may have landed): retry with the SAME ref so Alpaca
@@ -495,6 +512,88 @@ async def _exit_via_signal(strategy, symbol, state, engine, tr, action, bars) ->
     await _finalize_exit(strategy, symbol, state, engine, tr, action.price,
                          bars[-1].get("time"), action.reason, detail=order["detail"])
     return True
+
+
+async def _settle_after_cancel(strategy, symbol, state, engine, tr, action, side) -> bool | None:
+    """Live only, after the resting bracket cancel settled and before the market close.
+    Returns True/False when the exit is decided here (finalized / held), or None to go
+    ahead with the close (with ``tr["qty"]`` capped at the app's actual holding).
+
+    - The stop/target may have filled between the poll and the cancel (the cancel then
+      finds nothing and returns clean): re-poll; a priced exit fill is booked and NO
+      close is sent; an unpriced one trips SAFE_MODE and holds (never sell twice).
+    - The close is capped at the app ledger's net in the trade's direction (a partially
+      filled then cancelled entry holds less than the intended qty). Nothing held ->
+      close the record with unknown P&L and transmit nothing.
+    - A poll or ledger read failure holds the exit (retried next cycle)."""
+    import httpx
+
+    from app.broker import ledger
+    from app.broker.alpaca_client import AlpacaError, occ_unpadded
+    from app.engine.execution import poll_bracket_fill
+
+    def hold(why: str) -> bool:
+        tr.update(exit_pending=True, exit_action=action)
+        logger.warning("exit for %s held: %s", symbol, why)
+        return False
+
+    fill = await poll_bracket_fill(symbol, tr.get("broker_id"), since_ms=tr.get("entry_ms"))
+    if fill and fill.get("reason") in ("stop", "target"):
+        if fill.get("price") is None:
+            from app.engine.safe_mode import trip_safe_mode
+            reason = f"bracket {fill['reason']} filled for {symbol} without a fill price — " \
+                     f"manual reconcile required"
+            await trip_safe_mode(reason)
+            await log_event(f"SAFE MODE: {reason}", level="error", category="trade",
+                            strategy_key=strategy.key, symbol=symbol)
+            return hold("exit child filled without a price")
+        await _finalize_exit(strategy, symbol, state, engine, tr, fill["price"],
+                             fill.get("ms"), fill["reason"],
+                             detail="broker bracket fill (beat the signal exit)")
+        return True
+    if fill and fill.get("reason") == "error":
+        await log_event(f"Exit HELD {side} {symbol}: bracket re-check failed — retrying",
+                        level="warning", category="trade", strategy_key=strategy.key,
+                        symbol=symbol)
+        return hold("bracket re-check failed")
+    try:
+        net = await ledger.app_net_positions()
+    except (AlpacaError, httpx.HTTPError) as exc:   # unknown holding: never guess a qty
+        await log_event(f"Exit HELD {side} {symbol}: app position read failed ({exc!r})",
+                        level="error", category="trade", strategy_key=strategy.key,
+                        symbol=symbol)
+        return hold("app ledger unreadable")
+    signed = int(net.get(occ_unpadded(symbol), 0) or 0)
+    held = signed if side == "long" else -signed
+    cap = max(0, min(int(tr.get("qty", 0)), held))
+    if cap == 0:
+        await _finalize_unpriced(strategy, symbol, state, engine, tr,
+                                 f"app ledger holds no {side} {symbol} (net {signed}); "
+                                 f"nothing to close, no order sent")
+        return True
+    if cap < int(tr.get("qty", 0)):
+        await log_event(f"Exit {side} {symbol}: closing {cap} (app holds {cap} of "
+                        f"{tr.get('qty')})", level="warning", category="trade",
+                        strategy_key=strategy.key, symbol=symbol)
+        tr["qty"] = cap
+    return None
+
+
+async def _finalize_unpriced(strategy, symbol, state, engine, tr, why: str) -> None:
+    """Close the trade without a fill price: state + risk cleared, TradeRecord closed with
+    exit_price/pnl unknown (never a fabricated price)."""
+    side = state.position.side
+    state.position = None
+    engine.register_close(symbol, None)
+    if tr.get("trade_id") is not None:
+        async with session_scope() as session:
+            row = await session.get(TradeRecord, tr["trade_id"])
+            if row:
+                row.status = "closed"
+                row.exit_time = datetime.now(timezone.utc)
+    await log_event(f"EXIT {side} {symbol} closed without an order: {why}", level="error",
+                    category="trade", strategy_key=strategy.key, symbol=symbol,
+                    data={"risk": engine.snapshot()})
 
 
 async def _finalize_exit(strategy, symbol, state, engine, tr, price, exit_ms, reason, *,

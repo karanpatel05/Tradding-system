@@ -88,7 +88,10 @@ async def test_app_orders_pages_by_until(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_page_cap_logs_error(monkeypatch, caplog):
+async def test_page_cap_fails_closed(monkeypatch, caplog):
+    """Hitting the page cap means older app orders were dropped; a partial ledger can show
+    a phantom position the kill switch would act on, so the read must FAIL (raise an
+    AlpacaError subclass, which every caller treats as broker-unavailable / not flat)."""
     monkeypatch.setattr(ledger, "_PAGE", 2)
     monkeypatch.setattr(ledger, "_MAX_PAGES", 2)
     n = {"i": 0}
@@ -100,8 +103,12 @@ async def test_page_cap_logs_error(monkeypatch, caplog):
             {"id": f"b{n['i']}", "client_order_id": "tsys-y", "submitted_at": f"t{n['i']}b"}])
     _mock(monkeypatch, handler)
     with caplog.at_level("ERROR", logger="trading.broker.ledger"):
-        await ledger.app_orders("all")
-    assert any("page cap" in r.message for r in caplog.records)
+        with pytest.raises(ac.AlpacaError) as ei:
+            await ledger.app_orders("all")
+    assert isinstance(ei.value, ledger.LedgerIncomplete)
+    assert "page cap" in str(ei.value)
+    with pytest.raises(ac.AlpacaError):
+        await ledger.app_net_positions()
 
 
 @pytest.mark.asyncio

@@ -92,3 +92,48 @@ def test_configured(monkeypatch):
     assert ac.configured() is True
     monkeypatch.setattr(get_settings(), "apca_api_secret_key", " ")
     assert ac.configured() is False
+
+
+# ---------------------------------------------------- M3: lock hardening
+@pytest.mark.parametrize("url", [
+    "https://paper-api.alpaca.markets.evil.com",          # suffix spoof
+    "https://paper-api.alpaca.markets@evil.com",          # userinfo -> host is evil.com
+    "https://evil.com@paper-api.alpaca.markets",          # userinfo on the paper host
+    "http://paper-api.alpaca.markets",                    # plain http
+    "https://paper-api.alpaca.markets:8443",              # non-standard port
+    "https://api.alpaca.markets",
+])
+def test_trading_base_rejects_adversarial_urls(monkeypatch, url):
+    monkeypatch.setattr(get_settings(), "apca_api_base_url", url)
+    with pytest.raises(ac.PaperLockError):
+        ac.trading_base()
+    assert ac.is_paper_url(ac.base_url()) is False
+
+
+def test_is_paper_url_accepts_only_exact_paper_host():
+    assert ac.is_paper_url("https://paper-api.alpaca.markets") is True
+    assert ac.is_paper_url("https://PAPER-API.alpaca.markets:443") is True
+    assert ac.is_paper_url("http://paper-api.alpaca.markets") is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["DELETE", "POST", "PATCH", "put"])
+async def test_non_get_is_always_a_write(monkeypatch, method):
+    """A non-GET without write=True must still be paper-locked (never sent to live)."""
+    monkeypatch.setattr(get_settings(), "apca_api_base_url", "https://api.alpaca.markets")
+    calls = []
+    _patch_transport(monkeypatch, lambda req: calls.append(req) or httpx.Response(204))
+    with pytest.raises(ac.PaperLockError):
+        await ac.request(method, "/v2/orders/abc")
+    assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["//evil.com/v2/orders", "v2/orders", "/v1/orders",
+                                  "@evil.com/v2/orders", ""])
+async def test_request_rejects_paths_outside_v2(monkeypatch, path):
+    calls = []
+    _patch_transport(monkeypatch, lambda req: calls.append(req) or httpx.Response(200, json={}))
+    with pytest.raises(ValueError):
+        await ac.request("GET", path)
+    assert calls == []

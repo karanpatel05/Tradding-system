@@ -5,12 +5,21 @@ from __future__ import annotations
 
 import logging
 
-from app.broker.alpaca_client import is_app_owned, occ_unpadded, request
+from app.broker.alpaca_client import AlpacaError, is_app_owned, occ_unpadded, request
 
 logger = logging.getLogger("trading.broker.ledger")
 
 _PAGE = 500
 _MAX_PAGES = 20
+
+
+class LedgerIncomplete(AlpacaError):
+    """The app's order history could not be read in full (page cap hit). An AlpacaError so
+    every caller treats it like an unreadable broker: fail closed, never act on a partial
+    ledger (a dropped old fill can show a phantom position)."""
+
+    def __init__(self, message: str):
+        super().__init__(0, message)
 
 
 async def app_orders(status: str = "all") -> list[dict]:
@@ -35,7 +44,9 @@ async def app_orders(status: str = "all") -> list[dict]:
             break
     else:
         logger.error("Alpaca order paging hit the %d-page cap; older app orders are "
-                     "missing and the ledger may be wrong", _MAX_PAGES)
+                     "missing, refusing to use a partial ledger", _MAX_PAGES)
+        raise LedgerIncomplete(f"order history exceeds the {_MAX_PAGES}-page cap; "
+                               f"app ledger incomplete")
     return out
 
 

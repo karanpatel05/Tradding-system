@@ -52,7 +52,7 @@ async def init_db() -> None:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_ensure_added_columns)
     async with SessionLocal() as session:
-        await close_stale_tc_positions(session)
+        await close_stale_tc_positions_once(session)
         await session.commit()
 
 
@@ -96,6 +96,24 @@ def _ensure_added_columns(conn) -> None:
         cols = {c["name"] for c in insp.get_columns("builder_positions")}
         if "contracts" not in cols:
             conn.execute(text("ALTER TABLE builder_positions ADD COLUMN contracts INTEGER DEFAULT 1"))
+
+
+TC_CLEANUP_FLAG = "tc_stale_rows_closed"
+
+
+async def close_stale_tc_positions_once(session) -> int:
+    """Run :func:`close_stale_tc_positions` on the first boot after the Triple Calendar
+    removal only, then set a SystemFlag so it never runs again: ``strategy_2`` is a
+    reusable slot, and a future options strategy's open rows must survive restarts."""
+    from app.db.models import SystemFlag
+
+    if await session.get(SystemFlag, TC_CLEANUP_FLAG) is not None:
+        return 0
+    n = await close_stale_tc_positions(session)
+    session.add(SystemFlag(key=TC_CLEANUP_FLAG, on=True,
+                           reason=f"closed {n} stale Triple Calendar row(s)"))
+    await session.flush()
+    return n
 
 
 async def close_stale_tc_positions(session) -> int:

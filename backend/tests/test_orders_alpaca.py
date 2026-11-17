@@ -232,6 +232,31 @@ async def test_equity_transport_error_is_a_failure_not_a_crash(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+async def test_equity_5xx_is_unknown_state_and_keeps_ref(monkeypatch, status):
+    """A 5xx after POST /v2/orders does not prove the order was refused (it may have
+    landed): flag unknown_state and keep the ref, so the retry reuses the client_order_id
+    instead of sending a second, fresh order."""
+    await init_db()
+    _gate_on(monkeypatch)
+    b = Broker(post_status=status, post_json={"message": "internal error"})
+    _mock(monkeypatch, b)
+    out = await ord_mod.submit_equity_order("AAPL", "exit_long", 5)
+    assert out["transmitted"] is False and not out.get("paper")
+    assert out["unknown_state"] is True and out["ref"]
+    assert out["ref"] in out["detail"]
+
+
+@pytest.mark.asyncio
+async def test_equity_4xx_is_a_definitive_rejection(monkeypatch):
+    await init_db()
+    _gate_on(monkeypatch)
+    _mock(monkeypatch, Broker(post_status=403, post_json={"message": "forbidden"}))
+    out = await ord_mod.submit_equity_order("AAPL", "exit_long", 5)
+    assert out["transmitted"] is False and not out.get("unknown_state")
+
+
+@pytest.mark.asyncio
 async def test_equity_retry_with_ref_reuses_client_order_id(monkeypatch):
     """After an unknown-state failure the retry must reuse the same order-store ref, so a
     POST that actually landed can never be duplicated by a fresh client_order_id."""
@@ -608,6 +633,28 @@ async def test_poll_bracket_fill_by_ref_then_latest_for_symbol(monkeypatch):
     assert got["reason"] == "target" and got["price"] == 111.0
     assert await ord_mod.poll_bracket_fill("AAPL", "missing") is None   # latest app = newer
     assert await ord_mod.poll_bracket_fill("AAPL", None) is None
+
+
+@pytest.mark.asyncio
+async def test_poll_fallback_ignores_brackets_older_than_the_trade(monkeypatch):
+    """No stored parent id (e.g. a trade opened simulated): the symbol fallback must not
+    pick up an app bracket submitted before this trade's entry (days-old fill)."""
+    _gate_on(monkeypatch)
+    entry_ms = 1_794_929_400_000                                # 2026-11-17T15:30:00Z
+    old = _bracket("old", "tsys-old", "AAPL", [
+        _leg("t1", "limit", status="filled", price="111", at="2026-11-10T15:00:00Z"),
+        _leg("s1", "stop", status="canceled")])
+    old["submitted_at"] = "2026-11-10T14:00:00Z"
+    _mock(monkeypatch, Broker(orders=[old]))
+    assert (await ord_mod.poll_bracket_fill("AAPL", None))["reason"] == "target"   # legacy
+    assert await ord_mod.poll_bracket_fill("AAPL", None, since_ms=entry_ms) == DEAD
+    new = _bracket("new", "tsys-new", "AAPL", [_leg("t2", "limit"), _leg("s2", "stop")])
+    new["submitted_at"] = "2026-11-17T15:30:01.5Z"
+    _mock(monkeypatch, Broker(orders=[new, old]))
+    assert await ord_mod.poll_bracket_fill("AAPL", None, since_ms=entry_ms) is None
+    # an exact stored id is still honoured regardless of since_ms
+    got = await ord_mod.poll_bracket_fill("AAPL", "old", since_ms=entry_ms)
+    assert got["reason"] == "target"
 
 
 @pytest.mark.asyncio

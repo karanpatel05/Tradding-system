@@ -90,7 +90,7 @@ async def test_reconcile_open_never_books_stop_on_undetermined_fill(monkeypatch)
     await init_db()
     monkeypatch.setattr(get_settings(), "enable_live_orders", True)
 
-    async def undetermined(symbol, ref=None):
+    async def undetermined(symbol, ref=None, **kw):
         return {"price": None, "ms": None, "reason": "error"}
     monkeypatch.setattr("app.engine.execution.poll_bracket_fill", undetermined)
 
@@ -121,7 +121,7 @@ async def test_reconcile_open_flat_but_unmatched_escalates_safe_mode(monkeypatch
     await init_db()
     monkeypatch.setattr(get_settings(), "enable_live_orders", True)
 
-    async def unmatched(symbol, ref=None):
+    async def unmatched(symbol, ref=None, **kw):
         return {"price": None, "ms": None, "reason": "bracket"}
     monkeypatch.setattr("app.engine.execution.poll_bracket_fill", unmatched)
 

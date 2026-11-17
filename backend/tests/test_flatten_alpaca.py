@@ -370,12 +370,42 @@ async def test_flatten_broker_read_failure_is_not_reported_flat(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("gate", [False, True])
 async def test_flatten_alpaca_not_configured_is_flat_without_requests(monkeypatch, gate):
-    """No Alpaca keys -> the app can never have transmitted -> nothing to flatten."""
+    """No Alpaca keys and no transmitted open trade -> nothing to flatten."""
+    await init_db()
+    async with session_scope() as s:
+        await s.execute(delete(TradeRecord).where(TradeRecord.status == "open",
+                                                  TradeRecord.transmitted.is_(True)))
+        s.add(TradeRecord(strategy_key="strategy_1", symbol="SIMX", side="buy",
+                          quantity=3, entry_price=10.0, status="open", transmitted=False))
     monkeypatch.setattr(get_settings(), "apca_api_key_id", "")
     monkeypatch.setattr(get_settings(), "apca_api_secret_key", "")
     monkeypatch.setattr(get_settings(), "enable_live_orders", gate)
     _mock(monkeypatch, _bomb_handler)
-    assert await ord_mod.flatten_all() == "No open positions."
+    try:
+        assert await ord_mod.flatten_all() == "No open positions."
+    finally:
+        async with session_scope() as s:
+            await s.execute(delete(TradeRecord).where(TradeRecord.symbol == "SIMX"))
+
+
+@pytest.mark.asyncio
+async def test_flatten_not_configured_with_transmitted_open_trade_is_not_flat(monkeypatch):
+    """Keys removed after the app transmitted: the broker may still hold app shares the
+    app can no longer see — never report flat."""
+    await init_db()
+    async with session_scope() as s:
+        s.add(TradeRecord(strategy_key="strategy_1", symbol="TXMT", side="buy",
+                          quantity=4, entry_price=10.0, status="open", transmitted=True))
+    monkeypatch.setattr(get_settings(), "apca_api_key_id", "")
+    monkeypatch.setattr(get_settings(), "apca_api_secret_key", "")
+    _mock(monkeypatch, _bomb_handler)
+    try:
+        with pytest.raises(RuntimeError) as ei:
+            await ord_mod.flatten_all()
+        assert "Flatten incomplete" in str(ei.value) and "TXMT x4" in str(ei.value)
+    finally:
+        async with session_scope() as s:
+            await s.execute(delete(TradeRecord).where(TradeRecord.symbol == "TXMT"))
 
 
 @pytest.mark.asyncio

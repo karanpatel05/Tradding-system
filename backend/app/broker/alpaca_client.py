@@ -35,10 +35,22 @@ def base_url() -> str:
     return raw.rstrip("/")
 
 
+def is_paper_url(url: str) -> bool:
+    """True only for https://paper-api.alpaca.markets exactly: https scheme, that exact
+    host, no userinfo, default port. Shared by the write lock and the status chip."""
+    try:
+        u = urlsplit(url)
+        port = u.port
+    except ValueError:
+        return False
+    return (u.scheme == "https" and u.hostname == PAPER_HOST
+            and u.username is None and u.password is None and port in (None, 443))
+
+
 def trading_base() -> str:
     base = base_url()
-    if urlsplit(base).hostname != PAPER_HOST:
-        raise PaperLockError(f"writes are locked to {PAPER_HOST}")
+    if not is_paper_url(base):
+        raise PaperLockError(f"writes are locked to https://{PAPER_HOST}")
     return base
 
 
@@ -55,6 +67,11 @@ def headers() -> dict[str, str]:
 
 async def request(method: str, path: str, *, params: dict | None = None,
                   json: dict | None = None, write: bool = False) -> Any:
+    """Any non-GET is a write (paper-locked) whatever `write` says; `path` must be an
+    Alpaca /v2/ path so it can never redirect the request to another host."""
+    if not path.startswith("/v2/"):
+        raise ValueError(f"Alpaca path must start with /v2/: {path!r}")
+    write = write or method.upper() != "GET"
     base = trading_base() if write else base_url()
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         r = await client.request(method, f"{base}{path}", params=params, json=json,
