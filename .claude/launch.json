@@ -4,7 +4,7 @@
     {
       "name": "backend",
       "runtimeExecutable": "/usr/bin/env",
-      "runtimeArgs": ["FRONTEND_DIST=/Users/karanpatel/Desktop/PycharmProjects/Tradding-system/frontend/dist", "/Users/karanpatel/.venvs/tradding-system/bin/python", "-m", "uvicorn", "app.main:app", "--port", "8000", "--app-dir", "backend"],
+      "runtimeArgs": ["FRONTEND_DIST=/Users/karanpatel/Tradding-system/frontend/dist", "/Users/karanpatel/.venvs/tradding-system/bin/python", "-m", "uvicorn", "app.main:app", "--port", "8000", "--app-dir", "backend"],
       "port": 8000
     },
     {
