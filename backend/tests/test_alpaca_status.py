@@ -74,3 +74,41 @@ async def test_cached_between_polls(monkeypatch):
     await auth_routes.alpaca_status()
     await auth_routes.alpaca_status()
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", ["https://paper-api.alpaca.markets.evil.com",
+                                 "http://paper-api.alpaca.markets",
+                                 "https://evil.com@paper-api.alpaca.markets",
+                                 "https://api.alpaca.markets"])
+async def test_paper_flag_uses_the_exact_host_lock_rule(monkeypatch, url):
+    """`paper` must agree with the write lock (no substring match)."""
+    monkeypatch.setattr(get_settings(), "apca_api_base_url", url)
+    monkeypatch.setattr(get_settings(), "apca_api_key_id", "")
+    out = await svc.fetch_alpaca_status()
+    assert out["paper"] is False
+
+
+@pytest.mark.asyncio
+async def test_auth_status_does_not_fetch_alpaca_balances(monkeypatch):
+    """The Tastytrade connection badge polls /api/auth/status every few seconds: it must
+    not call Alpaca /v2/account nor show the Alpaca account under market data."""
+    async def ok_probe(force=False):
+        return "ok"
+
+    called = []
+
+    async def no_balances():
+        called.append(1)                    # (a raise here would be swallowed)
+        return {"account": "PA12345678"}
+
+    async def no_sm():
+        return False, None
+    monkeypatch.setattr(auth_routes, "probe", ok_probe)
+    monkeypatch.setattr(auth_routes, "_safe_mode_info", no_sm)
+    monkeypatch.setattr("app.broker.account.balances", no_balances)
+    _patch_transport(monkeypatch, lambda req: (_ for _ in ()).throw(
+        AssertionError("network touched")))
+    out = await auth_routes._status()
+    assert called == [], "auth status must not read Alpaca balances"
+    assert out.account == "" and out.accounts == []

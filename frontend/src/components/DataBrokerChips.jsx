@@ -32,8 +32,10 @@ export default function DataBrokerChips() {
     : tt.configured ? "Tastytrade · idle" : "not configured";
 
   const brokerReady = alp?.status === "ok";
+  // Writes are locked to the exact Alpaca paper host; any other base URL refuses orders.
   const brokerText = alp == null ? "…"
     : auth?.conn_state === "safe_mode" ? "SAFE MODE"
+    : alp.paper === false ? "Alpaca · writes locked"
     : brokerReady ? "Alpaca paper · ok"
     : "Alpaca paper · not connected";
 

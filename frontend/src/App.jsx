@@ -133,9 +133,9 @@ export default function App() {
         </nav>
 
         <div className="side-foot">
-          <div className="avatar">{(auth?.account || "T").replace(/[^A-Za-z0-9]/g, "").slice(-1) || "T"}</div>
+          <div className="avatar">{(acct?.account || "T").replace(/[^A-Za-z0-9]/g, "").slice(-1) || "T"}</div>
           <div className="side-foot-meta">
-            <div className="side-foot-acct">{auth?.account || "—"}</div>
+            <div className="side-foot-acct">{acct?.account || "—"}</div>
             <div className="side-foot-nl num">{acct?.net_liquidation != null ? `$${Number(acct.net_liquidation).toLocaleString()}` : "—"}</div>
           </div>
           <span className={`dot ${auth?.connected ? "on" : ""}`} title={auth?.connected ? "Broker verified" : "Broker not verified"} />

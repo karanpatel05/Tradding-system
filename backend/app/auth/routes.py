@@ -38,23 +38,6 @@ class ConnectionStatus(BaseModel):
     safe_mode_reason: str | None = None
 
 
-def _mask_account(number: str) -> str:
-    if not number:
-        return ""
-    if len(number) <= 4:
-        return number
-    return "•" * (len(number) - 4) + number[-4:]
-
-
-async def _account_number() -> str:
-    try:
-        from app.broker.account import balances
-        return (await balances()).get("account") or ""
-    except Exception:  # noqa: BLE001 — a status read must never 500 the badge
-        logger.exception("Failed to read Alpaca account for status")
-        return ""
-
-
 async def _safe_mode_info() -> tuple[bool, str | None]:
     from app.db.base import session_scope
     from app.db.models import SystemFlag
@@ -71,13 +54,14 @@ async def _safe_mode_info() -> tuple[bool, str | None]:
 async def _status() -> ConnectionStatus:
     result = await probe()
     detail = result if (result and result != "ok") else None
-    masked = _mask_account(await _account_number())
+    # No account here: this is the Tastytrade (market data) badge, polled every few
+    # seconds. The masked Alpaca account is on GET /api/auth/alpaca (cached).
     sm_on, sm_reason = await _safe_mode_info()
     conn_state = "safe_mode" if sm_on else ("ready" if is_ready_cached() else "disconnected")
     return ConnectionStatus(
         connected=is_ready_cached(),
         host=None, port=None, client_id=None,
-        account=masked, accounts=[masked] if masked else [], detail=detail,
+        account="", accounts=[], detail=detail,
         conn_state=conn_state, safe_mode=sm_on, safe_mode_reason=sm_reason,
     )
 

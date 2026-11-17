@@ -114,10 +114,6 @@ export default function ApiTab({ onChange }) {
             <div className="stat-label">Status</div>
             <div className={`stat-value ${connected ? "pos" : "neg"}`}>{connected ? "Verified" : "Not verified"}</div>
           </div>
-          <div>
-            <div className="stat-label">Account</div>
-            <div className="stat-value">{info?.account || "—"}</div>
-          </div>
         </div>
         {err && <div className="banner error" style={{ marginTop: 10 }}>{err}</div>}
         {!connected && (

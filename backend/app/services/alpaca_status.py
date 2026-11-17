@@ -29,7 +29,8 @@ def _num(v) -> float | None:
 
 async def fetch_alpaca_status(force: bool = False) -> dict:
     base = alpaca_client.base_url()
-    out = {"configured": alpaca_client.configured(), "paper": "paper-api" in base}
+    out = {"configured": alpaca_client.configured(),
+           "paper": alpaca_client.is_paper_url(base)}   # same exact-host rule as the lock
     if not out["configured"]:
         return {**out, "status": "not_configured"}
 
