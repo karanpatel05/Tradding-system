@@ -83,14 +83,25 @@ in the script —
 Postgres + FastAPI (serves the UI same-origin) + Caddy (TLS + Basic Auth). One image
 builds the React UI and serves it with the API — no separate frontend container.
 
+Docker uses the two (git-ignored) `.env` files directly — there are no example templates:
+
+- **`./.env`** (repo root) — stack settings read by `docker-compose.yml`:
+  `SITE_ADDRESS` (e.g. `localhost`), `BASIC_AUTH_USER`, `BASIC_AUTH_HASH`
+  (`docker run --rm caddy:2-alpine caddy hash-password --plaintext '<password>'`),
+  `APP_SECRET_KEY`, and optionally `POSTGRES_PASSWORD` (defaults to `trading`).
+- **`backend/.env`** — app settings: Alpaca paper keys (`APCA_API_KEY_ID`,
+  `APCA_API_SECRET_KEY`), Tastytrade creds (`TT_PROVIDER_SECRET`, `TT_REFRESH_TOKEN`,
+  `TT_ACCOUNT_NUMBER`), `APP_AUTH_TOKEN`, `ENABLE_LIVE_ORDERS`. It is mounted into the
+  backend container (`/app/.env`) read-write, so settings saved from the API tab persist.
+  It must exist before `docker compose up` (otherwise Docker creates a directory there).
+
 ```bash
-cp deploy/.env.example .env     # set SITE_ADDRESS, BASIC_AUTH_USER/HASH, APP_SECRET_KEY
 docker compose up --build
 # open https://localhost          (self-signed cert by default; accept it)
 ```
 
-Set the Alpaca paper keys (`APCA_*`) and Tastytrade OAuth creds in the backend env; the API
-tab shows both connections after the stack is up — no separate gateway process to run.
+The API tab shows the Tastytrade (data) and Alpaca paper (orders) connections once the
+stack is up — no separate gateway process to run.
 
 **Security:** the app has no per-user login (auth == "does the Tastytrade OAuth probe
 verify?"), so the Caddy **Basic Auth + TLS** layer is the only thing protecting order

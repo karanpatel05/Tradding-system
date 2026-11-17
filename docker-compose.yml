@@ -1,14 +1,19 @@
 # Hosted stack: Postgres + FastAPI (serves the UI same-origin) + Caddy (TLS + Basic Auth).
-#
-# IMPORTANT: IB Gateway is a GUI app and CANNOT be containerized. Run it on the HOST
-# (paper, API enabled, port 4002); the backend reaches it via host.docker.internal.
+# Orders go to Alpaca PAPER; Tastytrade is the market-data source.
 #
 # SECURITY: the backend is NOT published to the host — only Caddy is, with Basic Auth +
 # TLS. There is no per-user login in the app, so this proxy auth is the only thing between
-# the internet and live trading. Never expose the backend port directly.
+# the internet and order routing. Never expose the backend port directly.
+#
+# Env files (both git-ignored, both required):
+#   ./.env          stack settings, read by compose for ${...} below:
+#                   SITE_ADDRESS, BASIC_AUTH_USER, BASIC_AUTH_HASH, APP_SECRET_KEY,
+#                   POSTGRES_PASSWORD (optional, defaults to 'trading')
+#   ./backend/.env  app settings (APCA_* Alpaca keys, TT_* Tastytrade creds,
+#                   APP_AUTH_TOKEN, ENABLE_LIVE_ORDERS, ...), mounted into the backend
+#                   container read-write so changes saved from the API tab persist.
 #
 # Usage:
-#   cp deploy/.env.example .env     # then edit (SITE_ADDRESS, BASIC_AUTH_*, APP_SECRET_KEY)
 #   docker compose up --build
 #   open https://localhost          # self-signed cert by default ('tls internal')
 
@@ -38,12 +43,9 @@ services:
       ENVIRONMENT: production
       DATABASE_URL: postgresql+asyncpg://trading:${POSTGRES_PASSWORD:-trading}@postgres:5432/trading
       APP_SECRET_KEY: ${APP_SECRET_KEY:?set APP_SECRET_KEY in .env}
-      # IB Gateway runs on the HOST, not in Docker:
-      IBKR_HOST: ${IBKR_HOST:-host.docker.internal}
-      IBKR_PORT: ${IBKR_PORT:-4002}
-      IBKR_CLIENT_ID: ${IBKR_CLIENT_ID:-1}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"   # Linux: reach the host's IB Gateway
+    volumes:
+      # The app reads its settings from /app/.env (anchored next to the app package).
+      - ./backend/.env:/app/.env
     expose:
       - "8000"   # internal network only — reached via Caddy, never published to the host
 
