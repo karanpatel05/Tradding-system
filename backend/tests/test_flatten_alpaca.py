@@ -278,13 +278,27 @@ async def test_flatten_gate_off_no_app_positions(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_flatten_lookup_failure_is_not_reported_flat(monkeypatch):
+async def test_flatten_broker_read_failure_is_not_reported_flat(monkeypatch):
+    """Alpaca configured but unreadable: never claim flat (kill switch fully_flat=False)."""
     _mock(monkeypatch, lambda req: httpx.Response(500, json={"message": "down"}))
-    with pytest.raises(RuntimeError):                       # gate OFF
+    with pytest.raises(RuntimeError) as off:                # gate OFF
         await ord_mod.flatten_all()
+    assert "could not read the Alpaca broker" in str(off.value)
     _gate_on(monkeypatch)
-    with pytest.raises(RuntimeError):                       # gate ON
+    with pytest.raises(RuntimeError) as on:                 # gate ON
         await ord_mod.flatten_all()
+    assert "could not read the Alpaca broker" in str(on.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gate", [False, True])
+async def test_flatten_alpaca_not_configured_is_flat_without_requests(monkeypatch, gate):
+    """No Alpaca keys -> the app can never have transmitted -> nothing to flatten."""
+    monkeypatch.setattr(get_settings(), "apca_api_key_id", "")
+    monkeypatch.setattr(get_settings(), "apca_api_secret_key", "")
+    monkeypatch.setattr(get_settings(), "enable_live_orders", gate)
+    _mock(monkeypatch, _bomb_handler)
+    assert await ord_mod.flatten_all() == "No open positions."
 
 
 @pytest.mark.asyncio

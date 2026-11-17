@@ -434,6 +434,9 @@ async def poll_bracket_fill(symbol: str, ref=None) -> dict | None:
 
 
 # --- kill switch ------------------------------------------------------------------
+_UNREADABLE = "could not read the Alpaca broker (app positions unknown)"
+
+
 def _fmt(net: dict[str, int]) -> str:
     return ", ".join(f"{sym} x{abs(q)}" for sym, q in sorted(net.items()))
 
@@ -485,16 +488,19 @@ async def flatten_all() -> str:
     the account's same-direction position (options: single leg, *_to_close) -> poll the
     app ledger up to _FLATTEN_WAIT seconds. SAFE_MODE does not block it (closing only).
     Gate OFF: transmits nothing; raises if the app holds anything.
-    Raises RuntimeError("Flatten incomplete: ...") when anything app-owned remains or a
-    lookup fails, so the kill switch never reports flat on a guess."""
+    Alpaca not configured (no keys): the app can never have transmitted, so it is flat
+    by construction -> "No open positions." with no Alpaca call (gate ON or OFF).
+    Raises RuntimeError("Flatten incomplete: ...") when anything app-owned remains or the
+    configured broker cannot be read, so the kill switch never reports flat on a guess."""
     from app.broker.ledger import account_positions, app_net_positions
+    if not ac.configured():
+        return "No open positions."
     s = get_settings()
     if not s.enable_live_orders:
         try:
             app_net = await app_net_positions()
         except _LOOKUP_ERRORS as exc:
-            raise RuntimeError(f"Flatten incomplete: app position lookup failed ({exc})") \
-                from exc
+            raise RuntimeError(f"Flatten incomplete: {_UNREADABLE} ({exc})") from exc
         if not app_net:
             return "No open positions."
         logger.warning("[FLATTEN-PAPER] would close %s — ENABLE_LIVE_ORDERS off",
@@ -515,7 +521,7 @@ async def flatten_all() -> str:
         app_net = await app_net_positions()
         acct = await account_positions()
     except _LOOKUP_ERRORS as exc:
-        raise RuntimeError(f"Flatten incomplete: {note}position lookup failed ({exc}); "
+        raise RuntimeError(f"Flatten incomplete: {note}{_UNREADABLE} ({exc}); "
                            f"{', '.join(failures) or 'no other failures'}") from exc
 
     from app.engine.order_store import record_intent
