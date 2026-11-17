@@ -364,6 +364,21 @@ async def test_combo_sell_to_close_and_market_without_net(monkeypatch):
     assert [l["position_intent"] for l in body["legs"]] == ["sell_to_close", "buy_to_open"]
 
 
+@pytest.mark.asyncio
+async def test_combo_limit_price_sign_debit_vs_credit(monkeypatch):
+    """Alpaca mleg: positive limit = debit (BUY), negative = credit (SELL)."""
+    await init_db()
+    _gate_on(monkeypatch)
+    b = Broker()
+    _mock(monkeypatch, b)
+    legs = [{**LEG_A, "action": "SELL"}, {**LEG_B, "action": "BUY"}]
+    assert (await ord_mod.submit_combo_order("QQQ", legs, net_price=-1.85,
+                                             action="BUY"))["transmitted"]
+    assert (await ord_mod.submit_combo_order("QQQ", legs, net_price=2.1,
+                                             action="SELL"))["transmitted"]
+    assert [p["limit_price"] for p in b.posts] == ["1.85", "-2.1"]
+
+
 # ------------------------------------------------------------------ cancel
 def _open(oid, coid, sym, **kw):
     return {"id": oid, "client_order_id": coid, "symbol": sym, "side": "sell",
@@ -444,7 +459,50 @@ async def test_cancel_underlying_matches_option_root_only(monkeypatch):
     assert out == {"cancelled": 2}
 
 
+@pytest.mark.asyncio
+async def test_cancel_waits_through_pending_cancel(monkeypatch):
+    """Alpaca DELETE is async (204 -> pending_cancel -> canceled) and shares stay
+    reserved meanwhile, so pending_cancel must count as still open."""
+    _gate_on(monkeypatch)
+    o1 = _open("o1", "tsys-1", "AAPL")
+    b = Broker(orders=[o1])
+    seen = []
+
+    def async_cancel(req):
+        if req.method == "DELETE":
+            b.deletes.append(req.url.path.rsplit("/", 1)[-1])
+            o1["status"] = "pending_cancel"
+            return httpx.Response(204)
+        resp = b(req)
+        seen.append(o1["status"])
+        if o1["status"] == "pending_cancel":
+            o1["status"] = "canceled"                      # settles after one poll
+        return resp
+    _mock(monkeypatch, async_cancel)
+    out = await ord_mod.cancel_symbol_orders("AAPL")
+    assert out == {"cancelled": 1}
+    assert seen.count("pending_cancel") == 1 and seen[-1] == "canceled"   # it waited
+
+
+@pytest.mark.asyncio
+async def test_cancel_stuck_in_pending_cancel_reports_pending(monkeypatch):
+    _gate_on(monkeypatch)
+    monkeypatch.setattr(ord_mod, "_CANCEL_WAIT", 0.05)
+    o1 = _open("o1", "tsys-1", "AAPL")
+    b = Broker(orders=[o1])
+
+    def stuck(req):
+        if req.method == "DELETE":
+            o1["status"] = "pending_cancel"
+            return httpx.Response(204)
+        return b(req)
+    _mock(monkeypatch, stuck)
+    assert await ord_mod.cancel_symbol_orders("AAPL") == {"cancelled": 1, "pending": True}
+
+
 # ------------------------------------------------------------------ poll
+DEAD = {"price": None, "ms": None, "reason": "bracket"}
+
 def _bracket(pid, coid, sym, legs, status="filled"):
     return {"id": pid, "client_order_id": coid, "symbol": sym, "side": "buy", "qty": "10",
             "filled_qty": "10", "status": status, "order_class": "bracket", "legs": legs}
@@ -495,6 +553,44 @@ async def test_poll_bracket_fill_by_ref_then_latest_for_symbol(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("parent_status", ["canceled", "rejected", "expired"])
+async def test_poll_dead_parent_entry_never_filled(monkeypatch, parent_status):
+    _gate_on(monkeypatch)
+    par = _bracket("par1", "tsys-x", "AAPL", [_leg("tp", "limit", status="canceled"),
+                                              _leg("sl", "stop", status="canceled")],
+                   status=parent_status)
+    par["filled_qty"] = "0"
+    _mock(monkeypatch, Broker(orders=[par]))
+    assert await ord_mod.poll_bracket_fill("AAPL", "par1") == DEAD
+
+
+@pytest.mark.asyncio
+async def test_poll_entry_filled_but_all_exits_terminal_unfilled(monkeypatch):
+    _gate_on(monkeypatch)
+    _mock(monkeypatch, Broker(orders=[_bracket("par1", "tsys-x", "AAPL", [
+        _leg("tp", "limit", status="canceled"), _leg("sl", "stop", status="expired")])]))
+    assert await ord_mod.poll_bracket_fill("AAPL", "par1") == DEAD
+
+
+@pytest.mark.asyncio
+async def test_poll_no_app_bracket_found(monkeypatch):
+    _gate_on(monkeypatch)
+    manual = _bracket("man", "manual", "MSFT", [_leg("t", "limit"), _leg("s", "stop")])
+    _mock(monkeypatch, Broker(orders=[manual]))
+    assert await ord_mod.poll_bracket_fill("MSFT", "gone") == DEAD
+    assert await ord_mod.poll_bracket_fill("MSFT", None) == DEAD
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("live_status", ["new", "held", "accepted", "pending_cancel"])
+async def test_poll_still_holding_while_an_exit_child_is_live(monkeypatch, live_status):
+    _gate_on(monkeypatch)
+    _mock(monkeypatch, Broker(orders=[_bracket("par1", "tsys-x", "AAPL", [
+        _leg("tp", "limit", status="canceled"), _leg("sl", "stop", status=live_status)])]))
+    assert await ord_mod.poll_bracket_fill("AAPL", "par1") is None
+
+
+@pytest.mark.asyncio
 async def test_poll_bracket_fill_gate_off_and_error(monkeypatch):
     _mock(monkeypatch, _bomb_handler)
     assert await ord_mod.poll_bracket_fill("AAPL", "x") is None
@@ -523,4 +619,5 @@ async def test_submit_paths_never_touch_tastytrade(monkeypatch):
     assert (await ord_mod.submit_combo_order("QQQ", [{**LEG_A, "action": "BUY"}],
                                              net_price=1.0))["transmitted"]
     assert (await ord_mod.cancel_symbol_orders("AAPL"))["cancelled"] >= 1
-    assert await ord_mod.poll_bracket_fill("AAPL", "par1") is None
+    # its exit legs were just cancelled with none filled -> dead bracket, not "holding"
+    assert await ord_mod.poll_bracket_fill("AAPL", "par1") == DEAD

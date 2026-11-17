@@ -314,10 +314,13 @@ async def _run_multi_position(strategy: BaseStrategy) -> None:
                         # 2) Opposite-crossover / EOD exit, once per fresh 5m bar.
                         if (action and action.kind == "exit"
                                 and cur_ms != track.get(symbol, {}).get("last_5m_ms")):
-                            track.setdefault(symbol, {})["last_5m_ms"] = cur_ms
-                            await _exit_via_signal(strategy, symbol, state, engine,
-                                                   track.get(symbol, {}), action, bars)
-                            track.pop(symbol, None)
+                            prev_ms = track.setdefault(symbol, {}).get("last_5m_ms")
+                            track[symbol]["last_5m_ms"] = cur_ms
+                            if await _exit_via_signal(strategy, symbol, state, engine,
+                                                      track[symbol], action, bars):
+                                track.pop(symbol, None)
+                            else:   # not booked: keep tracking, retry on the next cycle
+                                track[symbol]["last_5m_ms"] = prev_ms
                     else:
                         # Flat → bracketed entry, once per fresh 5m bar. Gate on a stale series.
                         if (action and action.kind == "enter"
@@ -438,16 +441,36 @@ async def _reconcile_open(strategy, symbol, state, engine, tr) -> bool:
     return True
 
 
-async def _exit_via_signal(strategy, symbol, state, engine, tr, action, bars) -> None:
-    """Opposite-crossover / EOD exit: cancel the resting bracket, market-close, book."""
+async def _exit_via_signal(strategy, symbol, state, engine, tr, action, bars) -> bool:
+    """Opposite-crossover / EOD exit: cancel the resting bracket, market-close, book.
+    Live: if the cancel is still pending/blocked or the close genuinely fails to transmit,
+    nothing is booked (the broker may still hold the shares) and False is returned so the
+    caller keeps the trade open and retries next cycle. Paper behaviour is unchanged."""
+    from app.config import get_settings
     from app.engine.execution import cancel_symbol_orders, submit_equity_order
 
+    live = get_settings().enable_live_orders
     side = state.position.side
-    await cancel_symbol_orders(symbol)  # drop the resting OCO before closing
+    cancel = await cancel_symbol_orders(symbol)  # drop the resting OCO before closing
+    if live and (cancel.get("pending") or (not cancel.get("paper") and cancel.get("detail"))):
+        await log_event(
+            f"Exit HELD {side} {symbol}: resting bracket not cleared "
+            f"({cancel.get('detail') or 'cancel still pending'}) — retrying next cycle",
+            level="error", category="trade", strategy_key=strategy.key, symbol=symbol,
+            data={"cancel": cancel})
+        return False
     intent = "exit_long" if side == "long" else "exit_short"
     order = await submit_equity_order(symbol, intent, tr.get("qty", 0), reason=action.reason)
+    if live and _order_failed(order):
+        await log_event(
+            f"Exit NOT transmitted {side} {symbol}: {order.get('detail')} — position left "
+            f"open, retrying next cycle",
+            level="error", category="trade", strategy_key=strategy.key, symbol=symbol,
+            data={"order": order})
+        return False
     await _finalize_exit(strategy, symbol, state, engine, tr, action.price,
                          bars[-1].get("time"), action.reason, detail=order["detail"])
+    return True
 
 
 async def _finalize_exit(strategy, symbol, state, engine, tr, price, exit_ms, reason, *,

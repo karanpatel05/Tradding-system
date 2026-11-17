@@ -225,6 +225,23 @@ def _matches(o: dict, symbol: str) -> bool:
     return False
 
 
+async def _lingering(symbol: str) -> list[dict]:
+    """App-owned orders/legs for `symbol` still on the book. Unlike the ledger's open
+    set this includes `pending_cancel`: Alpaca DELETE is async (204 -> pending_cancel ->
+    canceled) and shares stay reserved until the cancel settles."""
+    from app.broker.ledger import OPEN_STATUSES, app_orders
+    live = OPEN_STATUSES | {"pending_cancel"}
+    out: list[dict] = []
+    for parent in await app_orders("all"):
+        if parent.get("status") in live and _matches(parent, symbol):
+            out.append(parent)
+        if parent.get("order_class") == "mleg":
+            continue
+        out.extend(l for l in parent.get("legs") or []
+                   if l.get("status") in live and _matches(l, symbol))
+    return out
+
+
 async def cancel_symbol_orders(symbol: str) -> dict:
     """Cancel app-owned open orders for `symbol` (incl. resting bracket legs), then wait
     until they leave the book — Alpaca reserves shares for open bracket legs, so the exit
@@ -250,7 +267,7 @@ async def cancel_symbol_orders(symbol: str) -> dict:
     deadline = time.monotonic() + _CANCEL_WAIT
     while True:
         try:
-            still = [o for o in (await app_open_orders())[0] if _matches(o, symbol)]
+            still = await _lingering(symbol)
         except (AlpacaError, httpx.HTTPError) as exc:
             logger.warning("Open-order check after cancel failed for %s: %r", symbol, exc)
             still = [True]
@@ -276,7 +293,7 @@ async def submit_combo_order(underlying: str, legs: list[dict], *, net_price: fl
     """Multi-leg options order (Alpaca `mleg`). Each leg = {expiry(date), strike, right,
     action}. Per-leg position_intent: (buy|sell) + (_to_close if the APP'S OWN net
     position in that OCC symbol is on the opposite side, else _to_open) — never the shared
-    account's positions. Limit at |net_price| if given, else market."""
+    account's positions. Limit at the net price if given (signed, see below), else market."""
     if not legs:
         return {"transmitted": False, "detail": "no legs"}
     if len(legs) > MAX_COMBO_LEGS:
@@ -314,7 +331,10 @@ async def submit_combo_order(underlying: str, legs: list[dict], *, net_price: fl
     body: dict = {"order_class": "mleg", "qty": str(q),
                   "type": "limit" if net_price is not None else "market"}
     if net_price is not None:
-        body["limit_price"] = str(round(abs(float(net_price)), 2))
+        # Alpaca mleg sign convention: positive limit = debit (BUY), negative = credit
+        # (SELL). MUST be verified against Alpaca's docs before any live combo use.
+        net = round(abs(float(net_price)), 2)
+        body["limit_price"] = str(net if action.upper() == "BUY" else -net)
     body.update({"time_in_force": "day", "legs": alp_legs})
     ref = await record_intent("", underlying, f"combo_{action.lower()}", q)
     out = await _transmit(body, ref, f"COMBO {action} {underlying}")
@@ -323,6 +343,9 @@ async def submit_combo_order(underlying: str, legs: list[dict], *, net_price: fl
     logger.warning("[LIVE COMBO] %s %s %d legs net %s (%s) -> %s",
                    action, underlying, len(legs), net_price, reason, out["detail"])
     return out
+
+
+_TERMINAL = {"canceled", "expired", "rejected", "replaced", "done_for_day"}
 
 
 def _epoch_ms(ts: str | None) -> int | None:
@@ -338,8 +361,14 @@ def _epoch_ms(ts: str | None) -> int | None:
 
 async def poll_bracket_fill(symbol: str, ref=None) -> dict | None:
     """Decided from the APP'S bracket order (the account is shared, so its position says
-    nothing): None while no exit child has filled; else {price, ms, reason} from the filled
-    child (stop vs take-profit). `ref` is the stored parent_order_id (Alpaca order id).
+    nothing). `ref` is the stored parent_order_id (Alpaca order id).
+    - an exit child filled -> {price, ms, reason: "stop" | "target"}
+    - None only while genuinely holding: an exit child is still live (or the entry is
+      still working)
+    - {price: None, ms: None, reason: "bracket"} for a dead bracket: no app bracket for
+      the ref/symbol, the parent ended unfilled (canceled/rejected/expired), or the entry
+      filled but every exit child ended without a fill (the worker escalates to SAFE_MODE)
+    - {..., reason: "error"} on a lookup error (transient; retried next cycle)
     Paper mode -> None (the worker simulates fills on 1m bars, unchanged)."""
     s = get_settings()
     if not s.enable_live_orders:
@@ -355,9 +384,12 @@ async def poll_bracket_fill(symbol: str, ref=None) -> dict | None:
     if parent is None:   # newest first -> the latest app bracket for the symbol
         parent = next((o for o in orders if o.get("order_class") == "bracket"
                        and ac.occ_unpadded(o.get("symbol") or "").upper() == want), None)
+    dead = {"price": None, "ms": None, "reason": "bracket"}
     if parent is None:
-        return None
-    for child in parent.get("legs") or []:
+        logger.error("No app bracket found for %s (ref %s)", symbol, ref)
+        return dead
+    legs = parent.get("legs") or []
+    for child in legs:
         if child.get("status") != "filled":
             continue
         kind = {"stop": "stop", "limit": "target"}.get(child.get("type"))
@@ -366,6 +398,15 @@ async def poll_bracket_fill(symbol: str, ref=None) -> dict | None:
         price = child.get("filled_avg_price")
         return {"price": float(price) if price not in (None, "") else None,
                 "ms": _epoch_ms(child.get("filled_at")), "reason": kind}
+    if parent.get("status") in _TERMINAL:
+        logger.error("App bracket %s for %s ended %s without a fill", parent.get("id"),
+                     symbol, parent.get("status"))
+        return dead
+    if parent.get("status") == "filled" and all(
+            c.get("status") in _TERMINAL or c.get("status") == "filled" for c in legs):
+        logger.error("App bracket %s for %s: entry filled but no exit child is live or "
+                     "filled", parent.get("id"), symbol)
+        return dead
     return None
 
 
