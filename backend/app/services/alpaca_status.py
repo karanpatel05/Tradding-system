@@ -9,7 +9,7 @@ import time
 
 import httpx
 
-from app.config import get_settings
+from app.broker import alpaca_client
 
 _CACHE_TTL = 30.0
 _cache: dict = {"at": 0.0, "value": None}
@@ -27,10 +27,8 @@ def _num(v) -> float | None:
 
 
 async def fetch_alpaca_status(force: bool = False) -> dict:
-    s = get_settings()
-    key, secret = s.apca_api_key_id.strip(), s.apca_api_secret_key.strip()
-    base = s.apca_api_base_url.rstrip("/")
-    out = {"configured": bool(key and secret), "paper": "paper-api" in base}
+    base = alpaca_client.base_url()
+    out = {"configured": alpaca_client.configured(), "paper": "paper-api" in base}
     if not out["configured"]:
         return {**out, "status": "not_configured"}
 
@@ -40,8 +38,7 @@ async def fetch_alpaca_status(force: bool = False) -> dict:
 
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
-            r = await client.get(f"{base}/v2/account",
-                                 headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret})
+            r = await client.get(f"{base}/v2/account", headers=alpaca_client.headers())
         if r.status_code == 200:
             a = r.json()
             result = {**out, "status": "ok",
