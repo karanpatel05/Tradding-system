@@ -200,7 +200,7 @@ export default function ApiTab({ onChange }) {
           </span>
         </div>
         <p className="muted small">
-          Gates the dangerous actions — arming live orders, the kill switch, activating a
+          Gates the dangerous actions — sending orders to Alpaca paper, the kill switch, activating a
           strategy, and resuming from SAFE MODE. Must match{" "}
           <code>APP_AUTH_TOKEN</code> in <code>backend/.env</code>. Stored only in this
           browser; until it's set (matching the server) those actions return 401.
@@ -235,11 +235,11 @@ export default function ApiTab({ onChange }) {
         )}
         {!liveOn && arming && (
           <div className="row gap center" style={{ marginTop: 10 }}>
-            <input className="input" placeholder="Type LIVE to arm" value={confirmText}
+            <input className="input" placeholder="Type LIVE to confirm" value={confirmText}
               onChange={(e) => setConfirmText(e.target.value)} />
             <button className="btn danger" disabled={confirmText !== "LIVE"}
               onClick={() => setLive(true)}>
-              Arm live orders
+              Send orders to Alpaca paper
             </button>
             <button className="btn ghost"
               onClick={() => { setOrdersMsg(null); setArming(false); setConfirmText(""); }}>

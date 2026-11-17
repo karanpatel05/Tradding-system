@@ -96,8 +96,8 @@ export default function StrategyDetail({ keyName, onBack }) {
             <div className="muted small">Current: ${(detail.capital_allocation || 0).toLocaleString()}</div>
             <div className="muted small">
               Each trade is sized into <b>whole shares</b> from this allocation and the per-trade
-              risk %, capped by allocation ÷ entry price. Live orders only transmit when{" "}
-              <code>ENABLE_LIVE_ORDERS</code> is set server-side (otherwise recorded as paper).
+              risk %, capped by allocation ÷ entry price. Orders go to Alpaca paper only when{" "}
+              <code>ENABLE_LIVE_ORDERS</code> is set server-side (otherwise simulated in-app).
             </div>
             {msg && <div className="banner error">{msg}</div>}
           </section>
