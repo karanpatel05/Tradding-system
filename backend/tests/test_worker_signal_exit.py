@@ -42,15 +42,18 @@ async def _status(trade_id: int) -> str:
 
 
 def _wire(monkeypatch, cancel_result, order_result):
-    calls = {"cancel": 0, "submit": 0}
+    """order_result may be a dict or a list of dicts (one per submit call)."""
+    calls = {"cancel": 0, "submit": 0, "refs": []}
+    results = list(order_result) if isinstance(order_result, list) else None
 
     async def cancel(symbol):
         calls["cancel"] += 1
         return cancel_result
 
-    async def submit(symbol, intent, qty, *, reason=""):
+    async def submit(symbol, intent, qty, *, reason="", ref=None):
         calls["submit"] += 1
-        return order_result
+        calls["refs"].append(ref)
+        return results.pop(0) if results is not None else order_result
     monkeypatch.setattr("app.engine.execution.cancel_symbol_orders", cancel)
     monkeypatch.setattr("app.engine.execution.submit_equity_order", submit)
     return calls
@@ -128,3 +131,87 @@ async def test_paper_exit_unchanged(monkeypatch):
     done = await W._exit_via_signal(_Strat(), "XPAP", state, eng, tr, _exit_action(), _bars())
     assert done is True
     assert state.position is None and await _status(tr["trade_id"]) == "closed"
+
+
+# ---------------------------------------------------- held exit retried next cycle
+DEAD = {"price": None, "ms": None, "reason": "bracket"}
+UNKNOWN = {"transmitted": False, "ref": "r-exit-1", "unknown_state": True,
+           "detail": "Alpaca request failed (ReadTimeout); order state unknown, ref r-exit-1"}
+OK = {"transmitted": True, "order_id": "alp-9", "ref": "r-exit-1", "detail": "LIVE SELL"}
+
+
+def _poll(monkeypatch, *results):
+    seq = list(results)
+
+    async def poll(symbol, ref=None):
+        return seq.pop(0) if len(seq) > 1 else seq[0]
+    monkeypatch.setattr("app.engine.execution.poll_bracket_fill", poll)
+
+
+async def _cycle(sym, eng, state, track, action):
+    await W._manage_open(_Strat(), sym, state, eng, track, action, _bars(),
+                         _bars()[-1]["time"] if action else None)
+
+
+@pytest.mark.asyncio
+async def test_held_exit_is_retried_before_dead_bracket_trips_safe_mode(monkeypatch):
+    """Cycle 1: signal exit, cancel OK, close POST times out (state unknown) -> held.
+    Cycle 2: the bracket legs are now canceled so the poll says 'bracket' (dead). That
+    must NOT trip SAFE_MODE while the exit is pending: the exit is retried with the SAME
+    ref (no duplicate sell) and, on success, finalized."""
+    from app.engine import safe_mode as SM
+    monkeypatch.setattr(get_settings(), "enable_live_orders", True)
+    eng, state, tr = await _setup("XRETRY")
+    await SM.clear_safe_mode()
+    track = {"XRETRY": tr}
+    calls = _wire(monkeypatch, {"cancelled": 2}, [UNKNOWN, OK])
+    _poll(monkeypatch, None, DEAD)
+
+    await _cycle("XRETRY", eng, state, track, _exit_action())
+    assert track["XRETRY"]["exit_pending"] is True and calls["submit"] == 1
+    await _assert_still_open("XRETRY", eng, state, tr)
+
+    await _cycle("XRETRY", eng, state, track, None)        # no fresh signal this cycle
+    assert await SM.is_safe_mode() is False
+    assert calls["submit"] == 2 and calls["refs"] == [None, "r-exit-1"]
+    assert state.position is None and "XRETRY" not in track
+    assert await _status(tr["trade_id"]) == "closed"
+
+
+@pytest.mark.asyncio
+async def test_held_exit_retry_failing_again_stays_open_no_safe_mode(monkeypatch):
+    from app.engine import safe_mode as SM
+    monkeypatch.setattr(get_settings(), "enable_live_orders", True)
+    eng, state, tr = await _setup("XRETRY2")
+    await SM.clear_safe_mode()
+    track = {"XRETRY2": tr}
+    rejected = {"transmitted": False, "ref": "r-exit-1",
+                "detail": "rejected by Alpaca: insufficient qty"}
+    calls = _wire(monkeypatch, {"cancelled": 2}, [UNKNOWN, rejected, OK])
+    _poll(monkeypatch, None, DEAD)
+
+    await _cycle("XRETRY2", eng, state, track, _exit_action())
+    await _cycle("XRETRY2", eng, state, track, None)
+    assert await SM.is_safe_mode() is False
+    await _assert_still_open("XRETRY2", eng, state, tr)
+    assert track["XRETRY2"]["exit_pending"] is True
+    # a definitive rejection drops the ref: the next retry is a fresh order, not a dupe
+    await _cycle("XRETRY2", eng, state, track, None)
+    assert calls["refs"] == [None, "r-exit-1", None]
+    assert await _status(tr["trade_id"]) == "closed"
+
+
+@pytest.mark.asyncio
+async def test_pending_exit_still_honours_a_real_bracket_fill(monkeypatch):
+    """Cancel was still pending (legs live) and the stop filled meanwhile: book that fill,
+    don't send a second close."""
+    monkeypatch.setattr(get_settings(), "enable_live_orders", True)
+    eng, state, tr = await _setup("XSTOP")
+    track = {"XSTOP": tr}
+    calls = _wire(monkeypatch, {"cancelled": 1, "pending": True}, OK)
+    _poll(monkeypatch, None, {"price": 98.0, "ms": T0 + 600_000, "reason": "stop"})
+    await _cycle("XSTOP", eng, state, track, _exit_action())
+    assert calls["submit"] == 0 and track["XSTOP"]["exit_pending"] is True
+    await _cycle("XSTOP", eng, state, track, None)
+    assert calls["submit"] == 0 and state.position is None and "XSTOP" not in track
+    assert await _status(tr["trade_id"]) == "closed"

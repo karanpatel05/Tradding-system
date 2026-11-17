@@ -36,6 +36,7 @@ BLOCKED_DETAIL = "blocked: Alpaca live endpoint locked (paper only)"
 MAX_COMBO_LEGS = 4          # Alpaca mleg limit; never split a combo
 _CANCEL_WAIT = 5.0          # seconds to wait for cancelled orders to leave the book
 _CANCEL_STEP = 0.25
+_TERMINAL = {"canceled", "expired", "rejected", "replaced", "done_for_day"}  # order ended
 
 _INTENT_TO_ACTION = {
     "enter_long": "BUY", "exit_short": "BUY",
@@ -107,9 +108,48 @@ def _px(v: float) -> str:
     return str(round(float(v), 2))
 
 
+def _is_duplicate_coid(exc: AlpacaError) -> bool:
+    msg = (exc.message or "").lower()
+    return exc.status in (409, 422) and "client_order_id" in msg and (
+        "unique" in msg or "duplicate" in msg or "exist" in msg)
+
+
+async def _resolve_duplicate(ref: str, what: str) -> dict:
+    """A retry reused `ref` and Alpaca already holds an order with that client_order_id:
+    the earlier POST landed. Report THAT order instead of sending a second one."""
+    from app.engine.order_store import mark_perm_id
+    try:
+        o = await ac.request("GET", "/v2/orders:by_client_order_id",
+                             params={"client_order_id": ac.tag(ref)})
+    except (AlpacaError, httpx.HTTPError) as exc:
+        logger.error("%s: duplicate client_order_id lookup failed (ref %s): %r", what, ref, exc)
+        return {"transmitted": False, "unknown_state": True, "ref": ref,
+                "detail": f"duplicate client_order_id, lookup failed; order state unknown, "
+                          f"ref {ref}"}
+    o = o or {}
+    status = o.get("status")
+    try:
+        filled = float(o.get("filled_qty") or 0)
+    except (TypeError, ValueError):
+        filled = 0.0
+    if status in _TERMINAL and filled == 0:
+        logger.error("%s: earlier submit for ref %s ended %s", what, ref, status)
+        return {"transmitted": False, "ref": ref,
+                "detail": f"earlier submit for ref {ref} ended {status}"}
+    oid = str(o.get("id") or "")
+    if oid:
+        await mark_perm_id(ref, oid)
+    logger.warning("%s: ref %s already at Alpaca as %s (%s); not resubmitted",
+                   what, ref, oid, status)
+    return {"transmitted": True, "order_id": oid, "ref": ref}
+
+
 async def _transmit(body: dict, ref: str, what: str) -> dict:
     """POST a tagged order. Rejections and transport errors become transmitted: False
-    (never paper) so the worker stays flat; the intent row keeps the ref for recon."""
+    (never paper) so the worker stays flat; the intent row keeps the ref for recon.
+    A transport error is flagged `unknown_state` (the POST may have landed): retry with
+    the same `ref` so the client_order_id is identical; a duplicate-id rejection is then
+    resolved to the existing order."""
     from app.engine.order_store import mark_perm_id
     body = {**body, "client_order_id": ac.tag(ref)}
     try:
@@ -118,12 +158,14 @@ async def _transmit(body: dict, ref: str, what: str) -> dict:
         logger.error("%s refused by paper lock (ref %s)", what, ref)
         return {"transmitted": False, "detail": BLOCKED_DETAIL, "ref": ref}
     except AlpacaError as exc:
+        if _is_duplicate_coid(exc):
+            return await _resolve_duplicate(ref, what)
         logger.error("%s rejected by Alpaca (ref %s): %s", what, ref, exc.message)
         return {"transmitted": False, "detail": f"rejected by Alpaca: {exc.message}",
                 "ref": ref}
     except httpx.HTTPError as exc:
         logger.error("%s: Alpaca request failed (ref %s): %r", what, ref, exc)
-        return {"transmitted": False, "ref": ref,
+        return {"transmitted": False, "ref": ref, "unknown_state": True,
                 "detail": f"Alpaca request failed ({type(exc).__name__}); "
                           f"order state unknown, ref {ref}"}
     oid = str((placed or {}).get("id") or "")
@@ -134,7 +176,9 @@ async def _transmit(body: dict, ref: str, what: str) -> dict:
 
 # --- public order API ---------------------------------------------------------
 async def submit_equity_order(symbol: str, intent: str, quantity: int, *,
-                              reason: str = "") -> dict:
+                              reason: str = "", ref: str | None = None) -> dict:
+    """`ref`: reuse an existing order-store ref (retry after an unknown-state failure) so
+    the client_order_id is identical and Alpaca refuses a duplicate."""
     if quantity <= 0:
         return {"transmitted": False, "detail": f"skipped: quantity {quantity}"}
     action = intent_to_action(intent)
@@ -155,7 +199,8 @@ async def submit_equity_order(symbol: str, intent: str, quantity: int, *,
     if (blocked := _paper_lock_blocked()) is not None:
         return blocked
     from app.engine.order_store import record_intent
-    ref = await record_intent("", symbol, intent, quantity)   # durable BEFORE transmit
+    if not ref:
+        ref = await record_intent("", symbol, intent, quantity)   # durable BEFORE transmit
     out = await _transmit({"symbol": symbol, "qty": str(int(quantity)),
                            "side": action.lower(), "type": "market",
                            "time_in_force": "day"}, ref, f"{action} {symbol}")
@@ -345,9 +390,6 @@ async def submit_combo_order(underlying: str, legs: list[dict], *, net_price: fl
     return out
 
 
-_TERMINAL = {"canceled", "expired", "rejected", "replaced", "done_for_day"}
-
-
 def _epoch_ms(ts: str | None) -> int | None:
     """Alpaca RFC3339 timestamps (up to 9 fractional digits, 'Z') -> epoch ms."""
     if not ts:
@@ -398,12 +440,20 @@ async def poll_bracket_fill(symbol: str, ref=None) -> dict | None:
         price = child.get("filled_avg_price")
         return {"price": float(price) if price not in (None, "") else None,
                 "ms": _epoch_ms(child.get("filled_at")), "reason": kind}
+    live_child = any(c.get("status") not in _TERMINAL and c.get("status") != "filled"
+                     for c in legs)
     if parent.get("status") in _TERMINAL:
-        logger.error("App bracket %s for %s ended %s without a fill", parent.get("id"),
-                     symbol, parent.get("status"))
+        # A partially filled then canceled entry still has live exits for the filled qty.
+        try:
+            entry_filled = float(parent.get("filled_qty") or 0) > 0
+        except (TypeError, ValueError):
+            entry_filled = False
+        if entry_filled and live_child:
+            return None
+        logger.error("App bracket %s for %s ended %s without a live or filled exit",
+                     parent.get("id"), symbol, parent.get("status"))
         return dead
-    if parent.get("status") == "filled" and all(
-            c.get("status") in _TERMINAL or c.get("status") == "filled" for c in legs):
+    if parent.get("status") == "filled" and not live_child:
         logger.error("App bracket %s for %s: entry filled but no exit child is live or "
                      "filled", parent.get("id"), symbol)
         return dead

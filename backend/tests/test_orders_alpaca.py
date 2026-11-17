@@ -49,6 +49,7 @@ class Broker:
         self.requests: list[httpx.Request] = []
         self.post_status = post_status
         self.post_json = post_json
+        self.by_coid: dict[str, dict] = {}
 
     def _find(self, oid):
         for o in self.orders:
@@ -65,6 +66,10 @@ class Broker:
         path = req.url.path
         if req.method == "GET" and path == "/v2/orders":
             return httpx.Response(200, json=self.orders)
+        if req.method == "GET" and path == "/v2/orders:by_client_order_id":
+            o = self.by_coid.get(req.url.params.get("client_order_id"))
+            return (httpx.Response(200, json=o) if o is not None
+                    else httpx.Response(404, json={"message": "order not found"}))
         if req.method == "POST" and path == "/v2/orders":
             body = json.loads(req.content)
             self.posts.append(body)
@@ -223,6 +228,59 @@ async def test_equity_transport_error_is_a_failure_not_a_crash(monkeypatch):
     out = await ord_mod.submit_equity_order("AAPL", "enter_long", 5)
     assert out["transmitted"] is False and not out.get("paper")
     assert out["ref"] in out["detail"]                      # ref logged for reconciliation
+    assert out["unknown_state"] is True
+
+
+@pytest.mark.asyncio
+async def test_equity_retry_with_ref_reuses_client_order_id(monkeypatch):
+    """After an unknown-state failure the retry must reuse the same order-store ref, so a
+    POST that actually landed can never be duplicated by a fresh client_order_id."""
+    await init_db()
+    _gate_on(monkeypatch)
+
+    def boom(req):
+        raise httpx.ReadTimeout("timed out", request=req)
+    _mock(monkeypatch, boom)
+    first = await ord_mod.submit_equity_order("RETRY", "exit_long", 5)
+    rows = await _intent_count("RETRY")
+    b = Broker()
+    _mock(monkeypatch, b)
+    out = await ord_mod.submit_equity_order("RETRY", "exit_long", 5, ref=first["ref"])
+    assert out["transmitted"] is True and out["ref"] == first["ref"]
+    assert b.posts[0]["client_order_id"] == ac.tag(first["ref"])
+    assert await _intent_count("RETRY") == rows             # no second intent row
+    assert (await _intent(first["ref"])).perm_id == "alp-1"
+
+
+@pytest.mark.asyncio
+async def test_equity_duplicate_client_order_id_resolves_existing_order(monkeypatch):
+    await init_db()
+    _gate_on(monkeypatch)
+    from app.engine.order_store import record_intent
+    ref = await record_intent("", "DUPE", "exit_long", 5)
+    b = Broker(post_status=422, post_json={"message": "client_order_id must be unique"})
+    b.by_coid[ac.tag(ref)] = {"id": "alp-existing", "client_order_id": ac.tag(ref),
+                              "status": "filled", "filled_qty": "5"}
+    _mock(monkeypatch, b)
+    out = await ord_mod.submit_equity_order("DUPE", "exit_long", 5, ref=ref)
+    assert out["transmitted"] is True and out["order_id"] == "alp-existing"
+    assert out["ref"] == ref
+    assert (await _intent(ref)).perm_id == "alp-existing"
+
+
+@pytest.mark.asyncio
+async def test_equity_duplicate_of_rejected_order_is_a_definitive_failure(monkeypatch):
+    await init_db()
+    _gate_on(monkeypatch)
+    from app.engine.order_store import record_intent
+    ref = await record_intent("", "DUPR", "exit_long", 5)
+    b = Broker(post_status=422, post_json={"message": "client_order_id must be unique"})
+    b.by_coid[ac.tag(ref)] = {"id": "alp-rej", "client_order_id": ac.tag(ref),
+                              "status": "rejected", "filled_qty": "0"}
+    _mock(monkeypatch, b)
+    out = await ord_mod.submit_equity_order("DUPR", "exit_long", 5, ref=ref)
+    assert out["transmitted"] is False and not out.get("unknown_state")
+    assert "rejected" in out["detail"]
 
 
 # ------------------------------------------------------------------ bracket
@@ -587,6 +645,17 @@ async def test_poll_still_holding_while_an_exit_child_is_live(monkeypatch, live_
     _gate_on(monkeypatch)
     _mock(monkeypatch, Broker(orders=[_bracket("par1", "tsys-x", "AAPL", [
         _leg("tp", "limit", status="canceled"), _leg("sl", "stop", status=live_status)])]))
+    assert await ord_mod.poll_bracket_fill("AAPL", "par1") is None
+
+
+@pytest.mark.asyncio
+async def test_poll_partially_filled_then_canceled_parent_still_holding(monkeypatch):
+    _gate_on(monkeypatch)
+    par = _bracket("par1", "tsys-x", "AAPL", [_leg("tp", "limit", status="new"),
+                                              _leg("sl", "stop", status="held")],
+                   status="canceled")
+    par["filled_qty"] = "3"
+    _mock(monkeypatch, Broker(orders=[par]))
     assert await ord_mod.poll_bracket_fill("AAPL", "par1") is None
 
 

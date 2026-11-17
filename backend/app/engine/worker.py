@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -305,22 +306,8 @@ async def _run_multi_position(strategy: BaseStrategy) -> None:
                     cur_ms = bars[-1].get("time") if bars else None
 
                     if state.position is not None:
-                        # 1) Resolve the resting bracket: broker fill (live) or 1m sim (paper).
-                        closed = await _reconcile_open(strategy, symbol, state, engine,
-                                                       track.get(symbol, {}))
-                        if closed:
-                            track.pop(symbol, None)
-                            continue
-                        # 2) Opposite-crossover / EOD exit, once per fresh 5m bar.
-                        if (action and action.kind == "exit"
-                                and cur_ms != track.get(symbol, {}).get("last_5m_ms")):
-                            prev_ms = track.setdefault(symbol, {}).get("last_5m_ms")
-                            track[symbol]["last_5m_ms"] = cur_ms
-                            if await _exit_via_signal(strategy, symbol, state, engine,
-                                                      track[symbol], action, bars):
-                                track.pop(symbol, None)
-                            else:   # not booked: keep tracking, retry on the next cycle
-                                track[symbol]["last_5m_ms"] = prev_ms
+                        await _manage_open(strategy, symbol, state, engine, track,
+                                           action, bars, cur_ms)
                     else:
                         # Flat → bracketed entry, once per fresh 5m bar. Gate on a stale series.
                         if (action and action.kind == "enter"
@@ -391,6 +378,29 @@ async def _open_bracket(strategy, symbol, action, state, bars, engine) -> dict |
             "last_1m_ms": entry_ms or 0, "last_5m_ms": None}
 
 
+async def _manage_open(strategy, symbol, state, engine, track, action, bars, cur_ms) -> None:
+    """One cycle for a symbol holding a position.
+    1) Resolve the resting bracket: broker fill (live) or 1m sim (paper).
+    2) A held signal exit (``exit_pending``) is retried every cycle until it books.
+    3) Opposite-crossover / EOD exit, once per fresh 5m bar."""
+    tr = track.get(symbol, {})
+    if await _reconcile_open(strategy, symbol, state, engine, tr):
+        track.pop(symbol, None)
+        return
+    if tr.get("exit_pending"):
+        held = tr["exit_action"]
+        last_close = bars[-1].get("close") if bars else None
+        retry = replace(held, price=last_close) if last_close is not None else held
+        if await _exit_via_signal(strategy, symbol, state, engine, tr, retry, bars):
+            track.pop(symbol, None)
+        return
+    if action and action.kind == "exit" and cur_ms != tr.get("last_5m_ms"):
+        tr = track.setdefault(symbol, tr)
+        tr["last_5m_ms"] = cur_ms
+        if await _exit_via_signal(strategy, symbol, state, engine, tr, action, bars):
+            track.pop(symbol, None)
+
+
 async def _reconcile_open(strategy, symbol, state, engine, tr) -> bool:
     """Resolve a position's stop/target. Real: poll the broker bracket. Paper: walk
     the 1m bars since the last check via the shared ``resolve_intrabar_exit`` (so
@@ -406,6 +416,12 @@ async def _reconcile_open(strategy, symbol, state, engine, tr) -> bool:
         if fill.get("price") is None:
             # The real fill price is unknown. NEVER fabricate the stop as the fill — that
             # books a fake worst-case loss and can trip the daily-loss halt on a phantom.
+            if tr.get("exit_pending"):
+                # Our own held signal exit cancelled the bracket legs, so a dead bracket
+                # is expected here: let the exit retry instead of tripping SAFE_MODE.
+                logger.warning("bracket for %s is dead while its signal exit is held — "
+                               "retrying the exit", symbol)
+                return False
             if fill.get("reason") == "error":
                 # Transient lookup error: leave the position open and retry next cycle.
                 logger.warning("bracket fill lookup errored for %s — retrying next cycle", symbol)
@@ -453,6 +469,7 @@ async def _exit_via_signal(strategy, symbol, state, engine, tr, action, bars) ->
     side = state.position.side
     cancel = await cancel_symbol_orders(symbol)  # drop the resting OCO before closing
     if live and (cancel.get("pending") or (not cancel.get("paper") and cancel.get("detail"))):
+        tr.update(exit_pending=True, exit_action=action)
         await log_event(
             f"Exit HELD {side} {symbol}: resting bracket not cleared "
             f"({cancel.get('detail') or 'cancel still pending'}) — retrying next cycle",
@@ -460,8 +477,13 @@ async def _exit_via_signal(strategy, symbol, state, engine, tr, action, bars) ->
             data={"cancel": cancel})
         return False
     intent = "exit_long" if side == "long" else "exit_short"
-    order = await submit_equity_order(symbol, intent, tr.get("qty", 0), reason=action.reason)
+    order = await submit_equity_order(symbol, intent, tr.get("qty", 0), reason=action.reason,
+                                      ref=tr.get("exit_ref"))
     if live and _order_failed(order):
+        # Unknown state (the POST may have landed): retry with the SAME ref so Alpaca
+        # refuses a duplicate. A definitive rejection gets a fresh order next time.
+        tr.update(exit_pending=True, exit_action=action,
+                  exit_ref=order.get("ref") if order.get("unknown_state") else None)
         await log_event(
             f"Exit NOT transmitted {side} {symbol}: {order.get('detail')} — position left "
             f"open, retrying next cycle",
