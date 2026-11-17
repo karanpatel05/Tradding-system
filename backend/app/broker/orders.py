@@ -441,12 +441,15 @@ def _fmt(net: dict[str, int]) -> str:
     return ", ".join(f"{sym} x{abs(q)}" for sym, q in sorted(net.items()))
 
 
-async def _cancel_app_orders() -> tuple[int, list[str]]:
+async def _cancel_app_orders() -> tuple[int, list[str], list[dict] | None]:
     """Cancel every app-owned open order, one DELETE per owned id (never the bulk
     cancel-all), then wait for them to leave the book (open bracket legs reserve shares,
-    so closes sent before cancels settle would reject). Returns (cancelled, failures).
-    A failed DELETE only counts if that order is still open afterwards: cancelling one
-    OCO bracket leg ends its sibling, whose own DELETE then 422s."""
+    so closes sent before cancels settle would reject).
+
+    Returns (cancelled, failures, lingering): `lingering` is the app orders still live
+    after the wait, or None when that could not be checked. A failed DELETE only counts
+    if that order is still open afterwards: cancelling one OCO bracket leg ends its
+    sibling, whose own DELETE then 422s."""
     from app.broker.ledger import app_open_orders
     orders, owned = await app_open_orders()
     cancelled = 0
@@ -471,20 +474,21 @@ async def _cancel_app_orders() -> tuple[int, list[str]]:
             break
         await asyncio.sleep(_CANCEL_STEP)
     if check_error is not None:
-        return cancelled, [f"open-order check failed ({check_error})"]
+        return cancelled, [f"open-order check failed ({check_error})"], None
     failures = []
     for o in still:
         oid = o.get("id")
         why = f": {errors[oid]}" if oid in errors else ""
         failures.append(f"order {oid} ({o.get('symbol')}) still open{why}")
-    return cancelled, failures
+    return cancelled, failures, still
 
 
 async def flatten_all() -> str:
     """Kill-switch flatten of what the APP opened on the shared paper account.
 
     Gate ON: paper lock (refused before any request) -> cancel app-owned open orders ->
-    for each app net position, a tagged market DAY close for the app quantity capped at
+    hold (not close) any symbol with an app order still live, or every symbol if that
+    can't be checked -> for each other app net position, a tagged market DAY close for the app quantity capped at
     the account's same-direction position (options: single leg, *_to_close) -> poll the
     app ledger up to _FLATTEN_WAIT seconds. SAFE_MODE does not block it (closing only).
     Gate OFF: transmits nothing; raises if the app holds anything.
@@ -512,9 +516,9 @@ async def flatten_all() -> str:
 
     failures: list[str] = []
     try:
-        cancelled, cancel_failures = await _cancel_app_orders()
+        cancelled, cancel_failures, lingering = await _cancel_app_orders()
     except _LOOKUP_ERRORS as exc:
-        cancelled, cancel_failures = 0, [f"open-order lookup failed ({exc})"]
+        cancelled, cancel_failures, lingering = 0, [f"open-order lookup failed ({exc})"], None
     failures += cancel_failures
     note = f"cancelled {cancelled} resting order(s); " if cancelled else ""
     try:
@@ -529,6 +533,15 @@ async def flatten_all() -> str:
     # shorts first: buying back a spread's short leg before selling its long keeps the
     # account covered while it unwinds
     for sym, app_qty in sorted(app_net.items(), key=lambda kv: (kv[1] > 0, kv[0])):
+        # A still-live app order (e.g. a resting stop-sell) could fill on top of the
+        # close; on the shared account that trades the user's manual shares. Hold.
+        if lingering is None:
+            failures.append(f"{sym} x{abs(app_qty)} (held: app open orders could not be "
+                            f"confirmed cancelled)")
+            continue
+        if any(_matches(o, sym) for o in lingering):
+            failures.append(f"{sym} x{abs(app_qty)} (held: resting app order not cleared)")
+            continue
         ap = acct.get(sym) or {}
         acct_qty = int(ap.get("qty") or 0)
         if acct_qty == 0 or (acct_qty > 0) != (app_qty > 0):

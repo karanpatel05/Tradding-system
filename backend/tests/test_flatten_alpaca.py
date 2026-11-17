@@ -256,6 +256,83 @@ async def test_flatten_reports_order_still_open_after_cancel(monkeypatch):
     assert "stuck" in str(ei.value)
 
 
+def _refuse_deletes(b):
+    def handler(req):
+        if req.method == "DELETE":
+            b.requests.append(req)
+            return httpx.Response(500, json={"message": "boom"})
+        return b(req)
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_flatten_holds_close_while_app_exit_leg_still_live(monkeypatch):
+    """A resting app stop-sell that won't cancel could still fire; closing too would sell
+    10 of the user's manual shares on the shared account. Hold the close."""
+    await init_db()
+    _gate_on(monkeypatch)
+    sl = {"id": "sl", "client_order_id": "gen-sl", "symbol": "AAPL", "side": "sell",
+          "type": "stop", "qty": "10", "filled_qty": "0", "status": "held"}
+    parent = {**_filled("par", "tsys-par", "AAPL", "buy", 10), "order_class": "bracket",
+              "legs": [sl]}
+    b = Broker(orders=[parent, _filled("m1", "manual-1", "AAPL", "buy", 50)],
+               positions=[_pos("AAPL", 60)])
+    _mock(monkeypatch, _refuse_deletes(b))
+    with pytest.raises(RuntimeError) as ei:
+        await ord_mod.flatten_all()
+    assert b.posts == []
+    assert "held" in str(ei.value) and "AAPL" in str(ei.value)
+
+
+@pytest.mark.asyncio
+async def test_flatten_holds_all_closes_when_open_order_lookup_fails(monkeypatch):
+    await init_db()
+    _gate_on(monkeypatch)
+    from app.broker import ledger
+
+    async def boom():
+        raise ac.AlpacaError(500, "orders down")
+    monkeypatch.setattr(ledger, "app_open_orders", boom)
+    b = Broker(orders=[_filled("e1", "tsys-e1", "AAPL", "buy", 10)],
+               positions=[_pos("AAPL", 60)])
+    _mock(monkeypatch, b)
+    with pytest.raises(RuntimeError) as ei:
+        await ord_mod.flatten_all()
+    assert b.posts == []
+    assert "held" in str(ei.value)
+
+
+@pytest.mark.asyncio
+async def test_flatten_holds_all_closes_when_post_cancel_check_fails(monkeypatch):
+    await init_db()
+    _gate_on(monkeypatch)
+
+    async def boom(symbol=None):
+        raise ac.AlpacaError(500, "orders down")
+    monkeypatch.setattr(ord_mod, "_lingering", boom)
+    b = Broker(orders=[_filled("e1", "tsys-e1", "AAPL", "buy", 10)],
+               positions=[_pos("AAPL", 60)])
+    _mock(monkeypatch, b)
+    with pytest.raises(RuntimeError) as ei:
+        await ord_mod.flatten_all()
+    assert b.posts == []
+    assert "held" in str(ei.value)
+
+
+@pytest.mark.asyncio
+async def test_flatten_lingering_order_does_not_block_unrelated_symbol(monkeypatch):
+    await init_db()
+    _gate_on(monkeypatch)
+    b = Broker(orders=[_resting("stuck", "tsys-stuck", "MSFT"),
+                       _filled("e1", "tsys-e1", "AAPL", "buy", 10)],
+               positions=[_pos("AAPL", 10)])
+    _mock(monkeypatch, _refuse_deletes(b))
+    with pytest.raises(RuntimeError) as ei:              # MSFT order still open
+        await ord_mod.flatten_all()
+    assert [(p["symbol"], p["qty"]) for p in b.posts] == [("AAPL", "10")]
+    assert "stuck" in str(ei.value)
+
+
 @pytest.mark.asyncio
 async def test_flatten_gate_off_with_app_positions_raises_and_sends_nothing(monkeypatch):
     b = Broker(orders=[_filled("e1", "tsys-e1", "AAPL", "buy", 10),
