@@ -1,23 +1,41 @@
-"""Order submission against Tastytrade, gated by ENABLE_LIVE_ORDERS (default OFF).
+"""Order routing to the Alpaca PAPER account, gated by ENABLE_LIVE_ORDERS (default OFF).
 
-OFF  -> no network order call is constructed; a simulated fill at the sanity-guarded
-        facade mid is returned (transmitted: False, paper: True, fill_price=mid). A
-        missing/rejected mid means NO fill — never a made-up price.
-ON   -> place_order(dry_run=True) validates first (an error rejects locally with the
-        reason), then place_order(dry_run=False) transmits for real.
+The paper account is SHARED, so the app only ever submits, cancels and counts orders it
+created: every submit carries `client_order_id = tag(ref)` (`tsys-` + order-store ref).
 
-Return shapes match the old app/engine/execution.py exactly so callers don't change.
-SDK price convention (verified in tastytrade/order.py): NewOrder.price is a Decimal,
-NEGATIVE = debit (pay), POSITIVE = credit (receive); None for market orders."""
+OFF -> no network order call; a simulated fill at the sanity-guarded facade mid is returned
+       (transmitted: False, paper: True). A missing mid means NO fill, never a made-up price.
+ON  -> check order on every transmit path: quantity -> SAFE_MODE -> gate -> paper lock
+       (`trading_base()`; a non-paper host is refused before any intent row or request) ->
+       durable `record_intent` -> POST /v2/orders (tagged) -> `mark_perm_id(ref, alpaca_id)`.
+       Alpaca has no dry-run; a 4xx rejection returns transmitted: False with its message.
+
+Return shapes match the old app/engine/execution.py so callers don't change.
+
+`flatten_all` (and the Tastytrade helpers below it) is still the Tastytrade kill-switch
+path; it is rewritten for Alpaca separately and is intentionally untouched here."""
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
+import time
+from datetime import datetime
 from decimal import Decimal
 
+import httpx
+
+from app.broker import alpaca_client as ac
+from app.broker.alpaca_client import AlpacaError, PaperLockError
 from app.config import get_settings
 from app.engine.safe_mode import is_safe_mode  # noqa: F401 — monkeypatch point
 
 logger = logging.getLogger("trading.broker.orders")
+
+BLOCKED_DETAIL = "blocked: Alpaca live endpoint locked (paper only)"
+MAX_COMBO_LEGS = 4          # Alpaca mleg limit; never split a combo
+_CANCEL_WAIT = 5.0          # seconds to wait for cancelled orders to leave the book
+_CANCEL_STEP = 0.25
 
 _INTENT_TO_ACTION = {
     "enter_long": "BUY", "exit_short": "BUY",
@@ -66,26 +84,55 @@ def _order_action(name: str):
 def _new_order(legs, price: Decimal | None, order_type: str = "MARKET"):
     from tastytrade.order import NewOrder, OrderTimeInForce, OrderType
     # Fully VALIDATED construction — pydantic validation on outgoing orders is a
-    # safety layer and is never bypassed. (Tests therefore fake legs with real
-    # tastytrade Leg objects, not SimpleNamespace.)
+    # safety layer and is never bypassed.
     return NewOrder(
         time_in_force=OrderTimeInForce.DAY,
         order_type=OrderType.LIMIT if order_type == "LIMIT" else OrderType.MARKET,
         legs=legs, price=price)
 
 
-async def _validated_place(account, session, order) -> dict:
-    """dry_run validation, then the real placement. Local reject on dry-run error."""
+# --- Alpaca transmit plumbing -------------------------------------------------
+def _paper_lock_blocked() -> dict | None:
+    """The blocked dict when the configured Alpaca host is not the paper host."""
     try:
-        await account.place_order(session, order, dry_run=True)
-    except Exception as exc:  # noqa: BLE001 — reject locally, never place
-        logger.error("dry-run rejected: %r", exc)
-        return {"transmitted": False, "detail": f"rejected by dry-run: {exc}"}
-    placed = await account.place_order(session, order, dry_run=False)
-    oid = getattr(getattr(placed, "order", None), "id", None)
-    return {"transmitted": True, "order_id": oid}
+        ac.trading_base()
+    except PaperLockError:
+        logger.error("Order refused: Alpaca base URL is not %s (paper lock)", ac.PAPER_HOST)
+        return {"transmitted": False, "detail": BLOCKED_DETAIL}
+    return None
 
 
+def _px(v: float) -> str:
+    """Alpaca rejects sub-penny prices; strategy stop/target levels are unrounded floats."""
+    return str(round(float(v), 2))
+
+
+async def _transmit(body: dict, ref: str, what: str) -> dict:
+    """POST a tagged order. Rejections and transport errors become transmitted: False
+    (never paper) so the worker stays flat; the intent row keeps the ref for recon."""
+    from app.engine.order_store import mark_perm_id
+    body = {**body, "client_order_id": ac.tag(ref)}
+    try:
+        placed = await ac.request("POST", "/v2/orders", json=body, write=True)
+    except PaperLockError:       # base URL changed between the check and the POST
+        logger.error("%s refused by paper lock (ref %s)", what, ref)
+        return {"transmitted": False, "detail": BLOCKED_DETAIL, "ref": ref}
+    except AlpacaError as exc:
+        logger.error("%s rejected by Alpaca (ref %s): %s", what, ref, exc.message)
+        return {"transmitted": False, "detail": f"rejected by Alpaca: {exc.message}",
+                "ref": ref}
+    except httpx.HTTPError as exc:
+        logger.error("%s: Alpaca request failed (ref %s): %r", what, ref, exc)
+        return {"transmitted": False, "ref": ref,
+                "detail": f"Alpaca request failed ({type(exc).__name__}); "
+                          f"order state unknown, ref {ref}"}
+    oid = str((placed or {}).get("id") or "")
+    if oid:
+        await mark_perm_id(ref, oid)
+    return {"transmitted": True, "order_id": oid, "ref": ref}
+
+
+# --- public order API ---------------------------------------------------------
 async def submit_equity_order(symbol: str, intent: str, quantity: int, *,
                               reason: str = "") -> dict:
     if quantity <= 0:
@@ -105,44 +152,16 @@ async def submit_equity_order(symbol: str, intent: str, quantity: int, *,
                        action, symbol, quantity, mid, reason)
         return {"transmitted": False, "paper": True, "fill_price": mid,
                 "detail": f"paper {action} {symbol} x{quantity} @ {mid:.2f}"}
-    from app.engine.order_store import mark_perm_id, record_intent
+    if (blocked := _paper_lock_blocked()) is not None:
+        return blocked
+    from app.engine.order_store import record_intent
     ref = await record_intent("", symbol, intent, quantity)   # durable BEFORE transmit
-    session = await _session()
-    account = await _account()
-    if session is None or account is None:
-        return {"transmitted": False, "detail": "broker unavailable (no TT session)"}
-    eq = (await _equities(session, [symbol]))[0]
-    leg = eq.build_leg(Decimal(quantity), _order_action(action))
-    out = await _validated_place(account, session, _new_order([leg], None))
-    if out.get("transmitted") and out.get("order_id"):
-        await mark_perm_id(ref, str(out["order_id"]))
+    out = await _transmit({"symbol": symbol, "qty": str(int(quantity)),
+                           "side": action.lower(), "type": "market",
+                           "time_in_force": "day"}, ref, f"{action} {symbol}")
     out.setdefault("detail", f"LIVE {action} {symbol} x{quantity}")
-    out["ref"] = ref
     logger.warning("[LIVE] %s %s x%d (%s) -> %s", action, symbol, quantity, reason, out["detail"])
     return out
-
-
-def build_otoco(side: str, quantity: int, *, target: float, stop: float, leg_factory):
-    """OTOCO: market entry triggers an OCO pair (take-profit LIMIT + STOP). Pure —
-    `leg_factory(qty, action)` supplies legs so this is unit-testable without the SDK
-    instruments. Sign convention: tp price is a CREDIT (positive) — closing a long
-    receives money; the SDK validates the pair server-side on placement."""
-    from tastytrade.order import (NewComplexOrder, NewOrder, OrderAction,
-                                  OrderTimeInForce, OrderType)
-    if side == "long":
-        entry_action, close_action = OrderAction.BUY, OrderAction.SELL
-    elif side == "short":
-        entry_action, close_action = OrderAction.SELL, OrderAction.BUY
-    else:
-        raise ValueError(f"Unknown side: {side!r}")
-    q = Decimal(quantity)
-    entry = NewOrder(time_in_force=OrderTimeInForce.DAY, order_type=OrderType.MARKET,
-                     legs=[leg_factory(q, entry_action)])
-    tp = NewOrder(time_in_force=OrderTimeInForce.GTC, order_type=OrderType.LIMIT,
-                  legs=[leg_factory(q, close_action)], price=Decimal(str(target)))
-    stp = NewOrder(time_in_force=OrderTimeInForce.GTC, order_type=OrderType.STOP,
-                   legs=[leg_factory(q, close_action)], stop_trigger=Decimal(str(stop)))
-    return NewComplexOrder(trigger_order=entry, orders=[tp, stp])
 
 
 async def submit_bracket_order(symbol: str, side: str, quantity: int, entry_price: float,
@@ -162,80 +181,108 @@ async def submit_bracket_order(symbol: str, side: str, quantity: int, entry_pric
                 "detail": f"paper bracket {side} {symbol} x{quantity} "
                           f"(stop {stop:.2f} / target {target:.2f})",
                 "stop": stop, "target": target}
-    session = await _session()
-    account = await _account()
-    if session is None or account is None:
-        return {"transmitted": False, "detail": "broker unavailable (no TT session)"}
-    eq = (await _equities(session, [symbol]))[0]
-    combo = build_otoco(side, quantity, target=target, stop=stop, leg_factory=eq.build_leg)
-    try:
-        await account.place_complex_order(session, combo, dry_run=True)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("bracket dry-run rejected: %r", exc)
-        return {"transmitted": False, "detail": f"rejected by dry-run: {exc}"}
-    placed = await account.place_complex_order(session, combo, dry_run=False)
-    coid = getattr(getattr(placed, "complex_order", None), "id", None)
+    if (blocked := _paper_lock_blocked()) is not None:
+        return blocked
+    from app.engine.order_store import record_intent
+    intent = "enter_long" if side == "long" else "enter_short"
+    ref = await record_intent("", symbol, intent, quantity)
+    out = await _transmit({"symbol": symbol, "qty": str(int(quantity)),
+                           "side": "buy" if side == "long" else "sell", "type": "market",
+                           "time_in_force": "gtc", "order_class": "bracket",
+                           "take_profit": {"limit_price": _px(target)},
+                           "stop_loss": {"stop_price": _px(stop)}},
+                          ref, f"BRACKET {side} {symbol}")
+    if not out["transmitted"]:
+        return out
     logger.warning("[LIVE BRACKET] %s %s x%d stop %.2f target %.2f (%s)",
                    side, symbol, quantity, stop, target, reason)
-    return {"transmitted": True, "bracket": True, "parent_order_id": coid,
-            "detail": f"LIVE bracket {side} {symbol} x{quantity}",
+    return {"transmitted": True, "bracket": True, "parent_order_id": out["order_id"],
+            "ref": ref, "detail": f"LIVE bracket {side} {symbol} x{quantity}",
             "stop": stop, "target": target}
 
 
 def _oget(o, key, default=None):
-    """Live orders are Alpaca dicts now (legacy objects tolerated until Tasks 4-6)."""
+    """Live orders are Alpaca dicts (legacy objects tolerated by flatten_all)."""
     return o.get(key, default) if isinstance(o, dict) else getattr(o, key, default)
 
 
-def _order_symbols(o) -> list[str]:
-    legs = _oget(o, "legs", []) or []
-    syms = [str(_oget(l, "symbol", "") or "") for l in legs]
-    if not syms:
-        syms = [str(_oget(o, "symbol", "") or "")]
-    return [x.split()[0] for x in syms if x]
+_OCC = re.compile(r"^([A-Z]+)\d{6}[CP]\d{8}$")
+
+
+def _matches(o: dict, symbol: str) -> bool:
+    """Order (or any of its legs) is for `symbol`; an underlying also matches its options."""
+    want = ac.occ_unpadded(symbol).upper()
+    syms = [o.get("symbol")] + [l.get("symbol") for l in (o.get("legs") or [])]
+    for raw in syms:
+        sym = ac.occ_unpadded(raw or "").upper()
+        if not sym:
+            continue
+        if sym == want:
+            return True
+        m = _OCC.match(sym)
+        if m and m.group(1) == want:
+            return True
+    return False
 
 
 async def cancel_symbol_orders(symbol: str) -> dict:
+    """Cancel app-owned open orders for `symbol` (incl. resting bracket legs), then wait
+    until they leave the book — Alpaca reserves shares for open bracket legs, so the exit
+    that follows would otherwise reject."""
     s = get_settings()
     if not s.enable_live_orders:
         return {"cancelled": 0, "paper": True}
-    from app.broker.account import cancel_order, live_orders
+    if (blocked := _paper_lock_blocked()) is not None:
+        return {"cancelled": 0, "detail": blocked["detail"]}
+    from app.broker.ledger import app_open_orders
+    orders, owned = await app_open_orders()
     cancelled = 0
-    for o in await live_orders():
-        if symbol in _order_symbols(o):
-            if await cancel_order(_oget(o, "id", "")):
-                cancelled += 1
-    return {"cancelled": cancelled}
+    for o in orders:
+        oid = o.get("id")
+        if oid not in owned or not _matches(o, symbol):
+            continue
+        try:
+            await ac.request("DELETE", f"/v2/orders/{oid}", write=True)
+            cancelled += 1
+        except (AlpacaError, httpx.HTTPError, PaperLockError) as exc:
+            # e.g. the OCO sibling of a leg just cancelled is no longer cancelable
+            logger.warning("Cancel of app order %s (%s) failed: %r", oid, symbol, exc)
+    deadline = time.monotonic() + _CANCEL_WAIT
+    while True:
+        try:
+            still = [o for o in (await app_open_orders())[0] if _matches(o, symbol)]
+        except (AlpacaError, httpx.HTTPError) as exc:
+            logger.warning("Open-order check after cancel failed for %s: %r", symbol, exc)
+            still = [True]
+        if not still:
+            return {"cancelled": cancelled}
+        if time.monotonic() >= deadline:
+            logger.warning("App orders for %s still open %.1fs after cancel", symbol,
+                           _CANCEL_WAIT)
+            return {"cancelled": cancelled, "pending": True}
+        await asyncio.sleep(_CANCEL_STEP)
 
 
 def occ_symbol_for(underlying: str, expiry, strike: float, right: str) -> str:
-    """OCC option symbol: 6-char padded root + yymmdd + C/P + strike*1000 zero-padded
-    to 8 digits. This is the Tastytrade instrument symbol format for options."""
-    root = f"{underlying.upper():<6}"
+    """Unpadded OCC option symbol (Alpaca format): root + yymmdd + C/P + strike*1000
+    zero-padded to 8 digits, e.g. QQQ260807C00725000."""
     ymd = expiry.strftime("%y%m%d")
     k = f"{int(round(float(strike) * 1000)):08d}"
-    return f"{root}{ymd}{right.upper()}{k}"
-
-
-async def _option(session, occ_symbol: str):
-    from tastytrade.instruments import Option
-    return await Option.get(session, occ_symbol)
-
-
-async def _held_symbols() -> set[str]:
-    from app.broker.account import positions
-    return {p.symbol for p in await positions()}
+    return f"{underlying.upper().strip()}{ymd}{right.upper()}{k}"
 
 
 async def submit_combo_order(underlying: str, legs: list[dict], *, net_price: float | None = None,
                              action: str = "BUY", reason: str = "", quantity: int = 1) -> dict:
-    """Multi-leg options order. Each leg = {expiry(date), strike, right, action}.
-    Per-leg OrderAction: (BUY|SELL) + (TO_CLOSE if the account currently holds that OCC
-    symbol on the closing side, else TO_OPEN). Net price: combo LIMIT at the (sanity-
-    guarded) net, sign per SDK convention — `action=BUY` (opening for a debit) -> pay ->
-    NEGATIVE Decimal; `action=SELL` (closing for a credit) -> receive -> POSITIVE."""
+    """Multi-leg options order (Alpaca `mleg`). Each leg = {expiry(date), strike, right,
+    action}. Per-leg position_intent: (buy|sell) + (_to_close if the APP'S OWN net
+    position in that OCC symbol is on the opposite side, else _to_open) — never the shared
+    account's positions. Limit at |net_price| if given, else market."""
     if not legs:
         return {"transmitted": False, "detail": "no legs"}
+    if len(legs) > MAX_COMBO_LEGS:
+        return {"transmitted": False,
+                "detail": f"rejected: Alpaca multi-leg orders allow at most "
+                          f"{MAX_COMBO_LEGS} legs (got {len(legs)}); not split"}
     if await is_safe_mode():
         return {"transmitted": False, "safe_mode": True,
                 "detail": f"blocked: SAFE_MODE ({underlying})"}
@@ -245,65 +292,87 @@ async def submit_combo_order(underlying: str, legs: list[dict], *, net_price: fl
                        action, underlying, len(legs), net_price, reason)
         return {"transmitted": False, "paper": True, "legs": len(legs),
                 "detail": f"paper combo {action} {underlying} {len(legs)} legs"}
-    session = await _session()
-    account = await _account()
-    if session is None or account is None:
-        return {"transmitted": False, "detail": "broker unavailable (no TT session)"}
-    held = await _held_symbols()
-    q = Decimal(max(1, int(quantity)))
-    sdk_legs = []
+    if (blocked := _paper_lock_blocked()) is not None:
+        return blocked
+    from app.broker.ledger import app_net_positions
+    from app.engine.order_store import record_intent
+    q = max(1, int(quantity))
+    try:
+        app_net = await app_net_positions()
+    except (AlpacaError, httpx.HTTPError) as exc:
+        logger.error("Combo %s: app position lookup failed: %r", underlying, exc)
+        return {"transmitted": False, "legs": len(legs),
+                "detail": f"app position lookup failed: {exc}"}
+    alp_legs = []
     for spec in legs:
         occ = occ_symbol_for(underlying, spec["expiry"], spec["strike"], spec["right"])
-        inst = await _option(session, occ)
-        buying = spec["action"].upper() == "BUY"
-        closing = occ in held    # holding it and now trading the opposite way = closing
-        name = ("BUY_TO_CLOSE" if closing else "BUY_TO_OPEN") if buying else \
-               ("SELL_TO_CLOSE" if closing else "SELL_TO_OPEN")
-        sdk_legs.append(inst.build_leg(q, _order_action(name)))
-    price = None
+        side = "buy" if spec["action"].upper() == "BUY" else "sell"
+        held = app_net.get(occ, 0)
+        closing = held < 0 if side == "buy" else held > 0
+        alp_legs.append({"symbol": occ, "ratio_qty": "1", "side": side,
+                         "position_intent": f"{side}_to_{'close' if closing else 'open'}"})
+    body: dict = {"order_class": "mleg", "qty": str(q),
+                  "type": "limit" if net_price is not None else "market"}
     if net_price is not None:
-        p = Decimal(str(round(abs(net_price), 2)))
-        price = -p if action.upper() == "BUY" else p
-    order = _new_order(sdk_legs, price, order_type="LIMIT" if price is not None else "MARKET")
-    out = await _validated_place(account, session, order)
+        body["limit_price"] = str(round(abs(float(net_price)), 2))
+    body.update({"time_in_force": "day", "legs": alp_legs})
+    ref = await record_intent("", underlying, f"combo_{action.lower()}", q)
+    out = await _transmit(body, ref, f"COMBO {action} {underlying}")
     out["legs"] = len(legs)
-    out.setdefault("detail",
-                   f"LIVE combo {action} {underlying} {len(legs)} legs")
+    out.setdefault("detail", f"LIVE combo {action} {underlying} {len(legs)} legs")
     logger.warning("[LIVE COMBO] %s %s %d legs net %s (%s) -> %s",
                    action, underlying, len(legs), net_price, reason, out["detail"])
     return out
 
 
+def _epoch_ms(ts: str | None) -> int | None:
+    """Alpaca RFC3339 timestamps (up to 9 fractional digits, 'Z') -> epoch ms."""
+    if not ts:
+        return None
+    try:
+        return int(datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        logger.warning("Unparseable Alpaca timestamp %r", ts)
+        return None
+
+
 async def poll_bracket_fill(symbol: str, ref=None) -> dict | None:
-    """None while still holding; else {price, ms, reason} for the filled closer.
+    """Decided from the APP'S bracket order (the account is shared, so its position says
+    nothing): None while no exit child has filled; else {price, ms, reason} from the filled
+    child (stop vs take-profit). `ref` is the stored parent_order_id (Alpaca order id).
     Paper mode -> None (the worker simulates fills on 1m bars, unchanged)."""
     s = get_settings()
     if not s.enable_live_orders:
         return None
-    from app.broker.account import get_tt_account, positions
-    for p in await positions():
-        if p.symbol == symbol and p.quantity != 0:
-            return None
-    account = await get_tt_account()
-    session = await _session()
-    if account is None or session is None:
-        return None
+    from app.broker.ledger import app_orders
     try:
-        history = await account.get_order_history(session, per_page=50)
-    except Exception:  # noqa: BLE001 — transient lookup error, distinct from "no fill found"
+        orders = await app_orders("all")
+    except (AlpacaError, httpx.HTTPError) as exc:  # transient, distinct from "no fill"
+        logger.warning("Bracket fill lookup failed for %s: %r", symbol, exc)
         return {"price": None, "ms": None, "reason": "error"}
-    from tastytrade.order import OrderType
-    for o in history:
-        legs = getattr(o, "legs", []) or []
-        if not any(getattr(l, "symbol", "").split()[0] == symbol for l in legs):
+    want = ac.occ_unpadded(symbol).upper()
+    parent = next((o for o in orders if ref and o.get("id") == ref), None)
+    if parent is None:   # newest first -> the latest app bracket for the symbol
+        parent = next((o for o in orders if o.get("order_class") == "bracket"
+                       and ac.occ_unpadded(o.get("symbol") or "").upper() == want), None)
+    if parent is None:
+        return None
+    for child in parent.get("legs") or []:
+        if child.get("status") != "filled":
             continue
-        if str(getattr(o, "status", "")) not in ("OrderStatus.FILLED", "Filled"):
+        kind = {"stop": "stop", "limit": "target"}.get(child.get("type"))
+        if kind is None:
             continue
-        if o.order_type == OrderType.STOP:
-            return {"price": float(o.stop_trigger or 0), "ms": None, "reason": "stop"}
-        if o.order_type == OrderType.LIMIT:
-            return {"price": abs(float(o.price or 0)), "ms": None, "reason": "target"}
-    return {"price": None, "ms": None, "reason": "bracket"}
+        price = child.get("filled_avg_price")
+        return {"price": float(price) if price not in (None, "") else None,
+                "ms": _epoch_ms(child.get("filled_at")), "reason": kind}
+    return None
+
+
+# --- Tastytrade kill-switch path (rewritten for Alpaca separately) -------------
+async def _option(session, occ_symbol: str):
+    from tastytrade.instruments import Option
+    return await Option.get(session, occ_symbol)
 
 
 async def _positions():

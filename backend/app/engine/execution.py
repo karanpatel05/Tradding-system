@@ -1,4 +1,4 @@
-"""Order execution + flatten — now served by the Tastytrade broker layer.
+"""Order execution + flatten — served by the broker layer (Alpaca paper order routing).
 
 This module keeps its historical import path and public API (the worker, Triple
 Calendar executor, kill switch, and routers all import from here); the implementation
