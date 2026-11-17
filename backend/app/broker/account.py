@@ -1,4 +1,4 @@
-"""Tastytrade account access, normalized to the shapes the dashboard/kill-switch already
+"""Alpaca-backed account views (app-owned positions/orders only), normalized to the shapes the dashboard/kill-switch already
 consume. The real Account object is threaded everywhere (SDK gotcha: it has many required
 fields and cannot be rebuilt from account_number). Reads never raise — they degrade to
 None/{}/[] and the caller/UI handles absence."""
@@ -7,6 +7,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+
+import httpx
+
+from app.broker import alpaca_client as ac
+from app.broker.alpaca_client import AlpacaError
+from app.broker.ledger import account_positions, app_net_positions, app_orders
 
 logger = logging.getLogger("trading.broker.account")
 
@@ -69,78 +75,74 @@ def _f(v) -> float | None:
         return None
 
 
+def _mask(number: str | None) -> str:
+    return f"••••{number[-4:]}" if number and len(number) > 4 else (number or "")
+
+
+_ERRORS = (AlpacaError, httpx.HTTPError)
+
+
 async def balances() -> dict:
-    a = await get_tt_account()
-    session = await _get_session()
-    if a is None or session is None:
-        return {}
     try:
-        b = await a.get_balances(session)
-    except Exception:  # noqa: BLE001
-        logger.warning("Balance fetch failed", exc_info=True)
+        a = await ac.request("GET", "/v2/account")
+    except _ERRORS:
+        logger.warning("Alpaca balance fetch failed", exc_info=True)
+        return {}
+    if not isinstance(a, dict):
         return {}
     return {
-        "net_liquidation": _f(getattr(b, "net_liquidating_value", None)),
-        "total_cash": _f(getattr(b, "cash_balance", None)),
-        "buying_power": _f(getattr(b, "equity_buying_power", None)),
-        "available_funds": _f(getattr(b, "derivative_buying_power", None)),
+        "net_liquidation": _f(a.get("equity")),
+        "total_cash": _f(a.get("cash")),
+        "buying_power": _f(a.get("buying_power")),
+        "available_funds": _f(a.get("buying_power")),
         "gross_position_value": None,
-        "unrealized_pnl": None,          # not in TT balances; positions carry marks
+        "unrealized_pnl": None,
         "realized_pnl": None,
-        "init_margin": _f(getattr(b, "margin_equity", None)),
+        "init_margin": None,
         "maint_margin": None,
-        "account": getattr(a, "account_number", None),
+        "account": _mask(a.get("account_number")),
         "currency": "USD",
     }
 
 
 async def positions() -> list[NormalizedPosition]:
-    a = await get_tt_account()
-    session = await _get_session()
-    if a is None or session is None:
-        return []
     try:
-        rows = await a.get_positions(session, include_marks=True)
-    except TypeError:
-        rows = await a.get_positions(session)
-    except Exception:  # noqa: BLE001
-        logger.warning("Positions fetch failed", exc_info=True)
+        ledger = await app_net_positions()
+        if not ledger:
+            return []
+        acct_pos = await account_positions()
+        a = await ac.request("GET", "/v2/account")
+    except _ERRORS:
+        logger.warning("Alpaca positions fetch failed", exc_info=True)
         return []
+    account = _mask((a or {}).get("account_number")) if isinstance(a, dict) else ""
     out: list[NormalizedPosition] = []
-    for p in rows:
-        qty = int(p.quantity)
-        if getattr(p, "quantity_direction", "") == "Short":
-            qty = -abs(qty)
-        if qty == 0:
-            continue
-        direction = "Long" if qty > 0 else "Short"
+    for sym, qty in sorted(ledger.items()):
+        ap = acct_pos.get(sym) or {}
+        opt = ap.get("asset_class") == "us_option"
         out.append(NormalizedPosition(
-            symbol=str(p.symbol), quantity=qty, quantity_direction=direction,
-            instrument_type=str(getattr(p, "instrument_type", "Equity")),
-            avg_price=_f(getattr(p, "average_open_price", 0)) or 0.0,
-            account=str(getattr(p, "account_number", ""))))
+            symbol=sym, quantity=qty, quantity_direction="Long" if qty > 0 else "Short",
+            instrument_type="Equity Option" if opt else "Equity",
+            avg_price=float(ap.get("avg_entry_price") or 0.0), account=account))
     return out
 
 
-async def live_orders() -> list:
-    a = await get_tt_account()
-    session = await _get_session()
-    if a is None or session is None:
-        return []
+async def live_orders() -> list[dict]:
     try:
-        return list(await a.get_live_orders(session))
-    except Exception:  # noqa: BLE001
+        return await app_orders("open")
+    except _ERRORS:
+        logger.warning("Alpaca live-orders fetch failed", exc_info=True)
         return []
 
 
-async def cancel_order(order_id: int) -> bool:
-    a = await get_tt_account()
-    session = await _get_session()
-    if a is None or session is None:
-        return False
+async def cancel_order(order_id: str) -> bool:
     try:
-        await a.delete_order(session, int(order_id))
+        owned = {o.get("id") for o in await app_orders("open")}
+        if order_id not in owned:
+            logger.warning("Refusing to cancel non-app order %s", order_id)
+            return False
+        await ac.request("DELETE", f"/v2/orders/{order_id}", write=True)
         return True
-    except Exception:  # noqa: BLE001
+    except (*_ERRORS, ac.PaperLockError):
         logger.warning("Cancel failed for order %s", order_id, exc_info=True)
         return False

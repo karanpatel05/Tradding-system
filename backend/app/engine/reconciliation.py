@@ -46,10 +46,12 @@ async def fetch_snapshot() -> dict:
                  for p in await _positions() if p.quantity != 0]
     orders = []
     for o in await _live_orders():
-        legs = getattr(o, "legs", []) or []
-        sym = getattr(legs[0], "symbol", "?") if legs else "?"
-        orders.append(BrokerOrder(sym, str(getattr(o, "id", "")) or None, None,
-                                  str(getattr(o, "status", ""))))
+        def g(x, k, d=None):
+            return x.get(k, d) if isinstance(x, dict) else getattr(x, k, d)
+        legs = g(o, "legs", []) or []
+        sym = g(legs[0], "symbol", "?") if legs else (g(o, "symbol") or "?")
+        orders.append(BrokerOrder(sym, str(g(o, "id", "")) or None, None,
+                                  str(g(o, "status", ""))))
     return {"positions": positions, "fills": [], "orders": orders}
 
 

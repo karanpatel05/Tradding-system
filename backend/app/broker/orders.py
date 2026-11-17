@@ -182,6 +182,19 @@ async def submit_bracket_order(symbol: str, side: str, quantity: int, entry_pric
             "stop": stop, "target": target}
 
 
+def _oget(o, key, default=None):
+    """Live orders are Alpaca dicts now (legacy objects tolerated until Tasks 4-6)."""
+    return o.get(key, default) if isinstance(o, dict) else getattr(o, key, default)
+
+
+def _order_symbols(o) -> list[str]:
+    legs = _oget(o, "legs", []) or []
+    syms = [str(_oget(l, "symbol", "") or "") for l in legs]
+    if not syms:
+        syms = [str(_oget(o, "symbol", "") or "")]
+    return [x.split()[0] for x in syms if x]
+
+
 async def cancel_symbol_orders(symbol: str) -> dict:
     s = get_settings()
     if not s.enable_live_orders:
@@ -189,9 +202,8 @@ async def cancel_symbol_orders(symbol: str) -> dict:
     from app.broker.account import cancel_order, live_orders
     cancelled = 0
     for o in await live_orders():
-        legs = getattr(o, "legs", []) or []
-        if any(getattr(l, "symbol", "").split()[0] == symbol for l in legs):
-            if await cancel_order(getattr(o, "id", 0)):
+        if symbol in _order_symbols(o):
+            if await cancel_order(_oget(o, "id", "")):
                 cancelled += 1
     return {"cancelled": cancelled}
 
@@ -323,10 +335,10 @@ async def flatten_all() -> str:
     if s.enable_live_orders:
         for o in await _live_orders():
             try:
-                if await _cancel_order(getattr(o, "id", 0)):
+                if await _cancel_order(_oget(o, "id", "")):
                     cancelled += 1
             except Exception as exc:  # noqa: BLE001 — record, keep killing
-                failures.append(f"order-cancel {getattr(o, 'id', '?')}: {exc}")
+                failures.append(f"order-cancel {_oget(o, 'id', '?')}: {exc}")
 
     total = len(poss)
     session = await _session() if s.enable_live_orders else None

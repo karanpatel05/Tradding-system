@@ -47,15 +47,11 @@ def _mask_account(number: str) -> str:
 
 
 async def _account_number() -> str:
-    s = get_settings()
-    if s.tt_account_number:
-        return s.tt_account_number
     try:
-        from app.broker.account import get_tt_account
-        acct = await get_tt_account()
-        return getattr(acct, "account_number", "") or ""
+        from app.broker.account import balances
+        return (await balances()).get("account") or ""
     except Exception:  # noqa: BLE001 — a status read must never 500 the badge
-        logger.exception("Failed to read Tastytrade account for status")
+        logger.exception("Failed to read Alpaca account for status")
         return ""
 
 
