@@ -3,17 +3,19 @@ import { api } from "../api.js";
 
 // Dashboard header chips separating the two health signals that used to be conflated:
 // Data (which market-data source is actually serving) and Broker (orders), plus the
-// order-routing mode (paper vs LIVE — the ENABLE_LIVE_ORDERS master gate).
+// order-routing mode (Simulated vs Alpaca paper — the ENABLE_LIVE_ORDERS master gate).
 const DATA_LABEL = { tastytrade: "Tastytrade" };
 
 export default function DataBrokerChips() {
   const [tt, setTt] = useState(null);
   const [auth, setAuth] = useState(null);
+  const [alp, setAlp] = useState(null);
   const [health, setHealth] = useState(null);
 
   useEffect(() => {
     const load = () => {
       api.ttStatus().then(setTt).catch(() => setTt(null));
+      api.alpacaStatus().then(setAlp).catch(() => setAlp(null));
       api.authStatus().then(setAuth).catch(() => setAuth(null));
       api.health().then(setHealth).catch(() => setHealth(null));
     };
@@ -29,11 +31,11 @@ export default function DataBrokerChips() {
     : tt.serving === "tastytrade" ? DATA_LABEL[tt.serving]
     : tt.configured ? "Tastytrade · idle" : "not configured";
 
-  const brokerReady = tt?.probe === "ok";
-  const brokerText = tt == null ? "…"
+  const brokerReady = alp?.status === "ok";
+  const brokerText = alp == null ? "…"
     : auth?.conn_state === "safe_mode" ? "SAFE MODE"
-    : brokerReady ? "Tastytrade verified"
-    : "not verified";
+    : brokerReady ? "Alpaca paper · ok"
+    : "Alpaca paper · not connected";
 
   const liveOrders = !!health?.live_orders_enabled;
 
@@ -42,7 +44,7 @@ export default function DataBrokerChips() {
       <span className={`pill tiny ${dataTone}`}>Data: {dataText}</span>
       <span className={`pill tiny ${brokerReady ? "live" : "down"}`}>Broker: {brokerText}</span>
       <span className={`pill tiny ${liveOrders ? "down" : "idle"}`}>
-        Orders: {liveOrders ? "LIVE" : "PAPER"}
+        Orders: {liveOrders ? "Alpaca paper" : "Simulated"}
       </span>
     </div>
   );

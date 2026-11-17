@@ -62,7 +62,7 @@ export default function Dashboard({ snapshot, onOpenStrategy }) {
       <section className="card">
         <div className="card-head">
           <h2>Account</h2>
-          <span className="muted small">{acct?.account || "Tastytrade"}{acct?.currency ? ` · ${acct.currency}` : ""}</span>
+          <span className="muted small">Alpaca paper · shared account{acct?.currency ? ` · ${acct.currency}` : ""}</span>
         </div>
         {hasAcct ? (
           <div className="stat-strip">
@@ -77,7 +77,7 @@ export default function Dashboard({ snapshot, onOpenStrategy }) {
             <Stat label="Maint Margin" value={`$${fmt(acct.maint_margin, 0)}`} />
           </div>
         ) : (
-          <p className="muted small" style={{ marginTop: 12 }}>Connect Tastytrade to see account balances.</p>
+          <p className="muted small" style={{ marginTop: 12 }}>Alpaca not connected.</p>
         )}
       </section>
 
@@ -116,7 +116,7 @@ export default function Dashboard({ snapshot, onOpenStrategy }) {
 
         <section className="card">
           <div className="card-head">
-            <h2>Open Positions</h2>
+            <h2>Open Positions <span className="muted small">app-owned only</span></h2>
             <span className="count-pill">{positions.length}</span>
           </div>
           {positions.length === 0 ? (

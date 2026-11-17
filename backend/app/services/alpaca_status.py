@@ -1,10 +1,11 @@
-"""Read-only Alpaca account status (display only — the app never trades via Alpaca).
+"""Alpaca account status + cached readiness (gates the dashboard/WS account views).
 
 Uses APCA_API_KEY_ID / APCA_API_SECRET_KEY from backend/.env and GETs /v2/account.
 Results are cached briefly so the API tab's polling doesn't hammer Alpaca. Secrets
 are never returned; the account number is masked."""
 from __future__ import annotations
 
+import asyncio
 import time
 
 import httpx
@@ -57,3 +58,20 @@ async def fetch_alpaca_status(force: bool = False) -> dict:
 
     _cache.update(at=now, value=result)
     return result
+
+
+def alpaca_ready_cached() -> bool:
+    """True when keys are configured and the last cached /v2/account probe was ok.
+    Never does I/O; kept fresh by :func:`alpaca_refresher`."""
+    v = _cache["value"]
+    return bool(alpaca_client.configured() and v and v.get("status") == "ok")
+
+
+async def alpaca_refresher(interval: float = 60.0) -> None:
+    """Background loop: refresh the Alpaca status cache; never raises."""
+    while True:
+        try:
+            await fetch_alpaca_status(force=True)
+        except Exception:  # noqa: BLE001 — best-effort probe
+            pass
+        await asyncio.sleep(interval)

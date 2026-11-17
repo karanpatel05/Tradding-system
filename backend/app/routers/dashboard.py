@@ -12,11 +12,11 @@ import logging
 from fastapi import APIRouter, Depends
 
 from app.auth.gate import require_auth
-from app.auth.manager import session_manager
 from app.engine.execution import flatten_all
 from app.engine.manager import engine_manager
 from app.engine.worker import close_open_trades
 from app.broker.account import balances as get_account_summary, positions as get_positions
+from app.services.alpaca_status import alpaca_ready_cached
 from app.services.market import get_market_overview, get_market_status
 
 logger = logging.getLogger("trading.dashboard")
@@ -37,9 +37,9 @@ async def market_overview() -> dict:
 
 @router.get("/positions", dependencies=[Depends(require_auth)])
 async def positions() -> dict:
-    """Live view of all open positions across accounts. Degrades gracefully."""
-    if not session_manager.is_authenticated():
-        return {"positions": [], "note": "Not connected to IBKR."}
+    """Alpaca paper positions (shared account). Degrades gracefully."""
+    if not alpaca_ready_cached():
+        return {"positions": [], "note": "Alpaca not connected."}
     out: list[dict] = []
     try:
         for p in await get_positions():
@@ -59,9 +59,9 @@ async def positions() -> dict:
 
 @router.get("/account", dependencies=[Depends(require_auth)])
 async def account() -> dict:
-    """IBKR account summary (balances/PnL/margin). Degrades gracefully."""
-    if not session_manager.is_authenticated():
-        return {"account": {}, "note": "Not connected to IBKR."}
+    """Alpaca paper account summary (shared account). Degrades gracefully."""
+    if not alpaca_ready_cached():
+        return {"account": {}, "note": "Alpaca not connected."}
     try:
         return {"account": await get_account_summary(), "note": None}
     except Exception as exc:  # noqa: BLE001

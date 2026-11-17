@@ -55,6 +55,8 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(run_builder_monitor())
     from app.broker.status import refresher
     asyncio.create_task(refresher())
+    from app.services.alpaca_status import alpaca_refresher
+    asyncio.create_task(alpaca_refresher())
     yield
     logger.info("Shutting down")
 

@@ -6,7 +6,6 @@ import { api, getAppToken, setAppToken } from "../api.js";
 // status. No credentials are entered here — they live in backend/.env only.
 export default function ApiTab({ onChange }) {
   const [info, setInfo] = useState(null);
-  const [acct, setAcct] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
 
@@ -16,7 +15,6 @@ export default function ApiTab({ onChange }) {
     } catch (e) {
       setErr(e.message);
     }
-    api.account().then((d) => setAcct(d.account || d)).catch(() => {});
   };
   useEffect(() => {
     load();
@@ -101,18 +99,17 @@ export default function ApiTab({ onChange }) {
     <div className="api-page">
       <section className="card">
         <div className="card-head">
-          <h1>Broker — Tastytrade</h1>
+          <h1>Market data — Tastytrade</h1>
           <span className={`mode-badge ${STATE_CLASS[state] || "disabled"}`}>
             {STATE_LABEL[state] || state}
           </span>
         </div>
         <p className="muted">
-          Tastytrade is the broker and the market-data source. Orders only transmit when{" "}
-          <code>ENABLE_LIVE_ORDERS</code> is set server-side — otherwise every strategy runs
-          in paper mode with simulated fills.
+          Tastytrade supplies market data only. Orders and account balances come from
+          your Alpaca account (see below).
         </p>
         <div className="deploy-grid" style={{ marginTop: 12 }}>
-          <div><div className="stat-label">Broker</div><div className="stat-value">Tastytrade</div></div>
+          <div><div className="stat-label">Source</div><div className="stat-value">Tastytrade</div></div>
           <div>
             <div className="stat-label">Status</div>
             <div className={`stat-value ${connected ? "pos" : "neg"}`}>{connected ? "Verified" : "Not verified"}</div>
@@ -120,14 +117,6 @@ export default function ApiTab({ onChange }) {
           <div>
             <div className="stat-label">Account</div>
             <div className="stat-value">{info?.account || "—"}</div>
-          </div>
-          <div>
-            <div className="stat-label">Net liq</div>
-            <div className="stat-value">{money(acct?.net_liquidation)}</div>
-          </div>
-          <div>
-            <div className="stat-label">Buying power</div>
-            <div className="stat-sub">{money(acct?.buying_power)}</div>
           </div>
         </div>
         {err && <div className="banner error" style={{ marginTop: 10 }}>{err}</div>}
@@ -228,19 +217,20 @@ export default function ApiTab({ onChange }) {
         <div className="card-head">
           <h2>Order Routing</h2>
           <span className={`mode-badge ${liveOn ? "danger" : "disabled"}`}>
-            {liveOn ? "LIVE" : "PAPER"}
+            {liveOn ? "ALPACA PAPER" : "SIMULATED"}
           </span>
         </div>
         <p className="muted small">
-          Master safety gate (<code>ENABLE_LIVE_ORDERS</code>). In <b>paper</b> mode
-          strategies run their full logic but orders are logged, never transmitted.
-          In <b>LIVE</b> mode real orders go to Tastytrade. The setting persists in{" "}
-          <code>.env</code> across restarts. SAFE MODE and the kill switch are unaffected.
+          {liveOn
+            ? <>Orders go to your Alpaca <b>paper</b> account (live trading locked)</>
+            : "Simulated — orders never leave the app"}.
+          {" "}The setting persists in <code>.env</code> across restarts. SAFE MODE and the
+          kill switch are unaffected.
         </p>
         {!liveOn && !arming && (
           <button className="btn primary" style={{ marginTop: 10 }}
             onClick={() => { setOrdersMsg(null); setArming(true); }}>
-            Enable live orders…
+            Send orders to Alpaca paper…
           </button>
         )}
         {!liveOn && arming && (

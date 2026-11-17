@@ -18,9 +18,9 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 
 from app.auth.gate import APP_SESSION_COOKIE, is_authenticated
-from app.auth.manager import session_manager
 from app.config import get_settings
 from app.engine.manager import engine_manager
+from app.services.alpaca_status import alpaca_ready_cached
 from app.services.market import get_market_status
 from app.services.market_stream import market_stream
 from app.strategies.registry import list_strategies
@@ -73,7 +73,7 @@ async def _strategy_positions_snapshot() -> list[dict]:
 
 
 async def _positions_snapshot() -> list[dict]:
-    if not session_manager.is_authenticated():
+    if not alpaca_ready_cached():
         return []
     try:
         return [{"account": p.account, "symbol": p.symbol, "quantity": float(p.quantity)}
@@ -84,7 +84,7 @@ async def _positions_snapshot() -> list[dict]:
 
 
 async def _account_snapshot() -> dict:
-    if not session_manager.is_authenticated():
+    if not alpaca_ready_cached():
         return {}
     try:
         return await get_account_summary()
