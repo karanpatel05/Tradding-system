@@ -44,10 +44,9 @@ def _accumulate(o: dict, net: dict[str, float]) -> None:
     if o.get("order_class") == "mleg":
         for leg in legs:
             sign = 1 if leg.get("side") == "buy" else -1
-            ratio = _qty(leg.get("ratio_qty")) or 1.0
             sym = occ_unpadded(leg.get("symbol") or "")
             if sym:
-                net[sym] = net.get(sym, 0.0) + sign * ratio * _qty(leg.get("filled_qty"))
+                net[sym] = net.get(sym, 0.0) + sign * _qty(leg.get("filled_qty"))
         return
     sym = occ_unpadded(o.get("symbol") or "")
     if sym:

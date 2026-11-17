@@ -62,13 +62,13 @@ async def test_ledger_option_symbols_unpadded(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ledger_mleg_sums_legs_by_ratio(monkeypatch):
-    legs = [{"symbol": "QQQ261117C00660000", "side": "buy", "ratio_qty": "1", "filled_qty": "2"},
-            {"symbol": "QQQ261117C00670000", "side": "sell", "ratio_qty": "2", "filled_qty": "2"}]
+async def test_ledger_mleg_uses_leg_filled_qty_not_ratio(monkeypatch):
+    legs = [{"symbol": "QQQ261117C00660000", "side": "buy", "ratio_qty": "2", "filled_qty": "4"},
+            {"symbol": "QQQ261117C00670000", "side": "sell", "ratio_qty": "1", "filled_qty": "2"}]
     _orders(monkeypatch, [{"id": "m", "client_order_id": "tsys-m", "order_class": "mleg",
                            "symbol": None, "legs": legs, "filled_qty": "2"}])
-    assert await ledger.app_net_positions() == {"QQQ261117C00660000": 2,
-                                                "QQQ261117C00670000": -4}
+    assert await ledger.app_net_positions() == {"QQQ261117C00660000": 4,
+                                                "QQQ261117C00670000": -2}
 
 
 @pytest.mark.asyncio

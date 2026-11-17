@@ -111,10 +111,14 @@ async def positions() -> list[NormalizedPosition]:
         if not ledger:
             return []
         acct_pos = await account_positions()
-        a = await ac.request("GET", "/v2/account")
     except _ERRORS:
         logger.warning("Alpaca positions fetch failed", exc_info=True)
         return []
+    try:
+        a = await ac.request("GET", "/v2/account")
+    except _ERRORS:
+        logger.warning("Alpaca account number unavailable for positions", exc_info=True)
+        a = None
     account = _mask((a or {}).get("account_number")) if isinstance(a, dict) else ""
     out: list[NormalizedPosition] = []
     for sym, qty in sorted(ledger.items()):

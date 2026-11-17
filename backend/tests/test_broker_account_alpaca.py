@@ -133,3 +133,20 @@ async def test_reads_degrade_on_transport_error(monkeypatch):
     _mock(monkeypatch, handler)
     assert await acct.balances() == {}
     assert await acct.live_orders() == []
+
+
+@pytest.mark.asyncio
+async def test_positions_survive_account_failure(monkeypatch):
+    def handler(req):
+        p = req.url.path
+        if p == "/v2/account":
+            return httpx.Response(500, json={"message": "boom"})
+        if p == "/v2/positions":
+            return httpx.Response(200, json=[{"symbol": "AAPL", "qty": "10",
+                                              "avg_entry_price": "190", "asset_class": "us_equity"}])
+        return httpx.Response(200, json=[{"id": "1", "client_order_id": "tsys-a",
+                                          "symbol": "AAPL", "side": "buy",
+                                          "filled_qty": "10", "legs": None}])
+    _mock(monkeypatch, handler)
+    (p,) = await acct.positions()
+    assert (p.symbol, p.quantity, p.account) == ("AAPL", 10, "")
