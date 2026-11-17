@@ -85,10 +85,6 @@ class Settings(BaseSettings):
     # React app from this directory at "/" with SPA fallback. Empty in dev (Vite serves UI).
     frontend_dist: str = ""
 
-    # --- Triple Calendar (options strategy, live) ---
-    tc_underlying: str = "QQQ"
-    tc_event_dates: str = ""                 # comma-separated ISO dates (FOMC/CPI)
-    tc_manage_interval_seconds: int = 300
     builder_monitor_interval_seconds: int = 60  # options-builder paper-trade revaluation cadence
     vix_wait_poll_seconds: int = 5   # while flat + VIX > entry ceiling, re-check VIX this often
 

@@ -3,7 +3,6 @@ import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from "recharts";
 import { api } from "../api.js";
-import OptionsStrategyDetail from "./OptionsStrategyDetail.jsx";
 
 const TF_ORDER = ["1D", "1W", "1M", "YTD", "full"];
 const pct = (n) => (n === null || n === undefined ? "—" : `${(n * 100).toFixed(2)}%`);
@@ -37,10 +36,6 @@ export default function StrategyDetail({ keyName, onBack }) {
 
   if (!detail) return <div className="muted">Loading…</div>;
   const ov = detail.overview;
-
-  // Options strategies (e.g. Triple Calendar) get their own options-aware page — no
-  // equity backtest, plus legs/DTE/live P&L/breach. Routed by metadata, not by key.
-  if (ov.is_options) return <OptionsStrategyDetail keyName={keyName} onBack={onBack} />;
 
   return (
     <div className="strategy-detail">

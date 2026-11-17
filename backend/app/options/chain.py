@@ -7,7 +7,7 @@ import asyncio
 from datetime import date
 
 from app.marketdata import facade
-from app.strategies.triple_calendar.live_source import LivePriceSource
+from app.options.live_source import LivePriceSource
 
 
 async def get_option_chain(underlying: str) -> dict:

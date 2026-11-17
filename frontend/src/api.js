@@ -79,18 +79,6 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ amount }),
     }),
-  // How many of the whole spread to open per entry (Triple Calendar).
-  setContracts: (key, contracts) =>
-    request(`/api/strategies/${key}/contracts`, {
-      method: "PUT",
-      body: JSON.stringify({ contracts }),
-    }),
-  // Multi-ticker Triple Calendar: set the full ticker list [{ticker, contracts}].
-  setTickers: (key, tickers) =>
-    request(`/api/strategies/${key}/tickers`, {
-      method: "PUT",
-      body: JSON.stringify({ tickers }),
-    }),
   // Multi-position crossover: set the live trade-direction mode (long/short/both).
   setDirection: (key, direction) =>
     request(`/api/strategies/${key}/direction`, {
@@ -112,12 +100,6 @@ export const api = {
   backtestLast: (key) => request(`/api/strategies/${key}/backtest/last`),
   // Live detail/metrics for the strategy's open position (TP/SL/fill/live price).
   position: (key) => request(`/api/strategies/${key}/position`),
-  // Options-aware detail for a multi-leg strategy (Triple Calendar): legs, DTE, net
-  // debit, live value/P&L, target/stop progress, breach distances + operational status.
-  optionsPosition: (key) => request(`/api/strategies/${key}/options-position`),
-  // Payoff diagram + stats + net greeks for one open Triple Calendar position.
-  optionsPositionPayoff: (key, ticker) =>
-    request(`/api/strategies/${key}/options-position/payoff?ticker=${encodeURIComponent(ticker)}`),
   // Options Strategy Builder (tracked paper trades — no orders transmitted).
   builderChain: (underlying) => request(`/api/builder/chain?underlying=${encodeURIComponent(underlying)}`),
   // Header quote: last price + day change vs previous close.

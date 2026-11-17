@@ -13,20 +13,16 @@ from app.config import get_settings
 from app.db.base import session_scope
 from app.db.models import StrategyState
 from app.strategies.base import BaseStrategy, ComingSoonStrategy
-from app.strategies.triple_calendar.strategy_class import TripleCalendarStrategy
 
 settings = get_settings()
 
-# Strategy slots. slot strategy_2 is the live Triple Calendar (options); the rest are
-# "Coming Soon" placeholders. The 9/15 EMA crossover (slot strategy_1) was removed
-# entirely — its package remains for backtest/research use, just no longer registered.
-# To make a slot live, register a ready BaseStrategy subclass under its key.
+# Strategy slots: all "Coming Soon" placeholders. The 9/15 EMA crossover (slot strategy_1)
+# and the Triple Calendar (slot strategy_2) were removed. To make a slot live, register a
+# ready BaseStrategy subclass under its key.
 _STRATEGIES: dict[str, BaseStrategy] = {
     f"strategy_{i}": ComingSoonStrategy(key=f"strategy_{i}", name=f"Strategy {i}")
     for i in range(2, settings.max_strategies + 1)
 }
-_tc = TripleCalendarStrategy()
-_STRATEGIES[_tc.key] = _tc
 
 
 def list_strategies() -> list[BaseStrategy]:
@@ -57,3 +53,5 @@ async def seed_strategy_state() -> None:
                 if state and (state.ready != strat.ready or state.name != strat.name):
                     state.ready = strat.ready
                     state.name = strat.name
+                if state and not state.ready and state.status != "idle":
+                    state.status = "idle"

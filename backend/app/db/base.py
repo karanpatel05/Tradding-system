@@ -51,6 +51,9 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_ensure_added_columns)
+    async with SessionLocal() as session:
+        await close_stale_tc_positions(session)
+        await session.commit()
 
 
 def _ensure_added_columns(conn) -> None:
@@ -90,6 +93,28 @@ def _ensure_added_columns(conn) -> None:
         cols = {c["name"] for c in insp.get_columns("builder_positions")}
         if "contracts" not in cols:
             conn.execute(text("ALTER TABLE builder_positions ADD COLUMN contracts INTEGER DEFAULT 1"))
+
+
+async def close_stale_tc_positions(session) -> int:
+    """One-time, idempotent data fix after Triple Calendar removal: close any still-open
+    ``strategy_2`` option positions (no manager exists to close them). P&L stays null —
+    nothing was actually closed at a price. Returns the number of rows closed."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from app.db.models import OptionPositionRecord
+
+    rows = (await session.execute(select(OptionPositionRecord).where(
+        OptionPositionRecord.strategy_key == "strategy_2",
+        OptionPositionRecord.status == "open"))).scalars().all()
+    now = datetime.now(timezone.utc)
+    for r in rows:
+        r.status = "closed"
+        r.exit_time = now
+        r.pnl = None
+    await session.flush()
+    return len(rows)
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:

@@ -124,8 +124,6 @@ DANGEROUS_WRITES = [
     ("POST", "/api/strategies/strategy_1/activate", None),
     ("POST", "/api/strategies/strategy_1/stop", None),
     ("PUT", "/api/strategies/strategy_1/allocation", {"amount": 1000.0}),
-    ("PUT", "/api/strategies/strategy_1/contracts", {"contracts": 1}),
-    ("PUT", "/api/strategies/strategy_1/tickers", {"tickers": [{"ticker": "QQQ", "contracts": 1}]}),
     ("PUT", "/api/strategies/strategy_1/direction", {"direction": "both"}),
 ]
 
