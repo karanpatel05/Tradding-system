@@ -1,153 +1,309 @@
 import MarketStatus from "./MarketStatus.jsx";
-import DataBrokerChips from "./DataBrokerChips.jsx";
-import KillSwitch from "./KillSwitch.jsx";
 import MarketOverview from "./MarketOverview.jsx";
 
-const fmt = (n, d = 2) =>
-  n === null || n === undefined ? "—" : Number(n).toLocaleString(undefined, { maximumFractionDigits: d });
-
-function Stat({ label, value, sub, tone }) {
+const money = (n) =>
+  n == null
+    ? "—"
+    : Number(n).toLocaleString("en-US", { style: "currency", currency: "USD" });
+const tone = (n) => (n == null ? "" : n >= 0 ? "pos" : "neg");
+function Stat({ label, value, sub, color = "" }) {
   return (
     <div className="stat">
       <div className="stat-label">{label}</div>
-      <div className={`stat-value ${tone || ""}`}>{value}</div>
-      {sub && <div className="stat-sub muted small">{sub}</div>}
+      <div className={`stat-value ${color}`}>{value}</div>
+      <div className="stat-sub muted">{sub}</div>
     </div>
   );
 }
 
-const SESSION_LABEL = {
-  regular: "Open",
-  pre_market: "Pre-market",
-  after_hours: "After-hours",
-  closed: "Closed",
-};
-
-export default function Dashboard({ snapshot, onOpenStrategy }) {
+export default function Dashboard({
+  snapshot,
+  account,
+  accountError,
+  feedConnected,
+  auth,
+  onOpenStrategy,
+  onConnections,
+}) {
   const strategies = snapshot?.strategies || [];
   const positions = snapshot?.positions || [];
   const active = strategies.filter((s) => s.running);
-  const activeAlloc = active.reduce((sum, s) => sum + (s.capital_allocation || 0), 0);
-  const session = snapshot?.market_status?.session;
-  const acct = snapshot?.account;
-  const hasAcct = acct && Object.keys(acct).length > 0;
-  const pnlTone = (v) => (v === null || v === undefined ? "" : v >= 0 ? "pos" : "neg");
-
+  const allocated = active.reduce(
+    (total, s) => total + (s.capital_allocation || 0),
+    0,
+  );
+  const acct = snapshot?.account || account;
+  const hasSnapshot = snapshot != null;
   return (
     <div className="dashboard">
       <header className="page-head">
         <div>
-          <h1>Dashboard</h1>
-          <MarketStatus status={snapshot?.market_status} />
-          <DataBrokerChips />
+          <h1>Portfolio overview</h1>
+          <p className="page-description">
+            Your positions, strategies and execution health in one view.
+          </p>
         </div>
-        <KillSwitch />
+        <MarketStatus status={snapshot?.market_status} />
       </header>
-
-      {/* Summary stats from the live snapshot */}
-      <div className="stat-strip">
-        <Stat label="Active strategies" value={active.length} sub={`${strategies.length} total`} />
-        <Stat label="Capital deployed" value={`$${fmt(activeAlloc, 0)}`} sub="across running" />
-        <Stat label="Open positions" value={positions.length} sub={positions.length ? "live" : "flat"} />
+      {(!feedConnected || !hasSnapshot) && (
+        <div className="banner warn" role="status">
+          {hasSnapshot
+            ? "Feed disconnected. Positions and strategy state show the last received snapshot."
+            : "Waiting for a portfolio snapshot. Check Connections for market data and broker status."}
+        </div>
+      )}
+      {accountError && !snapshot?.account && (
+        <div className="banner warn" role="status">
+          Account balances unavailable: {accountError}.{" "}
+          <button className="link-btn" onClick={onConnections}>
+            Open Connections
+          </button>
+        </div>
+      )}
+      <MarketOverview snapshot={feedConnected ? snapshot : null} />
+      <div className="stat-strip operator-metrics">
         <Stat
-          label="Market"
-          value={SESSION_LABEL[session] || "—"}
-          tone={session === "regular" ? "pos" : session === "closed" ? "neg" : ""}
-          sub={snapshot?.market_status ? `${snapshot.market_status.regular_open_et}–${snapshot.market_status.regular_close_et} ET` : ""}
+          label="Net liquidation"
+          value={money(acct?.net_liquidation)}
+          sub="Alpaca paper · shared account"
+        />
+        <Stat
+          label="Unrealized P&L"
+          value={money(acct?.unrealized_pnl)}
+          sub="Account positions"
+          color={tone(acct?.unrealized_pnl)}
+        />
+        <Stat
+          label="Buying power"
+          value={money(acct?.buying_power)}
+          sub="Account buying power"
+        />
+        <Stat
+          label="Active strategies"
+          value={hasSnapshot ? `${active.length} / ${strategies.length}` : "—"}
+          sub={hasSnapshot ? "From portfolio snapshot" : "Awaiting data"}
         />
       </div>
-
-      <MarketOverview snapshot={snapshot} />
-
-      <section className="card">
-        <div className="card-head">
-          <h2>Account</h2>
-          <span className="muted small">Alpaca paper · shared account{acct?.currency ? ` · ${acct.currency}` : ""}</span>
+      <div className="operator-grid">
+        <div className="operator-primary">
+          <section className="card">
+            <div className="card-head">
+              <h2>Open positions</h2>
+              <span className="count-pill">
+                {hasSnapshot
+                  ? `${positions.length} app-owned`
+                  : "Awaiting data"}
+              </span>
+            </div>
+            {!hasSnapshot || positions.length === 0 ? (
+              <div className="empty">
+                <div className="empty-title">
+                  {hasSnapshot ? "No open positions" : "Positions unavailable"}
+                </div>
+                <p className="small">
+                  {hasSnapshot
+                    ? "Positions appear here when a strategy trades."
+                    : "A portfolio snapshot is required to display positions."}
+                </p>
+              </div>
+            ) : (
+              <div className="table-scroll">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Symbol / strategy</th>
+                      <th>Side</th>
+                      <th>Quantity</th>
+                      <th>Entry</th>
+                      <th>Source</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {positions.map((p, i) => (
+                      <tr key={`${p.symbol}-${i}`}>
+                        <td>
+                          {p.strategy_key ? (
+                            <button
+                              className="link-btn"
+                              onClick={() => onOpenStrategy(p.strategy_key)}
+                            >
+                              {p.symbol}
+                            </button>
+                          ) : (
+                            <b>{p.symbol}</b>
+                          )}
+                          <div className="small muted">
+                            {strategies.find((s) => s.key === p.strategy_key)
+                              ?.name ||
+                              p.strategy_key ||
+                              "—"}
+                          </div>
+                        </td>
+                        <td
+                          className={
+                            p.side === "long"
+                              ? "pos"
+                              : p.side === "short"
+                                ? "neg"
+                                : ""
+                          }
+                        >
+                          {p.side || "—"}
+                        </td>
+                        <td className="num">{p.quantity ?? "—"}</td>
+                        <td className="num">{money(p.entry_price)}</td>
+                        <td>
+                          <span className="pill idle">{p.source || "—"}</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+          <section className="card">
+            <div className="card-head">
+              <h2>Strategy activity</h2>
+              <span className="count-pill">
+                {hasSnapshot ? `${active.length} running` : "Awaiting data"}
+              </span>
+            </div>
+            {!active.length ? (
+              <div className="empty">
+                <div className="empty-title">
+                  {hasSnapshot
+                    ? "No strategies running"
+                    : "Strategy state unavailable"}
+                </div>
+                <p className="small">
+                  Review strategy rules and allocation in Strategies.
+                </p>
+              </div>
+            ) : (
+              <div className="table-scroll">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Strategy</th>
+                      <th>Selected symbol</th>
+                      <th>Allocation</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {active.map((s) => (
+                      <tr key={s.key}>
+                        <td>
+                          <button
+                            className="link-btn"
+                            onClick={() => onOpenStrategy(s.key)}
+                          >
+                            {s.name}
+                          </button>
+                        </td>
+                        <td>{s.selected_symbol || "—"}</td>
+                        <td className="num">{money(s.capital_allocation)}</td>
+                        <td>
+                          <span className="pill live">{s.status}</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+          <section className="card">
+            <div className="card-head">
+              <h2>Account balances</h2>
+              <span className="small muted">
+                {acct?.currency || "USD"} · shared account
+              </span>
+            </div>
+            <dl className="account-details">
+              {[
+                ["Cash", acct?.total_cash],
+                ["Available funds", acct?.available_funds],
+                ["Position value", acct?.gross_position_value],
+                ["Realized P&L", acct?.realized_pnl],
+                ["Initial margin", acct?.init_margin],
+                ["Maintenance margin", acct?.maint_margin],
+              ].map(([label, value]) => (
+                <div key={label}>
+                  <dt>{label}</dt>
+                  <dd>{money(value)}</dd>
+                </div>
+              ))}
+            </dl>
+          </section>
         </div>
-        {hasAcct ? (
-          <div className="stat-strip">
-            <Stat label="Net Liquidation" value={`$${fmt(acct.net_liquidation, 0)}`} />
-            <Stat label="Cash" value={`$${fmt(acct.total_cash, 0)}`} />
-            <Stat label="Buying Power" value={`$${fmt(acct.buying_power, 0)}`} />
-            <Stat label="Available Funds" value={`$${fmt(acct.available_funds, 0)}`} />
-            <Stat label="Position Value" value={`$${fmt(acct.gross_position_value, 0)}`} />
-            <Stat label="Unrealized P&L" value={`$${fmt(acct.unrealized_pnl)}`} tone={pnlTone(acct.unrealized_pnl)} />
-            <Stat label="Realized P&L" value={`$${fmt(acct.realized_pnl)}`} tone={pnlTone(acct.realized_pnl)} />
-            <Stat label="Init Margin" value={`$${fmt(acct.init_margin, 0)}`} />
-            <Stat label="Maint Margin" value={`$${fmt(acct.maint_margin, 0)}`} />
-          </div>
-        ) : (
-          <p className="muted small" style={{ marginTop: 12 }}>Alpaca not connected.</p>
-        )}
-      </section>
-
-      <div className="grid-2">
-        <section className="card">
-          <div className="card-head">
-            <h2>Active Strategies</h2>
-            <span className="count-pill">{active.length} running</span>
-          </div>
-          {active.length === 0 ? (
-            <div className="empty">
-              <div className="empty-icon">◎</div>
-              <div className="empty-title">No strategies running</div>
-              <div className="muted small">Activate one from the Strategies tab to see it here.</div>
+        <aside className="operator-secondary">
+          <section className="card">
+            <h2>Capital allocation</h2>
+            <div className="allocation-total">
+              {hasSnapshot ? money(allocated) : "—"}
+              <div className="small muted">budgeted to running strategies</div>
             </div>
-          ) : (
-            <table className="table">
-              <thead>
-                <tr><th>Strategy</th><th>Status</th><th>Selected</th><th>Capital</th></tr>
-              </thead>
-              <tbody>
-                {active.map((s) => (
-                  <tr key={s.key} className="clickable-row"
-                    onClick={() => onOpenStrategy?.(s.key)}
-                    title="Open strategy">
-                    <td>{s.name}</td>
-                    <td><span className="pill live">{s.status}</span></td>
-                    <td>{s.selected_symbol || "—"}</td>
-                    <td className="num">${fmt(s.capital_allocation)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </section>
-
-        <section className="card">
-          <div className="card-head">
-            <h2>Open Positions <span className="muted small">app-owned only</span></h2>
-            <span className="count-pill">{positions.length}</span>
-          </div>
-          {positions.length === 0 ? (
-            <div className="empty">
-              <div className="empty-icon">⛶</div>
-              <div className="empty-title">No open positions</div>
-              <div className="muted small">Positions will appear here once a strategy trades.</div>
+            {active.map((s) => (
+              <div className="allocation-row" key={s.key}>
+                <div>
+                  <span>{s.name}</span>
+                  <b>{money(s.capital_allocation)}</b>
+                </div>
+                <div className="allocation-track">
+                  <i
+                    style={{
+                      width: `${allocated > 0 ? Math.min(100, Math.max(0, (s.capital_allocation / allocated) * 100)) : 0}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            ))}
+            <p className="panel-note">
+              Strategy budgets are not a measure of actual portfolio exposure.
+            </p>
+          </section>
+          <section className="card">
+            <div className="card-head">
+              <h2>System health</h2>
+              <button className="link-btn" onClick={onConnections}>
+                Details
+              </button>
             </div>
-          ) : (
-            <table className="table">
-              <thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Source</th></tr></thead>
-              <tbody>
-                {positions.map((p, i) => (
-                  <tr key={i}
-                    className={p.strategy_key ? "clickable-row" : ""}
-                    onClick={p.strategy_key ? () => onOpenStrategy?.(p.strategy_key) : undefined}
-                    title={p.strategy_key ? "Open strategy" : undefined}>
-                    <td>{p.symbol}</td>
-                    <td className={p.side === "long" ? "pos" : p.side === "short" ? "neg" : ""}>{p.side || "—"}</td>
-                    <td className="num">{fmt(p.quantity)}</td>
-                    <td className="num">{p.entry_price ?? "—"}</td>
-                    <td className="muted small">
-                      {p.strategy_key || p.account || "—"}
-                      {p.source === "paper" && <span className="pill tiny idle" style={{ marginLeft: 6 }}>paper</span>}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </section>
+            <dl className="health-list">
+              <div>
+                <dt>Snapshot feed</dt>
+                <dd>
+                  <span className={`pill ${feedConnected ? "live" : "idle"}`}>
+                    {feedConnected ? "Connected" : "Offline"}
+                  </span>
+                </dd>
+              </div>
+              <div>
+                <dt>Market data</dt>
+                <dd>Tastytrade</dd>
+              </div>
+              <div>
+                <dt>Execution broker</dt>
+                <dd>Alpaca paper</dd>
+              </div>
+              <div>
+                <dt>Recovery state</dt>
+                <dd>
+                  <span className={`pill ${auth?.safe_mode ? "down" : "idle"}`}>
+                    {auth?.safe_mode
+                      ? "Safe mode"
+                      : auth?.conn_state || "Unknown"}
+                  </span>
+                </dd>
+              </div>
+            </dl>
+            <p className="panel-note">
+              Connection and order-routing details are available in Connections.
+            </p>
+          </section>
+        </aside>
       </div>
     </div>
   );

@@ -1,4 +1,9 @@
 node_modules/
 dist/
+dist-redesign/
 *.local
 .DS_Store
+
+# Local captures may contain account data or authentication state.
+redesign-preview/production-*.jpg
+redesign-preview/auth-configured.jpg

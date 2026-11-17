@@ -4,12 +4,18 @@ import { api } from "../api.js";
 const fmt = (n, d = 2) =>
   n === null || n === undefined
     ? "—"
-    : Number(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+    : Number(n).toLocaleString(undefined, {
+        minimumFractionDigits: d,
+        maximumFractionDigits: d,
+      });
 
 const pct = (p) =>
-  p === null || p === undefined ? "" : `${p >= 0 ? "+" : ""}${(p * 100).toFixed(2)}%`;
+  p === null || p === undefined
+    ? ""
+    : `${p >= 0 ? "+" : ""}${(p * 100).toFixed(2)}%`;
 
-const signClass = (n) => (n === null || n === undefined ? "" : n >= 0 ? "pos" : "neg");
+const signClass = (n) =>
+  n === null || n === undefined ? "" : n >= 0 ? "pos" : "neg";
 
 // A single index ticker. VIX (kind: "volatility") is a level, not a dollar
 // price, so it gets no "$" and its rise/fall is shown neutrally-coloured by sign.
@@ -81,8 +87,6 @@ export default function MarketOverview({ snapshot }) {
 
   const overview = streamed || polled;
   const indices = overview?.indices || [];
-  const featured = indices.find((i) => i.featured);
-  const rest = indices.filter((i) => !i.featured);
   const live = overview?.data_available;
 
   return (
@@ -90,21 +94,34 @@ export default function MarketOverview({ snapshot }) {
       <div className="overview-head">
         <h2>Market Overview</h2>
         <span className={`feed-badge ${live ? "live" : ""}`}>
-          <span className="dot" /> {live ? (overview?.streaming ? "Live · streaming" : "Live market data") : "Connecting…"}
+          <span className="dot" />{" "}
+          {live
+            ? overview?.streaming
+              ? "Live · streaming"
+              : "Market data"
+            : loading
+              ? "Connecting…"
+              : "Unavailable"}
         </span>
       </div>
 
-      {overview?.note && <div className="muted small overview-note">{overview.note}</div>}
+      {overview?.note && (
+        <div className="muted small overview-note">{overview.note}</div>
+      )}
 
       {loading && indices.length === 0 ? (
         <div className="muted overview-loading">Connecting to market…</div>
       ) : (
         <div className="ticker-board">
-          {featured && <Ticker ix={featured} featured />}
           <div className="ticker-row">
-            {rest.map((ix) => (
+            {indices.map((ix) => (
               <Ticker key={ix.symbol} ix={ix} />
             ))}
+            {indices.length === 0 && (
+              <p className="muted small">
+                Market quotes are unavailable. Check the market data connection.
+              </p>
+            )}
           </div>
         </div>
       )}

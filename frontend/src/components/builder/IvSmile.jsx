@@ -5,19 +5,28 @@
 // subscriptions server-side.
 import { useEffect, useRef, useState } from "react";
 import {
-  CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  CartesianGrid,
+  Line,
+  LineChart,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
 } from "recharts";
 import { api } from "../../api.js";
 
 export default function IvSmile({ underlying, expiry }) {
-  const [data, setData] = useState(null);   // {spot, points}
+  const [data, setData] = useState(null); // {spot, points}
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
 
   const load = () => {
     if (!underlying?.trim() || !expiry) return;
-    setBusy(true); setErr(null);
-    api.builderIvSmile(underlying.trim(), expiry)
+    setBusy(true);
+    setErr(null);
+    api
+      .builderIvSmile(underlying.trim(), expiry)
       .then(setData)
       .catch((e) => setErr(e.message))
       .finally(() => setBusy(false));
@@ -28,7 +37,10 @@ export default function IvSmile({ underlying, expiry }) {
 
   // Debounced fetch on expiry (or underlying) change only.
   useEffect(() => {
-    if (!underlying?.trim() || !expiry) { setData(null); return undefined; }
+    if (!underlying?.trim() || !expiry) {
+      setData(null);
+      return undefined;
+    }
     const t = setTimeout(() => loadRef.current(), 800);
     return () => clearTimeout(t);
   }, [underlying, expiry]);
@@ -44,7 +56,9 @@ export default function IvSmile({ underlying, expiry }) {
         <h2>IV Smile</h2>
         <div className="row gap center">
           {busy && <span className="muted small">Loading…</span>}
-          <button className="btn ghost tiny" onClick={load} disabled={busy}>Refresh</button>
+          <button className="btn ghost tiny" onClick={load} disabled={busy}>
+            Refresh
+          </button>
         </div>
       </div>
       {err && <div className="banner ok">{err}</div>}
@@ -52,23 +66,59 @@ export default function IvSmile({ underlying, expiry }) {
         <div className="muted">Insufficient quotes for a smile.</div>
       ) : (
         <ResponsiveContainer width="100%" height={260}>
-          <LineChart data={points} margin={{ top: 12, right: 12, bottom: 0, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#243" vertical={false} />
-            <XAxis dataKey="strike" type="number" domain={["dataMin", "dataMax"]}
-              tick={{ fontSize: 10 }} minTickGap={30}
-              tickFormatter={(v) => `$${v}`} />
-            <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `${v.toFixed(0)}%`} width={48} />
+          <LineChart
+            data={points}
+            margin={{ top: 12, right: 12, bottom: 0, left: 0 }}
+          >
+            <CartesianGrid
+              strokeDasharray="3 3"
+              stroke="var(--border)"
+              vertical={false}
+            />
+            <XAxis
+              dataKey="strike"
+              type="number"
+              domain={["dataMin", "dataMax"]}
+              tick={{ fontSize: 10 }}
+              minTickGap={30}
+              tickFormatter={(v) => `$${v}`}
+            />
+            <YAxis
+              tick={{ fontSize: 10 }}
+              tickFormatter={(v) => `${v.toFixed(0)}%`}
+              width={48}
+            />
             <Tooltip
-              contentStyle={{ background: "#131722", border: "1px solid #242c3a", borderRadius: 8 }}
+              contentStyle={{
+                background: "var(--card)",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+              }}
               formatter={(v) => [`${v.toFixed(2)}%`, "IV"]}
               labelFormatter={(l) => `Strike $${l}`}
             />
             {spot != null && (
-              <ReferenceLine x={spot} stroke="#e6e9f2" strokeOpacity={0.35}
-                label={{ value: "Spot", position: "top", fill: "#8b93a7", fontSize: 10 }} />
+              <ReferenceLine
+                x={spot}
+                stroke="var(--muted)"
+                strokeOpacity={0.7}
+                label={{
+                  value: "Spot",
+                  position: "top",
+                  fill: "#8b93a7",
+                  fontSize: 10,
+                }}
+              />
             )}
-            <Line type="monotone" dataKey="ivPct" stroke="var(--accent)" strokeWidth={2}
-              dot={{ r: 3, fill: "var(--accent)" }} isAnimationActive animationDuration={300} />
+            <Line
+              type="monotone"
+              dataKey="ivPct"
+              stroke="var(--accent)"
+              strokeWidth={2}
+              dot={{ r: 3, fill: "var(--accent)" }}
+              isAnimationActive
+              animationDuration={300}
+            />
           </LineChart>
         </ResponsiveContainer>
       )}

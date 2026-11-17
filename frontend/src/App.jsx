@@ -8,6 +8,8 @@ import ApiTab from "./components/ApiTab.jsx";
 import BuilderTab from "./components/BuilderTab.jsx";
 import SafeModeBanner from "./components/SafeModeBanner.jsx";
 import ConnectionBanner from "./components/ConnectionBanner.jsx";
+import KillSwitch from "./components/KillSwitch.jsx";
+import DataBrokerChips from "./components/DataBrokerChips.jsx";
 
 // Minimal stroke icons — keeps the sidebar crisp without an icon dependency.
 const Icon = ({ name }) => {
@@ -19,34 +21,55 @@ const Icon = ({ name }) => {
     Builder: "M4 4h16v4H4V4zm0 6h10v4H4v-4zm0 6h16v4H4v-4z",
   };
   return (
-    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
+    <svg
+      viewBox="0 0 24 24"
+      width="20"
+      height="20"
+      fill="currentColor"
+      aria-hidden="true"
+    >
       <path d={paths[name]} />
     </svg>
   );
 };
 
-const NAV_GROUPS = [
-  { label: "TRADING", tabs: ["Dashboard", "Strategies", "Builder"] },
-  { label: "ANALYSIS", tabs: ["Journal", "API"] },
-];
+const NAV_LABELS = {
+  Dashboard: "Overview",
+  Strategies: "Strategies",
+  Builder: "Options builder",
+  Journal: "Journal",
+  API: "Connections",
+};
 
 export default function App() {
   const [auth, setAuth] = useState(null); // null = loading
   const [tab, setTab] = useState("Dashboard");
   const [focusKey, setFocusKey] = useState(null); // strategy to open from the dashboard
   const [connecting, setConnecting] = useState(false);
-  const [collapsed, setCollapsed] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("navCollapsed") || "{}"); } catch { return {}; }
-  });
-  const toggleGroup = (label) => setCollapsed((c) => {
-    const next = { ...c, [label]: !c[label] };
-    localStorage.setItem("navCollapsed", JSON.stringify(next));
-    return next;
-  });
   const [acct, setAcct] = useState(null);
+  const [accountError, setAccountError] = useState(null);
   useEffect(() => {
-    const load = () => api.account().then((d) => setAcct(d.account || d)).catch(() => {});
-    load(); const id = setInterval(load, 60000); return () => clearInterval(id);
+    let alive = true;
+    const load = () =>
+      api
+        .account()
+        .then((d) => {
+          if (!alive) return;
+          setAcct(d.account && typeof d.account === "object" ? d.account : d);
+          setAccountError(null);
+        })
+        .catch((e) => {
+          if (alive) {
+            setAcct(null);
+            setAccountError(e.message);
+          }
+        });
+    load();
+    const id = setInterval(load, 60000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
   }, []);
 
   const refresh = useCallback(async () => {
@@ -68,10 +91,16 @@ export default function App() {
   const kickedRef = useRef(false);
   useEffect(() => {
     if (kickedRef.current || auth === null) return;
-    const ready = auth.conn_state === "ready" || auth.conn_state === "connected" || auth.connected;
+    const ready =
+      auth.conn_state === "ready" ||
+      auth.conn_state === "connected" ||
+      auth.connected;
     if (!ready) {
       kickedRef.current = true;
-      api.connect().catch(() => {}).finally(refresh);
+      api
+        .connect()
+        .catch(() => {})
+        .finally(refresh);
     }
   }, [auth, refresh]);
 
@@ -102,73 +131,132 @@ export default function App() {
 
   return (
     <>
-      <SafeModeBanner auth={auth} onResume={refresh} />
-      <ConnectionBanner auth={auth} />
+      <a className="skip-link" href="#workspace">
+        Skip to workspace
+      </a>
       <div className="layout">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark">⚡</span>
-          <span className="brand-text">Trading<span className="brand-accent">System</span></span>
-        </div>
+        <aside className="sidebar">
+          <div className="brand">
+            <span className="brand-mark" aria-hidden="true">
+              ▥
+            </span>
+            <span className="brand-text">
+              Trading<span className="brand-accent">System</span>
+            </span>
+          </div>
 
-        <nav className="nav">
-          {NAV_GROUPS.map((g) => (
-            <div className="nav-group" key={g.label}>
-              <button className="nav-group-head" onClick={() => toggleGroup(g.label)}>
-                <span>{g.label}</span>
-                <span className={`chev ${collapsed[g.label] ? "closed" : ""}`}>▾</span>
+          <div className="workspace-label">Trading workspace</div>
+          <nav className="nav" aria-label="Main navigation">
+            {Object.keys(NAV_LABELS).map((t) => (
+              <button
+                key={t}
+                className={t === tab ? "nav-item active" : "nav-item"}
+                aria-current={t === tab ? "page" : undefined}
+                onClick={() => setTab(t)}
+              >
+                <Icon name={t} />
+                <span>{NAV_LABELS[t]}</span>
               </button>
-              {!collapsed[g.label] && g.tabs.map((t) => (
-                <button
-                  key={t}
-                  className={t === tab ? "nav-item active" : "nav-item"}
-                  onClick={() => setTab(t)}
-                >
-                  <Icon name={t} />
-                  <span>{t}</span>
-                </button>
-              ))}
+            ))}
+          </nav>
+
+          <div className="side-foot">
+            <div className="avatar">
+              {(acct?.account || "T").replace(/[^A-Za-z0-9]/g, "").slice(-1) ||
+                "T"}
             </div>
-          ))}
-        </nav>
-
-        <div className="side-foot">
-          <div className="avatar">{(acct?.account || "T").replace(/[^A-Za-z0-9]/g, "").slice(-1) || "T"}</div>
-          <div className="side-foot-meta">
-            <div className="side-foot-acct">{acct?.account || "—"}</div>
-            <div className="side-foot-nl num">{acct?.net_liquidation != null ? `$${Number(acct.net_liquidation).toLocaleString()}` : "—"}</div>
+            <div className="side-foot-meta">
+              <div className="side-foot-acct">{acct?.account || "—"}</div>
+              <div className="side-foot-nl num">
+                {acct?.net_liquidation != null
+                  ? `$${Number(acct.net_liquidation).toLocaleString()}`
+                  : "—"}
+              </div>
+            </div>
+            <span
+              className={`dot ${auth?.connected ? "on" : ""}`}
+              title={
+                auth?.connected ? "Broker verified" : "Broker not verified"
+              }
+            />
           </div>
-          <span className={`dot ${auth?.connected ? "on" : ""}`} title={auth?.connected ? "Broker verified" : "Broker not verified"} />
-        </div>
 
-        <div className="sidebar-foot">
-          <div className="feed-state">
-            <span className={connected ? "dot live" : "dot"} />
-            <span className="muted small">{connected ? "Live feed" : auth.connected ? "Connecting…" : "Not connected"}</span>
+          <div className="sidebar-foot">
+            <div className="feed-state">
+              <span className={connected ? "dot live" : "dot"} />
+              <span className="muted small">
+                {connected
+                  ? "Live feed"
+                  : auth.connected
+                    ? "Connecting…"
+                    : "Not connected"}
+              </span>
+            </div>
+            {!auth.connected && (
+              <button
+                className="btn ghost full"
+                disabled={connecting}
+                onClick={connect}
+              >
+                {connecting ? "Connecting…" : "Connect market data"}
+              </button>
+            )}
           </div>
-          {!auth.connected && (
-            <button className="btn ghost full" disabled={connecting} onClick={connect}>
-              {connecting ? "Connecting…" : "Connect Tastytrade"}
-            </button>
-          )}
-        </div>
-      </aside>
+        </aside>
 
-      <main className="main">
-        {tab === "Dashboard" && (
-          <Dashboard
-            snapshot={snapshot}
-            onOpenStrategy={(key) => { setFocusKey(key); setTab("Strategies"); }}
-          />
-        )}
-        {tab === "Strategies" && (
-          <StrategiesTab focusKey={focusKey} onFocusHandled={() => setFocusKey(null)} />
-        )}
-        {tab === "Journal" && <CalendarTab />}
-        {tab === "Builder" && <BuilderTab />}
-        {tab === "API" && <ApiTab onChange={refresh} />}
-      </main>
-    </div>
+        <div className="operator-workspace">
+          <header className="operator-toolbar">
+            <div className="operator-title">
+              Operator console <span className="pill idle">Alpaca paper</span>
+            </div>
+            <div className="operator-tools">
+              <span className="small muted">
+                <span
+                  className={connected && auth.connected ? "dot live" : "dot"}
+                />{" "}
+                {connected && auth.connected
+                  ? "Feed connected"
+                  : "Feed offline"}
+              </span>
+              <KillSwitch />
+            </div>
+          </header>
+          <SafeModeBanner auth={auth} onResume={refresh} />
+          <ConnectionBanner auth={auth} />
+          <main className="main" id="workspace" tabIndex={-1}>
+            <div className="workspace-breadcrumb">
+              Workspace / {NAV_LABELS[tab]}
+            </div>
+            {tab === "Dashboard" && (
+              <Dashboard
+                snapshot={snapshot}
+                account={acct}
+                accountError={accountError}
+                feedConnected={connected && auth.connected}
+                auth={auth}
+                onConnections={() => setTab("API")}
+                onOpenStrategy={(key) => {
+                  setFocusKey(key);
+                  setTab("Strategies");
+                }}
+              />
+            )}
+            {tab === "Strategies" && (
+              <StrategiesTab
+                focusKey={focusKey}
+                onFocusHandled={() => setFocusKey(null)}
+              />
+            )}
+            {tab === "Journal" && <CalendarTab />}
+            {tab === "Builder" && <BuilderTab />}
+            {tab === "API" && <ApiTab onChange={refresh} />}
+            <footer className="operator-footer">
+              <span>TradingSystem</span>
+              <DataBrokerChips />
+            </footer>
+          </main>
+        </div>
+      </div>
     </>
   );
 }
