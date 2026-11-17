@@ -12,7 +12,7 @@ import httpx
 
 from app.broker import alpaca_client as ac
 from app.broker.alpaca_client import AlpacaError
-from app.broker.ledger import account_positions, app_net_positions, app_orders
+from app.broker.ledger import account_positions, app_net_positions, app_open_orders
 
 logger = logging.getLogger("trading.broker.account")
 
@@ -123,6 +123,12 @@ async def positions() -> list[NormalizedPosition]:
     out: list[NormalizedPosition] = []
     for sym, qty in sorted(ledger.items()):
         ap = acct_pos.get(sym) or {}
+        acct_qty = ap.get("qty", 0)
+        if acct_qty == 0 or (acct_qty > 0) != (qty > 0):
+            logger.warning("Ledger/account drift for %s: ledger %s vs account %s; omitted",
+                           sym, qty, acct_qty)
+            continue
+        qty = (1 if qty > 0 else -1) * min(abs(qty), abs(acct_qty))
         opt = ap.get("asset_class") == "us_option"
         out.append(NormalizedPosition(
             symbol=sym, quantity=qty, quantity_direction="Long" if qty > 0 else "Short",
@@ -133,7 +139,7 @@ async def positions() -> list[NormalizedPosition]:
 
 async def live_orders() -> list[dict]:
     try:
-        return await app_orders("open")
+        return (await app_open_orders())[0]
     except _ERRORS:
         logger.warning("Alpaca live-orders fetch failed", exc_info=True)
         return []
@@ -141,7 +147,7 @@ async def live_orders() -> list[dict]:
 
 async def cancel_order(order_id: str) -> bool:
     try:
-        owned = {o.get("id") for o in await app_orders("open")}
+        _, owned = await app_open_orders()
         if order_id not in owned:
             logger.warning("Refusing to cancel non-app order %s", order_id)
             return False

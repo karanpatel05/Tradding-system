@@ -85,3 +85,34 @@ async def test_app_orders_pages_by_until(monkeypatch):
     _mock(monkeypatch, handler)
     out = await ledger.app_orders("all")
     assert len(out) == 501 and seen[0] is None and seen[1] == full[-1]["submitted_at"]
+
+
+@pytest.mark.asyncio
+async def test_page_cap_logs_error(monkeypatch, caplog):
+    monkeypatch.setattr(ledger, "_PAGE", 2)
+    monkeypatch.setattr(ledger, "_MAX_PAGES", 2)
+    n = {"i": 0}
+
+    def handler(req):
+        n["i"] += 1
+        return httpx.Response(200, json=[
+            {"id": f"a{n['i']}", "client_order_id": "tsys-x", "submitted_at": f"t{n['i']}a"},
+            {"id": f"b{n['i']}", "client_order_id": "tsys-y", "submitted_at": f"t{n['i']}b"}])
+    _mock(monkeypatch, handler)
+    with caplog.at_level("ERROR", logger="trading.broker.ledger"):
+        await ledger.app_orders("all")
+    assert any("page cap" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_open_orders_include_legs_of_filled_bracket(monkeypatch):
+    stop = {"id": "s1", "client_order_id": "gen-1", "symbol": "AAPL", "side": "sell",
+            "status": "held", "qty": "5"}
+    tp = {"id": "t1", "client_order_id": "gen-2", "symbol": "AAPL", "side": "sell",
+          "status": "new", "qty": "5"}
+    parent = _o("tsys-b", "AAPL", "buy", 5, 5, order_class="bracket", legs=[stop, tp],
+                status="filled", id="p1")
+    manual = _o("manual-1", "AAPL", "sell", 1, 0, status="new", id="m1")
+    _orders(monkeypatch, [parent, manual])
+    orders, ids = await ledger.app_open_orders()
+    assert {o["id"] for o in orders} == {"s1", "t1"} and ids == {"s1", "t1"}

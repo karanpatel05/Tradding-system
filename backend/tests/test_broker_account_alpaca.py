@@ -150,3 +150,50 @@ async def test_positions_survive_account_failure(monkeypatch):
     _mock(monkeypatch, handler)
     (p,) = await acct.positions()
     assert (p.symbol, p.quantity, p.account) == ("AAPL", 10, "")
+
+
+@pytest.mark.asyncio
+async def test_cancel_nested_child_of_tagged_bracket(monkeypatch):
+    calls = []
+    parent = {"id": "p1", "client_order_id": "tsys-b", "status": "filled", "symbol": "AAPL",
+              "legs": [{"id": "s1", "client_order_id": "gen", "status": "held"}]}
+
+    def handler(req):
+        calls.append((req.method, req.url.path))
+        if req.method == "DELETE":
+            return httpx.Response(204)
+        return httpx.Response(200, json=[parent])
+    _mock(monkeypatch, handler)
+    assert await acct.cancel_order("s1") is True
+    assert ("DELETE", "/v2/orders/s1") in calls
+
+
+def _drift_handler(ledger_orders, positions):
+    def handler(req):
+        p = req.url.path
+        if p == "/v2/positions":
+            return httpx.Response(200, json=positions)
+        if p == "/v2/orders":
+            return httpx.Response(200, json=ledger_orders)
+        return httpx.Response(200, json=ACCOUNT)
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_positions_clamped_to_account(monkeypatch):
+    orders = [{"id": "1", "client_order_id": "tsys-a", "symbol": "AAPL", "side": "buy",
+               "filled_qty": "10", "legs": None}]
+    _mock(monkeypatch, _drift_handler(orders, [
+        {"symbol": "AAPL", "qty": "4", "avg_entry_price": "1", "asset_class": "us_equity"}]))
+    (p,) = await acct.positions()
+    assert p.quantity == 4
+
+
+@pytest.mark.asyncio
+async def test_position_missing_from_account_omitted_with_warning(monkeypatch, caplog):
+    orders = [{"id": "1", "client_order_id": "tsys-a", "symbol": "QQQ261117C00660000",
+               "side": "buy", "filled_qty": "1", "legs": None}]
+    _mock(monkeypatch, _drift_handler(orders, []))
+    with caplog.at_level("WARNING", logger="trading.broker.account"):
+        assert await acct.positions() == []
+    assert any("QQQ261117C00660000" in r.message for r in caplog.records)

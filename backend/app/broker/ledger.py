@@ -3,7 +3,11 @@ derived only from orders whose client_order_id carries the `tsys-` tag (fills of
 orders and their nested children), never from the account's raw positions."""
 from __future__ import annotations
 
+import logging
+
 from app.broker.alpaca_client import is_app_owned, occ_unpadded, request
+
+logger = logging.getLogger("trading.broker.ledger")
 
 _PAGE = 500
 _MAX_PAGES = 20
@@ -29,7 +33,43 @@ async def app_orders(status: str = "all") -> list[dict]:
         until = page[-1].get("submitted_at") or page[-1].get("created_at")
         if not until:
             break
+    else:
+        logger.error("Alpaca order paging hit the %d-page cap; older app orders are "
+                     "missing and the ledger may be wrong", _MAX_PAGES)
     return out
+
+
+OPEN_STATUSES = {"new", "accepted", "pending_new", "partially_filled", "held",
+                 "accepted_for_bidding", "pending_replace"}
+
+
+def _is_open(o: dict) -> bool:
+    return o.get("status") in OPEN_STATUSES
+
+
+async def app_open_orders() -> tuple[list[dict], set[str]]:
+    """App-owned open orders as dicts, plus the set of cancellable app-owned ids.
+
+    Resting bracket legs of a filled tagged parent can come back with Alpaca-generated
+    (untagged) client ids, so ownership is derived from tagged parents (nested=true).
+    An open parent is returned whole (cancelling it cancels its legs); for a closed
+    parent each open nested leg is returned on its own. mleg legs are never separate."""
+    orders: list[dict] = []
+    ids: set[str] = set()
+    for parent in await app_orders("all"):
+        legs = parent.get("legs") or []
+        if _is_open(parent):
+            orders.append(parent)
+            ids.add(parent.get("id"))
+            if parent.get("order_class") != "mleg":
+                ids.update(l.get("id") for l in legs)
+        elif parent.get("order_class") != "mleg":
+            for leg in legs:
+                if _is_open(leg):
+                    orders.append(leg)
+                    ids.add(leg.get("id"))
+    ids.discard(None)
+    return orders, ids
 
 
 def _qty(v) -> float:
