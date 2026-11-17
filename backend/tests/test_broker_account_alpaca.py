@@ -99,7 +99,7 @@ async def test_cancel_order_deletes_owned(monkeypatch):
         calls.append((req.method, req.url.path))
         if req.method == "DELETE":
             return httpx.Response(204)
-        return httpx.Response(200, json=[{"id": "o1", "client_order_id": "tsys-x"}])
+        return httpx.Response(200, json=[{"id": "o1", "client_order_id": "tsys-x", "status": "new"}])
     _mock(monkeypatch, handler)
     assert await acct.cancel_order("o1") is True
     assert ("DELETE", "/v2/orders/o1") in calls
@@ -112,7 +112,7 @@ async def test_cancel_order_blocked_off_paper(monkeypatch):
 
     def handler(req):
         calls.append(req.method)
-        return httpx.Response(200, json=[{"id": "o1", "client_order_id": "tsys-x"}])
+        return httpx.Response(200, json=[{"id": "o1", "client_order_id": "tsys-x", "status": "new"}])
     _mock(monkeypatch, handler)
     assert await acct.cancel_order("o1") is False
     assert "DELETE" not in calls
