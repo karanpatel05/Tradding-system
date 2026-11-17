@@ -12,8 +12,9 @@ ON  -> check order on every transmit path: quantity -> SAFE_MODE -> gate -> pape
 
 Return shapes match the old app/engine/execution.py so callers don't change.
 
-`flatten_all` (and the Tastytrade helpers below it) is still the Tastytrade kill-switch
-path; it is rewritten for Alpaca separately and is intentionally untouched here."""
+`flatten_all` (kill switch) cancels and closes ONLY app-owned orders/quantities, each
+close a tagged order on the same paper-lock -> intent -> transmit path; it never uses
+Alpaca's bulk DELETE /v2/orders or /v2/positions."""
 from __future__ import annotations
 
 import asyncio
@@ -21,7 +22,6 @@ import logging
 import re
 import time
 from datetime import datetime
-from decimal import Decimal
 
 import httpx
 
@@ -36,6 +36,9 @@ BLOCKED_DETAIL = "blocked: Alpaca live endpoint locked (paper only)"
 MAX_COMBO_LEGS = 4          # Alpaca mleg limit; never split a combo
 _CANCEL_WAIT = 5.0          # seconds to wait for cancelled orders to leave the book
 _CANCEL_STEP = 0.25
+_FLATTEN_WAIT = 10.0        # seconds the kill switch polls the app ledger for close fills
+_FLATTEN_STEP = 0.5
+_LOOKUP_ERRORS = (AlpacaError, httpx.HTTPError)
 _TERMINAL = {"canceled", "expired", "rejected", "replaced", "done_for_day"}  # order ended
 
 _INTENT_TO_ACTION = {
@@ -52,44 +55,10 @@ def intent_to_action(intent: str) -> str:
 
 
 # --- indirection points (tests monkeypatch these) ---------------------------
-async def _session():
-    from app.tastytrade.session import get_tt_session
-    return await get_tt_session()
-
-
-async def _account():
-    from app.broker.account import get_tt_account
-    return await get_tt_account()
-
-
 async def _mid(symbol: str) -> float | None:
     from app.marketdata.facade import stock_quote
     q = await stock_quote(symbol)
     return (q or {}).get("price")
-
-
-async def _equities(session, symbols):
-    from tastytrade.instruments import Equity
-    got = await Equity.get(session, symbols)
-    return got if isinstance(got, list) else [got]
-
-
-def _order_action(name: str):
-    from tastytrade.order import OrderAction
-    return {"BUY": OrderAction.BUY, "SELL": OrderAction.SELL,
-            "BUY_TO_OPEN": OrderAction.BUY_TO_OPEN, "BUY_TO_CLOSE": OrderAction.BUY_TO_CLOSE,
-            "SELL_TO_OPEN": OrderAction.SELL_TO_OPEN,
-            "SELL_TO_CLOSE": OrderAction.SELL_TO_CLOSE}[name]
-
-
-def _new_order(legs, price: Decimal | None, order_type: str = "MARKET"):
-    from tastytrade.order import NewOrder, OrderTimeInForce, OrderType
-    # Fully VALIDATED construction — pydantic validation on outgoing orders is a
-    # safety layer and is never bypassed.
-    return NewOrder(
-        time_in_force=OrderTimeInForce.DAY,
-        order_type=OrderType.LIMIT if order_type == "LIMIT" else OrderType.MARKET,
-        legs=legs, price=price)
 
 
 # --- Alpaca transmit plumbing -------------------------------------------------
@@ -101,6 +70,16 @@ def _paper_lock_blocked() -> dict | None:
         logger.error("Order refused: Alpaca base URL is not %s (paper lock)", ac.PAPER_HOST)
         return {"transmitted": False, "detail": BLOCKED_DETAIL}
     return None
+
+
+def _market_body(symbol: str, qty: int, side: str, position_intent: str | None = None) -> dict:
+    """Single-symbol market DAY order body (equity, or a single option leg when
+    `position_intent` is given, e.g. sell_to_close)."""
+    body = {"symbol": symbol, "qty": str(int(qty)), "side": side, "type": "market",
+            "time_in_force": "day"}
+    if position_intent:
+        body["position_intent"] = position_intent
+    return body
 
 
 def _px(v: float) -> str:
@@ -201,9 +180,8 @@ async def submit_equity_order(symbol: str, intent: str, quantity: int, *,
     from app.engine.order_store import record_intent
     if not ref:
         ref = await record_intent("", symbol, intent, quantity)   # durable BEFORE transmit
-    out = await _transmit({"symbol": symbol, "qty": str(int(quantity)),
-                           "side": action.lower(), "type": "market",
-                           "time_in_force": "day"}, ref, f"{action} {symbol}")
+    out = await _transmit(_market_body(symbol, quantity, action.lower()), ref,
+                          f"{action} {symbol}")
     out.setdefault("detail", f"LIVE {action} {symbol} x{quantity}")
     logger.warning("[LIVE] %s %s x%d (%s) -> %s", action, symbol, quantity, reason, out["detail"])
     return out
@@ -246,11 +224,6 @@ async def submit_bracket_order(symbol: str, side: str, quantity: int, entry_pric
             "stop": stop, "target": target}
 
 
-def _oget(o, key, default=None):
-    """Live orders are Alpaca dicts (legacy objects tolerated by flatten_all)."""
-    return o.get(key, default) if isinstance(o, dict) else getattr(o, key, default)
-
-
 _OCC = re.compile(r"^([A-Z]+)\d{6}[CP]\d{8}$")
 
 
@@ -270,20 +243,20 @@ def _matches(o: dict, symbol: str) -> bool:
     return False
 
 
-async def _lingering(symbol: str) -> list[dict]:
-    """App-owned orders/legs for `symbol` still on the book. Unlike the ledger's open
-    set this includes `pending_cancel`: Alpaca DELETE is async (204 -> pending_cancel ->
-    canceled) and shares stay reserved until the cancel settles."""
+async def _lingering(symbol: str | None = None) -> list[dict]:
+    """App-owned orders/legs for `symbol` (None = any symbol) still on the book. Unlike
+    the ledger's open set this includes `pending_cancel`: Alpaca DELETE is async (204 ->
+    pending_cancel -> canceled) and shares stay reserved until the cancel settles."""
     from app.broker.ledger import OPEN_STATUSES, app_orders
     live = OPEN_STATUSES | {"pending_cancel"}
     out: list[dict] = []
     for parent in await app_orders("all"):
-        if parent.get("status") in live and _matches(parent, symbol):
+        if parent.get("status") in live and (symbol is None or _matches(parent, symbol)):
             out.append(parent)
         if parent.get("order_class") == "mleg":
             continue
         out.extend(l for l in parent.get("legs") or []
-                   if l.get("status") in live and _matches(l, symbol))
+                   if l.get("status") in live and (symbol is None or _matches(l, symbol)))
     return out
 
 
@@ -460,83 +433,146 @@ async def poll_bracket_fill(symbol: str, ref=None) -> dict | None:
     return None
 
 
-# --- Tastytrade kill-switch path (rewritten for Alpaca separately) -------------
-async def _option(session, occ_symbol: str):
-    from tastytrade.instruments import Option
-    return await Option.get(session, occ_symbol)
+# --- kill switch ------------------------------------------------------------------
+def _fmt(net: dict[str, int]) -> str:
+    return ", ".join(f"{sym} x{abs(q)}" for sym, q in sorted(net.items()))
 
 
-async def _positions():
-    from app.broker.account import positions
-    return await positions()
-
-
-async def _live_orders():
-    from app.broker.account import live_orders
-    return await live_orders()
-
-
-async def _cancel_order(order_id):
-    from app.broker.account import cancel_order
-    return await cancel_order(order_id)
+async def _cancel_app_orders() -> tuple[int, list[str]]:
+    """Cancel every app-owned open order, one DELETE per owned id (never the bulk
+    cancel-all), then wait for them to leave the book (open bracket legs reserve shares,
+    so closes sent before cancels settle would reject). Returns (cancelled, failures).
+    A failed DELETE only counts if that order is still open afterwards: cancelling one
+    OCO bracket leg ends its sibling, whose own DELETE then 422s."""
+    from app.broker.ledger import app_open_orders
+    orders, owned = await app_open_orders()
+    cancelled = 0
+    errors: dict[str, str] = {}
+    for o in orders:
+        oid = o.get("id")
+        if oid not in owned:
+            continue
+        try:
+            await ac.request("DELETE", f"/v2/orders/{oid}", write=True)
+            cancelled += 1
+        except (*_LOOKUP_ERRORS, PaperLockError) as exc:
+            errors[oid] = str(exc)
+            logger.warning("Kill switch: cancel of app order %s failed: %r", oid, exc)
+    deadline = time.monotonic() + _CANCEL_WAIT
+    while True:
+        try:
+            still, check_error = await _lingering(), None
+        except _LOOKUP_ERRORS as exc:
+            still, check_error = [], exc
+        if (not still and check_error is None) or time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(_CANCEL_STEP)
+    if check_error is not None:
+        return cancelled, [f"open-order check failed ({check_error})"]
+    failures = []
+    for o in still:
+        oid = o.get("id")
+        why = f": {errors[oid]}" if oid in errors else ""
+        failures.append(f"order {oid} ({o.get('symbol')}) still open{why}")
+    return cancelled, failures
 
 
 async def flatten_all() -> str:
-    """Cancel every live order, then market-close every open position. Live: transmits
-    closing orders (equity SELL/BUY; options *_TO_CLOSE). Paper: logs would-close and
-    raises so the kill switch honestly reports fully_flat=False. Raises when anything
-    is left standing."""
+    """Kill-switch flatten of what the APP opened on the shared paper account.
+
+    Gate ON: paper lock (refused before any request) -> cancel app-owned open orders ->
+    for each app net position, a tagged market DAY close for the app quantity capped at
+    the account's same-direction position (options: single leg, *_to_close) -> poll the
+    app ledger up to _FLATTEN_WAIT seconds. SAFE_MODE does not block it (closing only).
+    Gate OFF: transmits nothing; raises if the app holds anything.
+    Raises RuntimeError("Flatten incomplete: ...") when anything app-owned remains or a
+    lookup fails, so the kill switch never reports flat on a guess."""
+    from app.broker.ledger import account_positions, app_net_positions
     s = get_settings()
-    poss = await _positions()
-    cancelled = 0
-    closed: list[str] = []
-    failures: list[str] = []
-
-    if s.enable_live_orders:
-        for o in await _live_orders():
-            try:
-                if await _cancel_order(_oget(o, "id", "")):
-                    cancelled += 1
-            except Exception as exc:  # noqa: BLE001 — record, keep killing
-                failures.append(f"order-cancel {_oget(o, 'id', '?')}: {exc}")
-
-    total = len(poss)
-    session = await _session() if s.enable_live_orders else None
-    account = await _account() if s.enable_live_orders else None
-    for p in poss:
-        qty = abs(p.quantity)
-        if qty <= 0:
-            continue
-        if not s.enable_live_orders:
-            logger.warning("[FLATTEN-PAPER] would close %s x%d — ENABLE_LIVE_ORDERS off",
-                           p.symbol, qty)
-            failures.append(f"{p.symbol} x{qty} (paper: not transmitted)")
-            continue
-        if session is None or account is None:
-            failures.append(f"{p.symbol} (broker unavailable)")
-            continue
+    if not s.enable_live_orders:
         try:
-            is_option = "Option" in (p.instrument_type or "")
-            if is_option:
-                inst = await _option(session, p.symbol)
-                name = "SELL_TO_CLOSE" if p.quantity > 0 else "BUY_TO_CLOSE"
-            else:
-                inst = (await _equities(session, [p.symbol]))[0]
-                name = "SELL" if p.quantity > 0 else "BUY"
-            leg = inst.build_leg(Decimal(qty), _order_action(name))
-            placed = await account.place_order(session, _new_order([leg], None),
-                                               dry_run=False)   # kill switch: no dry-run delay
-            _ = placed
-            logger.warning("[FLATTEN-LIVE] %s %s x%d", name, p.symbol, qty)
-            closed.append(f"{p.symbol} x{qty}")
-        except Exception as exc:  # noqa: BLE001 — must attempt every position
-            logger.error("Flatten failed for %s: %r", p.symbol, exc)
-            failures.append(f"{p.symbol} ({exc})")
+            app_net = await app_net_positions()
+        except _LOOKUP_ERRORS as exc:
+            raise RuntimeError(f"Flatten incomplete: app position lookup failed ({exc})") \
+                from exc
+        if not app_net:
+            return "No open positions."
+        logger.warning("[FLATTEN-PAPER] would close %s — ENABLE_LIVE_ORDERS off",
+                       _fmt(app_net))
+        raise RuntimeError(f"Flatten incomplete: not flat: {_fmt(app_net)} "
+                           f"(paper: not transmitted)")
+    if (blocked := _paper_lock_blocked()) is not None:
+        raise RuntimeError(f"Flatten incomplete: {blocked['detail']}")
 
+    failures: list[str] = []
+    try:
+        cancelled, cancel_failures = await _cancel_app_orders()
+    except _LOOKUP_ERRORS as exc:
+        cancelled, cancel_failures = 0, [f"open-order lookup failed ({exc})"]
+    failures += cancel_failures
     note = f"cancelled {cancelled} resting order(s); " if cancelled else ""
-    if total == 0 and not failures:
-        return f"{note}No open positions." if note else "No open positions."
-    if failures:
-        raise RuntimeError(f"Flatten incomplete: {note}closed {len(closed)}/{total} "
-                           f"[{', '.join(closed) or 'none'}]; not flat: {', '.join(failures)}")
-    return f"{note}Flattened {total} position(s): {', '.join(closed)}"
+    try:
+        app_net = await app_net_positions()
+        acct = await account_positions()
+    except _LOOKUP_ERRORS as exc:
+        raise RuntimeError(f"Flatten incomplete: {note}position lookup failed ({exc}); "
+                           f"{', '.join(failures) or 'no other failures'}") from exc
+
+    from app.engine.order_store import record_intent
+    closed: list[str] = []
+    # shorts first: buying back a spread's short leg before selling its long keeps the
+    # account covered while it unwinds
+    for sym, app_qty in sorted(app_net.items(), key=lambda kv: (kv[1] > 0, kv[0])):
+        ap = acct.get(sym) or {}
+        acct_qty = int(ap.get("qty") or 0)
+        if acct_qty == 0 or (acct_qty > 0) != (app_qty > 0):
+            failures.append(f"{sym} x{abs(app_qty)} (account position differs: {acct_qty})")
+            continue
+        qty = min(abs(app_qty), abs(acct_qty))
+        if qty < abs(app_qty):
+            failures.append(f"{sym}: account holds {abs(acct_qty)} of the app's "
+                            f"{abs(app_qty)}")
+        side = "sell" if app_qty > 0 else "buy"
+        option = ap.get("asset_class") == "us_option" or bool(_OCC.match(sym.upper()))
+        try:
+            ref = await record_intent("", sym, "exit_long" if app_qty > 0 else "exit_short",
+                                      qty)
+            out = await _transmit(
+                _market_body(sym, qty, side, f"{side}_to_close" if option else None),
+                ref, f"FLATTEN {side.upper()} {sym}")
+        except Exception as exc:  # noqa: BLE001 — must attempt every position
+            logger.error("Flatten failed for %s: %r", sym, exc)
+            failures.append(f"{sym} x{qty} ({exc})")
+            continue
+        if out["transmitted"]:
+            logger.warning("[FLATTEN-LIVE] %s %s x%d (ref %s)", side.upper(), sym, qty, ref)
+            closed.append(f"{sym} x{qty}")
+        else:
+            failures.append(f"{sym} x{qty} ({out.get('detail')})")
+
+    remaining = app_net
+    if closed:
+        deadline = time.monotonic() + _FLATTEN_WAIT
+        while True:
+            try:
+                remaining, poll_error = await app_net_positions(), None
+            except _LOOKUP_ERRORS as exc:
+                poll_error = exc        # keep the last known `remaining`
+            if (poll_error is None and not remaining) or time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(_FLATTEN_STEP)
+        if poll_error is not None:
+            failures.append(f"position check failed ({poll_error})")
+
+    if remaining or failures:
+        parts = []
+        if remaining:
+            parts.append(f"still open: {_fmt(remaining)} "
+                         f"(orders may be queued until market open)")
+        if failures:
+            parts.append(f"failures: {', '.join(failures)}")
+        raise RuntimeError(f"Flatten incomplete: {note}closed {len(closed)}/{len(app_net)} "
+                           f"[{', '.join(closed) or 'none'}]; {'; '.join(parts)}")
+    if not app_net:
+        return f"{note}No open positions."
+    return f"{note}Flattened {len(closed)} position(s): {', '.join(closed)}"

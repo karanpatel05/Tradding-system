@@ -675,10 +675,8 @@ async def test_submit_paths_never_touch_tastytrade(monkeypatch):
     await init_db()
     _gate_on(monkeypatch)
 
-    async def tt_bomb(*a, **k):
-        raise AssertionError("Tastytrade touched on an Alpaca order path")
-    for name in ("_session", "_account", "_equities", "_option"):
-        monkeypatch.setattr(ord_mod, name, tt_bomb)
+    # the Tastytrade order/account helpers are gone (see test_flatten_alpaca's
+    # source check); every submit path below must run on the Alpaca fake alone
     b = Broker(orders=[_open("o1", "tsys-1", "AAPL"),
                        _bracket("par1", "tsys-x", "AAPL", [_leg("tp", "limit"),
                                                            _leg("sl", "stop")])])
