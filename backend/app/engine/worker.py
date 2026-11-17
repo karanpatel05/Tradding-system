@@ -185,7 +185,8 @@ async def _handle_action(strategy, symbol, action, state, bars, open_qty, open_t
         apply_action(action, state, idx, bar)  # sets state.position
         trade_id = await _open_trade(strategy.key, symbol, action.side,
                                      sizing.quantity, action.price, bar.get("time"),
-                                     action.stop, action.target)
+                                     action.stop, action.target,
+                                     transmitted=bool(order.get("transmitted")))
         await log_event(
             f"ENTER {action.side} {symbol} ({action.entry_type}) x{sizing.quantity} "
             f"@ {action.price:.2f} ({order['detail']})",
@@ -364,7 +365,8 @@ async def _open_bracket(strategy, symbol, action, state, bars, engine) -> dict |
     entry_ms = bar.get("time")
     trade_id = await _open_trade(strategy.key, symbol, action.side, sizing.quantity,
                                  action.price, entry_ms, action.stop, action.target,
-                                 broker_order_id=order.get("parent_order_id"))
+                                 broker_order_id=order.get("parent_order_id"),
+                                 transmitted=bool(order.get("transmitted")))
     await log_event(
         f"ENTER {action.side} {symbol} x{sizing.quantity} @ {action.price:.2f} "
         f"(risk ${sizing.risk_amount:.0f}; bracket stop {action.stop:.2f}/target "
@@ -682,13 +684,15 @@ async def _direction(key: str) -> str:
 async def _open_trade(strategy_key: str, symbol: str, side: str, qty: int,
                       entry_price: float, entry_ms: int | None,
                       stop: float | None = None, target: float | None = None,
-                      broker_order_id: str | None = None) -> int:
+                      broker_order_id: str | None = None,
+                      transmitted: bool = False) -> int:
     async with session_scope() as session:
         tr = TradeRecord(
             strategy_key=strategy_key, symbol=symbol,
             side="buy" if side == "long" else "sell",
             quantity=qty, entry_price=entry_price, entry_time=_dt(entry_ms),
             stop=stop, target=target, status="open", broker_order_id=broker_order_id,
+            transmitted=transmitted,
         )
         session.add(tr)
         await session.flush()

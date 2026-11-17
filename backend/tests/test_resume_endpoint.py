@@ -19,7 +19,7 @@ def _run() -> None:
 
         # Clean broker snapshot -> recovery clears (no discrepancies).
         async def clean_snap():
-            return {"positions": [], "fills": [], "orders": []}
+            return {"positions": [], "fills": [], "orders": [], "issues": []}
         async def no_local():
             return {}
         rec_mod.fetch_snapshot = clean_snap

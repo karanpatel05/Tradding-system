@@ -16,7 +16,6 @@ def _run() -> None:
     async def _t():
         from app.db.base import init_db, session_scope
         from app.db.models import TradeRecord
-        from app.engine import reconciliation as recon_mod
         from app.engine import recovery
         from app.services import alerts
 
@@ -25,19 +24,16 @@ def _run() -> None:
         async def cap(kind, msg, data): seen.append(kind)
         alerts.register_channel(cap)
 
-        # An open local trade with no broker position → reconcile mismatch → SAFE_MODE.
+        # A transmitted open local trade with no app-owned Alpaca position → reconcile
+        # mismatch → SAFE_MODE.
         async with session_scope() as s:
             s.add(TradeRecord(strategy_key="strategy_1", symbol="AAPL", side="buy",
-                              quantity=10, status="open"))
+                              quantity=10, status="open", transmitted=True))
 
-        async def no_positions():
-            return []
+        async def empty_snapshot():
+            return {"positions": [], "fills": [], "orders": [], "issues": []}
 
-        async def no_orders():
-            return []
-
-        recon_mod._positions = no_positions
-        recon_mod._live_orders = no_orders
+        recovery.fetch_snapshot = empty_snapshot
 
         ok = await recovery.run_recovery()
         assert ok is False

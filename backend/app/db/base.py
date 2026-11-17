@@ -71,6 +71,9 @@ def _ensure_added_columns(conn) -> None:
                 conn.execute(text(f"ALTER TABLE trades ADD COLUMN {col} FLOAT"))
         if "broker_order_id" not in existing:
             conn.execute(text("ALTER TABLE trades ADD COLUMN broker_order_id VARCHAR(64)"))
+        if "transmitted" not in existing:
+            false = "0" if conn.dialect.name == "sqlite" else "FALSE"  # PG: no int->bool
+            conn.execute(text(f"ALTER TABLE trades ADD COLUMN transmitted BOOLEAN DEFAULT {false}"))
     if "strategy_state" in tables:
         cols = {c["name"] for c in insp.get_columns("strategy_state")}
         if "direction" not in cols:

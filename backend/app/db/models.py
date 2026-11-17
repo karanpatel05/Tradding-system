@@ -73,6 +73,9 @@ class TradeRecord(Base):
     # Broker bracket (OTOCO) complex-order id, so a live restart can re-link the
     # resting stop/target to this trade. None in paper mode.
     broker_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # True only when the entry order was actually transmitted to Alpaca; reconciliation
+    # compares just these against the app-owned ledger (simulated trades are ignored).
+    transmitted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class LogEntry(Base):
