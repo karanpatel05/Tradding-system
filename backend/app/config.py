@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     tt_provider_secret: str = ""     # env TT_PROVIDER_SECRET
     tt_refresh_token: str = ""       # env TT_REFRESH_TOKEN
     tt_account_number: str = ""      # blank -> first account on the login
+
+    # --- Alpaca (status display only; the app never routes orders via Alpaca) ---
+    apca_api_key_id: str = ""        # env APCA_API_KEY_ID
+    apca_api_secret_key: str = ""    # env APCA_API_SECRET_KEY
+    apca_api_base_url: str = "https://paper-api.alpaca.markets"  # env APCA_API_BASE_URL
     # Mid sanity guard: reject crossed/wide/jumpy option mids (see marketdata/sanity.py).
     sanity_rel_spread: float = 0.35
     sanity_abs_spread: float = 2.50

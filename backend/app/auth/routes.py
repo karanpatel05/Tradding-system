@@ -141,6 +141,13 @@ async def tt_status(probe: bool = False) -> dict:
     return {**_tt_state(), "probe": await _bstatus.probe(force=probe)}
 
 
+@router.get("/alpaca")
+async def alpaca_status(probe: bool = False) -> dict:
+    """Read-only Alpaca account status for the API tab (no secrets returned)."""
+    from app.services.alpaca_status import fetch_alpaca_status
+    return await fetch_alpaca_status(force=probe)
+
+
 @router.put("/tastytrade", dependencies=[Depends(require_auth)])
 async def tt_save(body: TTCredsBody) -> dict:
     """Persist Tastytrade OAuth creds to backend/.env and apply them live (no restart)."""

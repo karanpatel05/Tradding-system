@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { api, getAppToken, setAppToken } from "../api.js";
 
 // Broker tab: Tastytrade is the sole broker AND market-data source. Shows the account
-// (masked) + probe-verified connection state, and the OAuth credential card. There is
-// no interactive login — creds are an OAuth personal grant verified by a server probe.
+// (masked) + probe-verified connection state, plus read-only Tastytrade and Alpaca API
+// status. No credentials are entered here — they live in backend/.env only.
 export default function ApiTab({ onChange }) {
   const [info, setInfo] = useState(null);
   const [acct, setAcct] = useState(null);
@@ -24,25 +24,28 @@ export default function ApiTab({ onChange }) {
     return () => clearInterval(id);
   }, []);
 
+  // Status only — credentials live in backend/.env and are never entered or shown here.
   const [tt, setTt] = useState(null);
-  const [ttSecret, setTtSecret] = useState("");
-  const [ttRefresh, setTtRefresh] = useState("");
-  const [ttMsg, setTtMsg] = useState(null);
-  const loadTt = () => api.ttStatus().then(setTt).catch(() => {});
-  useEffect(() => { loadTt(); }, []);
-  const saveTt = async () => {
-    setTtMsg(null);
-    try {
-      const body = {};
-      if (ttSecret.trim()) body.provider_secret = ttSecret.trim();
-      if (ttRefresh.trim()) body.refresh_token = ttRefresh.trim();
-      const res = await api.ttSave(body);
-      setTt(res); setTtSecret(""); setTtRefresh("");
-      if (res.probe && res.probe !== "ok") setTtMsg(`Saved, but Tastytrade ${res.probe} — paste BOTH values from the same grant.`);
-      else setTtMsg(res.configured ? (res.probe === "ok" ? "Saved — verified with Tastytrade ✓" : "Saved.") : "Saved.");
-      onChange?.();
-    } catch (e) { setTtMsg(e.message || "Save failed"); }
+  const [ttChecking, setTtChecking] = useState(false);
+  const loadTt = (probe) => api.ttStatus(probe).then(setTt).catch(() => {});
+  const testTt = async () => {
+    setTtChecking(true);
+    try { await loadTt(true); onChange?.(); } finally { setTtChecking(false); }
   };
+
+  const [alpaca, setAlpaca] = useState(null);
+  const [alpacaChecking, setAlpacaChecking] = useState(false);
+  const loadAlpaca = (probe) => api.alpacaStatus(probe).then(setAlpaca).catch(() => {});
+  const testAlpaca = async () => {
+    setAlpacaChecking(true);
+    try { await loadAlpaca(true); } finally { setAlpacaChecking(false); }
+  };
+
+  useEffect(() => {
+    loadTt(); loadAlpaca();
+    const id = setInterval(() => { loadTt(); loadAlpaca(); }, 30000);
+    return () => clearInterval(id);
+  }, []);
 
   // --- App access token (gates the dangerous mutating actions) ---
   const [appToken, setAppTokenInput] = useState(getAppToken());
@@ -139,7 +142,7 @@ export default function ApiTab({ onChange }) {
 
       <section className="card">
         <div className="card-head">
-          <h2>Tastytrade Credentials</h2>
+          <h2>Tastytrade API</h2>
           <span className={`mode-badge ${
             tt?.probe === "ok" ? "live"
               : tt?.probe ? "danger"
@@ -149,26 +152,55 @@ export default function ApiTab({ onChange }) {
               : tt?.configured ? "Configured (unverified)" : "Not configured"}
           </span>
         </div>
-        <div className="muted small">
-          Data serving: <b>{tt?.serving === "tastytrade" ? "Tastytrade" : "idle"}</b>
-          {tt?.probe && tt.probe !== "ok" && <span className="neg"> · {tt.probe}</span>}
+        <div className="deploy-grid" style={{ marginTop: 8 }}>
+          <div><div className="stat-label">Credentials</div>
+            <div className="stat-value">{tt == null ? "—" : tt.configured ? "Set in .env" : "Missing"}</div></div>
+          <div><div className="stat-label">Data serving</div>
+            <div className="stat-value">{tt?.serving === "tastytrade" ? "Tastytrade" : "idle"}</div></div>
         </div>
+        {tt?.probe && tt.probe !== "ok" && (
+          <div className="banner error" style={{ marginTop: 10 }}>Tastytrade: {tt.probe}</div>
+        )}
         <p className="muted small">
-          OAuth personal grant from my.tastytrade.com → API access: paste the client secret
-          and refresh token (both from the same grant). Stored server-side in{" "}
-          <code>.env</code>; verified against Tastytrade on save.
+          Credentials are read from <code>TT_PROVIDER_SECRET</code> / <code>TT_REFRESH_TOKEN</code>{" "}
+          in <code>backend/.env</code> (restart the backend after editing).
         </p>
-        <div className="row gap center" style={{ marginTop: 10 }}>
-          <input className="input" type="password" placeholder={tt?.has_secret ? "Provider secret (saved)" : "Provider secret"}
-            value={ttSecret} onChange={(e) => setTtSecret(e.target.value)} />
-          <input className="input" type="password" placeholder={tt?.has_refresh ? "Refresh token (saved)" : "Refresh token"}
-            value={ttRefresh} onChange={(e) => setTtRefresh(e.target.value)} />
-          <button className="btn primary" onClick={saveTt}>Save</button>
-          <button className="btn ghost" onClick={() => api.ttStatus(true).then(setTt).catch(() => {})}>
-            Test connection
-          </button>
+        <button className="btn ghost" disabled={ttChecking} onClick={testTt}>
+          {ttChecking ? "Checking…" : "Test connection"}
+        </button>
+      </section>
+
+      <section className="card">
+        <div className="card-head">
+          <h2>Alpaca API{alpaca?.paper ? " (paper)" : ""}</h2>
+          <span className={`mode-badge ${
+            alpaca?.status === "ok" ? "live"
+              : alpaca?.status === "rejected" || alpaca?.status === "error" ? "danger"
+              : "disabled"}`}>
+            {alpaca?.status === "ok" ? "Connected ✓"
+              : alpaca?.status === "rejected" ? "Rejected"
+              : alpaca?.status === "error" ? "Error"
+              : alpaca ? "Not configured" : "—"}
+          </span>
         </div>
-        {ttMsg && <div className="muted small" style={{ marginTop: 8 }}>{ttMsg}</div>}
+        <div className="deploy-grid" style={{ marginTop: 8 }}>
+          <div><div className="stat-label">Account</div>
+            <div className="stat-value">{alpaca?.account || "—"}</div></div>
+          <div><div className="stat-label">Status</div>
+            <div className="stat-value">{alpaca?.account_status || "—"}</div></div>
+          <div><div className="stat-label">Equity</div>
+            <div className="stat-value">{money(alpaca?.equity)}</div></div>
+          <div><div className="stat-label">Buying power</div>
+            <div className="stat-sub">{money(alpaca?.buying_power)}</div></div>
+        </div>
+        {alpaca?.detail && <div className="banner error" style={{ marginTop: 10 }}>Alpaca: {alpaca.detail}</div>}
+        <p className="muted small">
+          Status only — this app does not trade through Alpaca. Keys are read from{" "}
+          <code>APCA_API_KEY_ID</code> / <code>APCA_API_SECRET_KEY</code> in <code>backend/.env</code>.
+        </p>
+        <button className="btn ghost" disabled={alpacaChecking} onClick={testAlpaca}>
+          {alpacaChecking ? "Checking…" : "Test connection"}
+        </button>
       </section>
 
       <section className="card">
@@ -180,7 +212,7 @@ export default function ApiTab({ onChange }) {
         </div>
         <p className="muted small">
           Gates the dangerous actions — arming live orders, the kill switch, activating a
-          strategy, resuming from SAFE MODE, and saving broker credentials. Must match{" "}
+          strategy, and resuming from SAFE MODE. Must match{" "}
           <code>APP_AUTH_TOKEN</code> in <code>backend/.env</code>. Stored only in this
           browser; until it's set (matching the server) those actions return 401.
         </p>

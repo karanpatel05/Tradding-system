@@ -6,7 +6,7 @@ export default function ConnectionBanner({ auth }) {
   if (state !== "disconnected") return null;
   return (
     <div className="reconnect-banner">
-      ⚡ Tastytrade credentials not verified — check the API tab.
+      ⚡ Tastytrade credentials not verified — check TT_PROVIDER_SECRET / TT_REFRESH_TOKEN in backend/.env.
     </div>
   );
 }

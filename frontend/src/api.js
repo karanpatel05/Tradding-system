@@ -47,14 +47,13 @@ async function request(path, options = {}) {
 
 export const api = {
   base: API_BASE,
-  // IBKR Gateway connection state: {connected, host, port, client_id, account, accounts, detail}.
+  // Tastytrade connection state: {connected, conn_state, account, detail, safe_mode, ...}.
   authStatus: () => request("/api/auth/status"),
   connect: () => request("/api/auth/connect", { method: "POST" }),
   disconnect: () => request("/api/auth/disconnect", { method: "POST" }),
-  // Tastytrade market-data creds (OAuth personal grant).
+  // Read-only API status (credentials live in backend/.env; never sent from the UI).
   ttStatus: (probe) => request(`/api/auth/tastytrade${probe ? "?probe=1" : ""}`),
-  ttSave: (body) =>
-    request("/api/auth/tastytrade", { method: "PUT", body: JSON.stringify(body) }),
+  alpacaStatus: (probe) => request(`/api/auth/alpaca${probe ? "?probe=1" : ""}`),
   resume: () => request("/api/system/resume", { method: "POST" }),
   health: () => request("/health"),
   // Master ENABLE_LIVE_ORDERS gate. Confirmation UX lives in the frontend;

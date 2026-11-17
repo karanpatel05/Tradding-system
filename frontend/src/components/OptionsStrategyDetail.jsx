@@ -4,7 +4,7 @@ import PayoffChart from "./PayoffChart.jsx";
 
 // Options-aware strategy page (Triple Calendar): strategy overview on top, controls, then the
 // live open-position section at the bottom (legs, P&L, target/stop progress, breach). No
-// backtest (options history isn't available from IBKR) — the equity StrategyDetail handles that.
+// backtest (no options price history available) — the equity StrategyDetail handles that.
 
 const pct = (n) => (n == null ? "—" : `${(n * 100).toFixed(2)}%`);
 const money = (n) => (n == null ? "—" : `${n >= 0 ? "+" : "−"}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);

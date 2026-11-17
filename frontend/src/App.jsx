@@ -75,7 +75,7 @@ export default function App() {
     }
   }, [auth, refresh]);
 
-  // Connect the live feed only once the IBKR Gateway is connected.
+  // Connect the live feed only once Tastytrade is verified.
   const { snapshot, connected } = useSnapshot(auth?.connected);
 
   if (auth === null) {
@@ -148,7 +148,7 @@ export default function App() {
           </div>
           {!auth.connected && (
             <button className="btn ghost full" disabled={connecting} onClick={connect}>
-              {connecting ? "Connecting…" : "Connect IBKR"}
+              {connecting ? "Connecting…" : "Connect Tastytrade"}
             </button>
           )}
         </div>
