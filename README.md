@@ -23,8 +23,56 @@ backend/   FastAPI + async SQLAlchemy + httpx (Alpaca) + tastytrade SDK (data)
     routers/             dashboard, strategies, journal, websocket
     db/                  models + async engine (SQLite dev / Postgres prod)
   tests/                 kill switch, journal, strategy gating, worker, backtest
-frontend/  React + Vite + Recharts (auth gate, dashboard, strategy tab, calendar)
-docker-compose.yml       postgres + backend + frontend
+frontend/  React + Vite + Recharts — the operator console (see "Frontend" below)
+  src/
+    App.jsx              shell: navigation rail, toolbar, emergency stop, banners
+    components/          Dashboard, StrategiesTab/StrategyDetail, BuilderTab (+ builder/),
+                         CalendarTab (journal), ApiTab (connections), shared widgets
+    operator.css         operator console design system (layout, panels, tables, charts)
+    redesign/            standalone sample-data concept preview (never calls the API)
+docker-compose.yml       postgres + backend (serves the built UI) + caddy
+```
+
+## Frontend: operator console
+
+![Operator console overview (concept preview with sample data)](frontend/redesign-preview/overview.jpg)
+
+<sub>Screenshot of the concept preview (`redesign.html`, sample data). The real app uses the
+same layout, filled with live data from the API.</sub>
+
+The UI is a dark navigation rail with a light workspace. A persistent toolbar shows feed
+status, paper/simulated order mode, the data and broker sources, and the **Emergency
+stop**. Recovery (safe mode) and connection banners appear above every screen.
+
+| Screen | What it shows |
+| --- | --- |
+| **Overview** | Market board, Alpaca paper account metrics, app-owned positions, strategy activity, allocation budgets, system health |
+| **Strategies** | Strategy table plus detail, allocation, activation and backtest workflows |
+| **Options builder** | Analysis workspace (quote, payoff, Greeks, IV smile) and a trade setup panel with templates and stock/option legs; **Build \| Trades** toggle for paper-tracked trades and portfolio P&L |
+| **Journal** | Month calendar of sessions with per-day session detail |
+| **Connections** | Tastytrade market data, Alpaca paper, access token and order-routing settings |
+
+Notes:
+
+- **Real data only.** The main app shows no sample figures or mock charts. Missing account
+  values show as dashes, and stale snapshots are labelled. Allocation bars are strategy
+  budgets, not measured risk.
+- **The UI is not the safety layer.** Order routing, activation, resume and emergency stop
+  keep their confirmation dialogs, and the backend still enforces every check.
+- **The access token** is entered in Connections and stored in the git-ignored
+  `backend/.env`. It is never bundled into the frontend.
+- **Responsive:** each main screen works at 390px width without horizontal scrolling.
+
+### Concept preview (sample data)
+
+`frontend/redesign.html` is a standalone, sample-data version of the design. It runs on
+browser-local state, resets on reload and never calls the broker or app APIs. Screenshots
+of all five screens are in `frontend/redesign-preview/`.
+
+```bash
+cd frontend
+npm run dev -- --host 127.0.0.1 --port 5174   # open http://127.0.0.1:5174/redesign.html
+npx vite build --config redesign.config.js    # builds to frontend/dist-redesign
 ```
 
 ## Key guarantees
@@ -61,7 +109,8 @@ Frontend:
 ```bash
 cd frontend
 npm install
-npm run dev   # http://localhost:5173  (talks to backend on :8000)
+npm run dev   # operator console at http://localhost:5173  (talks to backend on :8000)
+npm run build # production build to frontend/dist (served by run_web.sh and Docker)
 ```
 
 ## Run as a web app (browser)
@@ -121,8 +170,15 @@ DATABASE_URL=sqlite+aiosqlite:///./_t.db ../.venv/bin/python -m tests.test_strat
 DATABASE_URL=sqlite+aiosqlite:///./_t.db ../.venv/bin/python -m tests.test_engine_worker
 ```
 
+Frontend (options builder payoff and tracked-trade math):
+
+```bash
+cd frontend
+node --test src/components/builder/*.test.mjs
+```
+
 ## Adding real strategy logic
 
 Implement a `BaseStrategy` subclass with `ready = True`, the overview metadata, and `scan()`
 returning ranked `Candidate`s; swap it into `backend/app/strategies/registry.py`. The engine,
-API gating, and backtest pick it up automatical
+API gating, and backtest pick it up automatically.
