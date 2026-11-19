@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# Install a macOS LaunchAgent that auto-starts the trading-system web server on login
-# (quietly, no browser) and restarts it if it exits. Connects to the local IB Gateway;
-# with the always-connect behavior it keeps retrying until the Gateway is up.
+# Install a macOS LaunchAgent (com.tradingsystem.web) that runs this project's backend
+# server — API + built UI on http://127.0.0.1:8765 — on login (quietly, no browser) and
+# restarts it if it exits. Re-running it replaces the agent (e.g. after moving the repo).
 #
 #   ./scripts/install_autostart.sh      # generate + load the LaunchAgent
 #   ./scripts/uninstall_autostart.sh    # stop + remove it
 #
+# Order routing is NOT armed here: ENABLE_LIVE_ORDERS comes only from backend/.env
+# (default false = simulated fills). An env var in this plist would override that file,
+# so don't add one while the project is in development.
+#
 # NOTE: don't also run `./scripts/run_web.sh` manually while the agent is active —
-# they'd both want port 8765. The agent becomes the single managing process. The IB
-# Gateway (a GUI app) still needs to be running/logged-in for live data + trading.
+# they'd both want port 8765. The agent becomes the single managing process.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -33,14 +36,9 @@ cat > "$PLIST" <<PLIST
   <key>WorkingDirectory</key><string>$ROOT</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>RUN_WEB_OPEN</key><string>0</string>
-    <key>IBKR_HOST</key><string>127.0.0.1</string>
-    <key>IBKR_PORT</key><string>4002</string>
-    <key>IBKR_CLIENT_ID</key><string>3</string>
-    <!-- PAPER account (port 4002): transmit orders to IBKR's paper simulator for realistic
-         fills. This is the master order gate — only enable it while pointed at a PAPER Gateway. -->
-    <key>ENABLE_LIVE_ORDERS</key><string>1</string>
+    <key>RUN_WEB_HOST</key><string>127.0.0.1</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
