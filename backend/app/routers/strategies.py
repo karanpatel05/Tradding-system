@@ -44,6 +44,23 @@ def _require_ready(key: str):
     return strat
 
 
+def _require_in_app(key: str):
+    """``_require_ready`` plus: refuse strategies that execute outside this app
+    (409). Used for actions that only mean something for an in-app worker."""
+    strat = _require_ready(key)
+    if strat.external_runner:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"{strat.name} runs outside this app; "
+                   f"{strat.activation_block_reason() or 'it is not controlled here.'}",
+        )
+    return strat
+
+
+_EXTERNAL_BACKTEST_NOTE = ("Backtests for this strategy live with its external runner "
+                           "(~/live_system_maintenance); this app has no spread backtest.")
+
+
 async def _state(key: str) -> StrategyState | None:
     async with session_scope() as session:
         return await session.get(StrategyState, key)
@@ -79,6 +96,8 @@ async def list_all() -> dict:
                 "selected_symbol": st.selected_symbol if st else None,
                 "capital_allocation": st.capital_allocation if st else 0.0,
                 "running": engine_manager.is_running(strat.key),
+                "external_runner": strat.external_runner,
+                "activation_blocked": strat.activation_block_reason() if strat.ready else None,
             })
     return {"strategies": out}
 
@@ -117,6 +136,9 @@ async def detail(key: str) -> dict:
         "live_orders_enabled": get_settings().enable_live_orders,
         "last_signal_time": last_signal,
         "last_trade_time": last_trade,
+        "external_runner": strat.external_runner,
+        "activation_blocked": strat.activation_block_reason() if strat.ready else None,
+        "external": strat.external_status() if strat.external_runner else None,
     }
 
 
@@ -244,7 +266,7 @@ class AllocationBody(BaseModel):
 
 @router.put("/{key}/allocation", dependencies=[Depends(require_auth)])
 async def set_allocation(key: str, body: AllocationBody) -> dict:
-    _require_ready(key)  # rejected for Coming-Soon strategies
+    _require_in_app(key)  # rejected for Coming-Soon strategies
     async with session_scope() as session:
         st = await session.get(StrategyState, key)
         st.capital_allocation = body.amount
@@ -262,7 +284,7 @@ async def set_direction(key: str, body: DirectionBody) -> dict:
     """Set which sides may OPEN new positions (long / short / both). Live-editable:
     the worker re-reads it each cycle. Changing it only gates NEW entries — open
     positions keep riding their own exit rules (it never force-flattens)."""
-    _require_ready(key)  # rejected for Coming-Soon strategies
+    _require_in_app(key)  # rejected for Coming-Soon / externally-run strategies
     direction = (body.direction or "").lower().strip()
     if direction not in ("long", "short", "both"):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -323,6 +345,8 @@ async def risk(key: str) -> dict:
 @router.post("/{key}/activate", dependencies=[Depends(require_auth)])
 async def activate(key: str) -> dict:
     strat = _require_ready(key)  # rejected for Coming-Soon strategies
+    if (reason := strat.activation_block_reason()):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=reason)
     from app.engine.worker import run_strategy  # lazy: engine wiring
 
     await engine_manager.start_worker(key, run_strategy(strat))
@@ -352,6 +376,8 @@ async def backtest(
     strategy page's backtest-config controls (``direction`` = long/short/both for
     the multi-position crossover)."""
     strat = _require_ready(key)
+    if strat.external_runner:
+        return {"data_available": False, "note": _EXTERNAL_BACKTEST_NOTE}
     from app.backtest import run_backtest
 
     overrides = {"symbol": symbol, "start": start, "end": end, "capital": capital,
@@ -392,7 +418,7 @@ async def backtest_stream(
     ``{"type":"progress","scanned":i,"total":n,"symbol":...}`` during the scan,
     then ``{"type":"result","result":{...}}`` (or ``{"type":"error","detail":...}``).
     The page renders a determinate progress bar from the progress lines."""
-    strat = _require_ready(key)
+    strat = _require_in_app(key)
     from app.backtest import run_backtest
 
     overrides = {"symbol": symbol, "start": start, "end": end, "capital": capital,

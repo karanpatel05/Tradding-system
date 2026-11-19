@@ -109,6 +109,11 @@ class Settings(BaseSettings):
     # Tastytrade is market data only and never receives orders.
     enable_live_orders: bool = False
 
+    # --- QQQ first-hour credit spread (runs OUTSIDE this app) ---
+    # Folder of the external live runner (com.karan.spreadlive). Read-only: the app
+    # reads its lock + live_state.json to show status and to refuse activation.
+    qqq_spread_live_dir: str = str(Path.home() / "live_system_maintenance" / "live")
+
     # --- 9/15 EMA Scalping strategy (strategy_1) ---
     # Signal: EMA9/EMA15 on 5-min candles; ATR(14) for slope/stop scaling.
     ema_fast: int = 9

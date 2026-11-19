@@ -31,6 +31,8 @@ class BaseStrategy(ABC):
     name: str = ""
     #: Flip to True once real rules exist. Gates activation/allocation everywhere.
     ready: bool = False
+    #: True when the strategy executes outside this app (shown, never run here).
+    external_runner: bool = False
 
     # --- metadata (shown in the Strategy tab once ready) ------------------
     description: str = "Coming Soon"
@@ -54,6 +56,11 @@ class BaseStrategy(ABC):
             "exit_logic": self.exit_logic,
             "selection_criteria": self.selection_criteria,
         }
+
+    def activation_block_reason(self) -> str | None:
+        """Why this (ready) strategy must not run in this app right now, or None.
+        Non-None refuses activation (409) and skips auto-resume at boot."""
+        return None
 
     # --- engine hooks (implemented by ready strategies) -------------------
     @abstractmethod

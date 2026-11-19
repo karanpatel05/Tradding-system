@@ -86,7 +86,9 @@ export default function StrategyDetail({ keyName, onBack }) {
         <h1>{ov.name}</h1>
         {ready ? (
           <span className={`pill ${detail.running ? "live" : "idle"}`}>
-            {detail.status}
+            {detail.activation_blocked && !detail.running
+              ? "Off"
+              : detail.status}
           </span>
         ) : (
           <span className="pill soon">Coming Soon</span>
@@ -129,51 +131,57 @@ export default function StrategyDetail({ keyName, onBack }) {
             </p>
           </section>
 
-          <section className="card">
-            <h2>Controls</h2>
-            <div className="row gap center">
-              <input
-                className="input narrow"
-                type="number"
-                placeholder="Capital $"
-                aria-label="Capital allocation in dollars"
-                value={alloc}
-                onChange={(e) => setAlloc(e.target.value)}
-              />
-              <button
-                className="btn"
-                onClick={() => act(() => api.allocate(keyName, Number(alloc)))}
-              >
-                Set Allocation
-              </button>
-              {detail.running ? (
+          {detail.external_runner ? (
+            <ExternalRunnerCard detail={detail} />
+          ) : (
+            <section className="card">
+              <h2>Controls</h2>
+              <div className="row gap center">
+                <input
+                  className="input narrow"
+                  type="number"
+                  placeholder="Capital $"
+                  aria-label="Capital allocation in dollars"
+                  value={alloc}
+                  onChange={(e) => setAlloc(e.target.value)}
+                />
                 <button
-                  className="btn danger"
-                  onClick={() => act(() => api.stop(keyName))}
+                  className="btn"
+                  onClick={() =>
+                    act(() => api.allocate(keyName, Number(alloc)))
+                  }
                 >
-                  Stop
+                  Set Allocation
                 </button>
-              ) : (
-                <button
-                  className="btn primary"
-                  onClick={() => act(() => api.activate(keyName))}
-                >
-                  Activate
-                </button>
-              )}
-            </div>
-            <div className="muted small">
-              Current: ${(detail.capital_allocation || 0).toLocaleString()}
-            </div>
-            <div className="muted small">
-              Each trade is sized into <b>whole shares</b> from this allocation
-              and the per-trade risk %, capped by allocation ÷ entry price.
-              Orders go to Alpaca paper only when{" "}
-              <code>ENABLE_LIVE_ORDERS</code> is set server-side (otherwise
-              simulated in-app).
-            </div>
-            {msg && <div className="banner error">{msg}</div>}
-          </section>
+                {detail.running ? (
+                  <button
+                    className="btn danger"
+                    onClick={() => act(() => api.stop(keyName))}
+                  >
+                    Stop
+                  </button>
+                ) : (
+                  <button
+                    className="btn primary"
+                    onClick={() => act(() => api.activate(keyName))}
+                  >
+                    Activate
+                  </button>
+                )}
+              </div>
+              <div className="muted small">
+                Current: ${(detail.capital_allocation || 0).toLocaleString()}
+              </div>
+              <div className="muted small">
+                Each trade is sized into <b>whole shares</b> from this
+                allocation and the per-trade risk %, capped by allocation ÷
+                entry price. Orders go to Alpaca paper only when{" "}
+                <code>ENABLE_LIVE_ORDERS</code> is set server-side (otherwise
+                simulated in-app).
+              </div>
+              {msg && <div className="banner error">{msg}</div>}
+            </section>
+          )}
 
           <section className="card">
             <h2>Backtest</h2>
@@ -249,5 +257,95 @@ export default function StrategyDetail({ keyName, onBack }) {
         </>
       )}
     </div>
+  );
+}
+
+function fmt(v) {
+  return v === null || v === undefined || v === "" ? "—" : String(v);
+}
+
+// A strategy that executes outside this app (e.g. the QQQ credit spread under its
+// own LaunchAgent). Read-only: shows the in-app switch as Off with the server's
+// reason, plus today's state read from the external runner. No activate/allocate.
+function ExternalRunnerCard({ detail }) {
+  const ext = detail.external || {};
+  const today = ext.today;
+  const pos = today?.position;
+  return (
+    <section className="card">
+      <h2>Controls</h2>
+      <div className="row gap center">
+        <label
+          className="row gap center"
+          title={detail.activation_blocked || ""}
+        >
+          <input
+            type="checkbox"
+            role="switch"
+            checked={false}
+            disabled
+            aria-label="Run in this app"
+          />
+          <span>
+            Run in this app: <b>Off</b>
+          </span>
+        </label>
+      </div>
+      {detail.activation_blocked && (
+        <div className="muted small">{detail.activation_blocked}</div>
+      )}
+      <div className="muted small">
+        The app's emergency stop does not stop the external runner.
+      </div>
+
+      <h4>External runner</h4>
+      {!ext.found ? (
+        <div className="muted small">
+          Runner folder not found on this host ({fmt(ext.live_dir)}).
+        </div>
+      ) : (
+        <table className="table">
+          <tbody>
+            <tr>
+              <td>Service</td>
+              <td>
+                <code>{fmt(ext.runner)}</code>{" "}
+                <span
+                  className={`pill ${ext.daemon_running ? "live" : "idle"}`}
+                >
+                  {ext.daemon_running ? "running" : "not running"}
+                </span>
+                {ext.pid ? (
+                  <span className="muted small"> pid {ext.pid}</span>
+                ) : null}
+              </td>
+            </tr>
+            <tr>
+              <td>Session</td>
+              <td>{fmt(today?.session_date)}</td>
+            </tr>
+            <tr>
+              <td>Entry / 15:30 check / final close</td>
+              <td>
+                {fmt(today?.entry)} / {fmt(today?.checkpoint)} /{" "}
+                {fmt(today?.final_close)}
+              </td>
+            </tr>
+            <tr>
+              <td>Today's spread</td>
+              <td>
+                {pos
+                  ? `${pos.ticker} ${pos.spread} ${fmt(pos.short_strike)}/${fmt(
+                      pos.long_strike,
+                    )} ×${fmt(pos.quantity)} @ ${fmt(pos.credit_per_share)} credit (${fmt(
+                      pos.status,
+                    )})`
+                  : "—"}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      )}
+    </section>
   );
 }

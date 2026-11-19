@@ -137,8 +137,13 @@ export default function StrategiesTab({ focusKey, onFocusHandled }) {
                     <td>
                       <span
                         className={`pill ${!s.ready ? "soon" : s.running ? "live" : "idle"}`}
+                        title={s.activation_blocked || undefined}
                       >
-                        {s.ready ? s.status : "Coming soon"}
+                        {!s.ready
+                          ? "Coming soon"
+                          : s.activation_blocked && !s.running
+                            ? "Off"
+                            : s.status}
                       </span>
                     </td>
                     <td>

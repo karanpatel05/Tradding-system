@@ -5,8 +5,10 @@ code; live Alpaca is a deliberate future code change) and **Tastytrade for marke
 only** (quotes, option chains, history; OAuth personal grant). The Alpaca paper account
 may be shared with other tools: the app only touches orders it tagged (`tsys-`
 client_order_id). Includes a live engine, dashboard, journal, equity backtests and an
-options Builder (paper-tracked, never places orders). Strategy slots are currently empty
-(Coming Soon). Runs as a local web app or a hosted Docker stack.
+options Builder (paper-tracked, never places orders). The Strategies tab lists the QQQ
+first-hour credit spread, which runs outside this app and is switched off here (see
+"Strategies" below); the other slots are Coming Soon. Runs as a local web app, a macOS
+LaunchAgent service, or a hosted Docker stack.
 
 ## Architecture
 
@@ -17,7 +19,8 @@ backend/   FastAPI + async SQLAlchemy + httpx (Alpaca) + tastytrade SDK (data)
     auth/                connection-state auth (authenticated == Tastytrade OAuth probe verifies)
     broker/              Alpaca paper orders (paper lock, tsys- tag), app-owned ledger, account
     engine/              kill-switch task registry, per-strategy workers, execution, recovery
-    strategies/          BaseStrategy + registry (slots Coming Soon)
+    strategies/          BaseStrategy + registry (QQQ credit spread listed, switched off;
+                         other slots Coming Soon)
     backtest/            pure-Python metrics + historical runner
     services/            market status/overview, logging + journal/calendar
     routers/             dashboard, strategies, journal, websocket
@@ -126,6 +129,44 @@ It binds to `127.0.0.1` (local machine only). For LAN access change `--host` to 
 in the script —
 **local network only; do not expose to the internet without adding real auth + TLS** (see
 `docs/superpowers/specs/2026-06-26-web-app-migration-design.md`).
+
+## Run as a background service (macOS LaunchAgent)
+
+`com.tradingsystem.web` runs the same server as `run_web.sh` (API + built UI on
+`http://127.0.0.1:8765`) at login, and restarts it if it exits:
+
+```bash
+./scripts/install_autostart.sh     # write + load ~/Library/LaunchAgents/com.tradingsystem.web.plist
+./scripts/uninstall_autostart.sh   # stop + remove it
+launchctl kickstart -k gui/$(id -u)/com.tradingsystem.web   # restart after code changes
+```
+
+Logs go to `~/Library/Logs/trading-system.{out,err}.log`. The plist doesn't set
+`ENABLE_LIVE_ORDERS`; order routing follows `backend/.env` only. Re-run the install script
+after moving the repo. Rebuild the UI (`cd frontend && npm run build`) before restarting so
+the service serves your frontend changes.
+
+## Strategies
+
+**QQQ First-Hour Credit Spread** (`qqq_credit_spread`) is the strategy that is live on
+this computer. It runs **outside this app**, from `~/live_system_maintenance/live`, under
+the `com.karan.spreadlive` LaunchAgent (real Tastytrade orders plus an Alpaca paper copy).
+The app lists its rules and a read-only status card: whether the service is running, plus
+today's entry, 15:30 check, final close and spread, read from the runner's
+`state/live_state.json`. It is **switched off here** while this app is in development:
+
+- Activation always returns `409`. While the runner holds its lock, the reason says it is
+  already running. Otherwise it says in-app execution is not built yet. Allocation,
+  direction and backtest controls are refused or hidden for it.
+- It is never auto-resumed at boot, and a persisted active status is reset to idle.
+- The app never imports the runner or writes its state, lock or credentials. The app's
+  emergency stop does not stop it.
+- Set `QQQ_SPREAD_LIVE_DIR` to point at a different runner folder (default
+  `~/live_system_maintenance/live`).
+
+Running it in-app later means porting two-leg spread execution into the engine (which
+today places equity orders only) and lifting the block in
+`backend/app/strategies/qqq_credit_spread/strategy.py`.
 
 ## Run the full stack (Docker, hosted)
 
