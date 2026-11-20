@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api.js";
 import { useSnapshot } from "./hooks/useWebSocket.js";
+import ChartWorkspace from "./components/charts/ChartWorkspace.jsx";
 import Dashboard from "./components/Dashboard.jsx";
 import StrategiesTab from "./components/StrategiesTab.jsx";
 import CalendarTab from "./components/CalendarTab.jsx";
@@ -14,6 +15,7 @@ import DataBrokerChips from "./components/DataBrokerChips.jsx";
 // Minimal stroke icons — keeps the sidebar crisp without an icon dependency.
 const Icon = ({ name }) => {
   const paths = {
+    Chart: "M3 3h2v16h16v2H3V3zm4 11 4-5 4 2 5-7 2 1-6 9-4-2-4 5z",
     Dashboard: "M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z",
     Strategies: "M13 2L3 14h7l-1 8 10-12h-7l1-8z",
     Journal: "M7 2h10a2 2 0 012 2v16l-7-3-7 3V4a2 2 0 012-2z",
@@ -35,6 +37,7 @@ const Icon = ({ name }) => {
 
 const NAV_LABELS = {
   Dashboard: "Overview",
+  Chart: "Chart",
   Strategies: "Strategies",
   Builder: "Options builder",
   Journal: "Journal",
@@ -150,6 +153,8 @@ export default function App() {
             {Object.keys(NAV_LABELS).map((t) => (
               <button
                 key={t}
+                title={NAV_LABELS[t]}
+                aria-label={NAV_LABELS[t]}
                 className={t === tab ? "nav-item active" : "nav-item"}
                 aria-current={t === tab ? "page" : undefined}
                 onClick={() => setTab(t)}
@@ -227,6 +232,9 @@ export default function App() {
             <div className="workspace-breadcrumb">
               Workspace / {NAV_LABELS[tab]}
             </div>
+            {tab === "Chart" && (
+              <ChartWorkspace account={acct} accountError={accountError} />
+            )}
             {tab === "Dashboard" && (
               <Dashboard
                 snapshot={snapshot}

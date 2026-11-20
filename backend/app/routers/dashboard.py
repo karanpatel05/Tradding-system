@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth.gate import require_auth
+from app.services.chart_data import ChartDataError, get_bars, get_quotes
 from app.engine.execution import flatten_all
 from app.engine.manager import engine_manager
 from app.engine.worker import close_open_trades
@@ -33,6 +34,25 @@ async def market_status() -> dict:
 @router.get("/market/overview", dependencies=[Depends(require_auth)])
 async def market_overview() -> dict:
     return await get_market_overview()
+
+
+@router.get("/market/bars", dependencies=[Depends(require_auth)])
+async def market_bars(symbol: str, interval: str = "5m") -> dict:
+    """Candle history for the Chart screen (1m, 5m, 15m or 1d). Empty with a note when
+    the feed has nothing; the frontend then falls back to labelled sample data."""
+    try:
+        return await get_bars(symbol, interval)
+    except ChartDataError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/market/quotes", dependencies=[Depends(require_auth)])
+async def market_quotes(symbols: str) -> dict:
+    """Watchlist quotes: last price and change from the previous close."""
+    try:
+        return await get_quotes(symbols)
+    except ChartDataError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/positions", dependencies=[Depends(require_auth)])

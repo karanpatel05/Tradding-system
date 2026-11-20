@@ -67,6 +67,10 @@ export const api = {
   account: () => request("/api/account"),
   marketStatus: () => request("/api/market/status"),
   marketOverview: () => request("/api/market/overview"),
+  marketBars: (symbol, interval) =>
+    request(`/api/market/bars?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}`),
+  marketQuotes: (symbols) =>
+    request(`/api/market/quotes?symbols=${encodeURIComponent(symbols.join(","))}`),
   positions: () => request("/api/positions"),
   kill: () => request("/api/kill", { method: "POST" }),
 

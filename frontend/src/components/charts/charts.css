@@ -1,0 +1,165 @@
+/* Chart screen. Dark charting surface scoped to .cx; the rest of the console stays light. */
+.cx {
+  --cx-bg:#0b0f14; --cx-panel:#0e131a; --cx-card:#11171f; --cx-raise:#18202a; --cx-line:#1c232d;
+  --cx-text:#e6edf3; --cx-soft:#c9d3de; --cx-muted:#7d8a9a; --cx-faint:#5f6b7a;
+  --cx-up:#2dd4a7; --cx-down:#f0657a; --cx-warn:#f5b84a; --cx-accent:#2dd4a7;
+  position:relative; container-type:inline-size; color:var(--cx-text); background:var(--cx-bg);
+  border:1px solid var(--cx-line); border-radius:8px; overflow:hidden;
+  font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; font-size:13px;
+}
+.cx .up {color:var(--cx-up)} .cx .down {color:var(--cx-down)}
+.cx-muted {color:var(--cx-muted);margin:0;font-size:12px;line-height:1.5}
+.cx-pad {padding:14px 16px}
+
+/* Controls */
+.cx button,.cx select,.cx input {font:inherit;color:inherit;border:1px solid var(--cx-line);border-radius:5px;background:var(--cx-card);padding:4px 8px;min-height:28px}
+.cx button,.cx select {cursor:pointer}
+.cx button:hover:not(:disabled),.cx select:hover {background:var(--cx-raise)}
+.cx button:disabled {opacity:.45;cursor:not-allowed}
+.cx button[aria-pressed=true],.cx button[aria-expanded=true] {background:var(--cx-raise);color:var(--cx-accent);border-color:var(--cx-raise)}
+.cx input[type=color] {padding:0 2px;width:34px}
+.cx :focus-visible {outline:2px solid var(--cx-accent);outline-offset:1px}
+
+/* Toolbar */
+.cx-head,.cx-tools,.cx-instrument,.cx-intervals,.cx-layout,.cx-controls,.cx-row,.cx-foot {display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.cx-head {justify-content:space-between;gap:10px;padding:6px 10px;background:var(--cx-panel);border-bottom:1px solid var(--cx-line)}
+.cx-instrument>select {font-weight:700;font-size:14px;border-color:transparent;background:transparent}
+.cx-intervals {gap:2px;padding-left:8px;border-left:1px solid var(--cx-line)}
+.cx-intervals button,.cx-tools>button {border-color:transparent;background:transparent;color:var(--cx-soft)}
+.cx-layout {gap:0;padding:2px;background:var(--cx-bg);border-radius:6px;flex-wrap:nowrap}
+.cx-layout button {border:0;background:transparent;min-width:28px;color:var(--cx-soft)}
+.cx-source {display:inline-flex;align-items:center;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:600;white-space:nowrap}
+.cx-source.live {color:var(--cx-up);background:#2dd4a71c}
+.cx-source.sample {color:var(--cx-warn);background:#f5b84a1c}
+.cx-banner {padding:6px 12px;font-size:12px;color:var(--cx-warn);background:#f5b84a12;border-bottom:1px solid var(--cx-line)}
+
+/* Body: tool rail | charts (+ bottom panel) | side panel */
+.cx-body {display:flex;align-items:stretch;min-height:0}
+.cx-rail {display:flex;flex-direction:column;gap:2px;padding:6px 4px;background:var(--cx-panel);border-right:1px solid var(--cx-line)}
+.cx-rail button {width:32px;height:32px;border:0;background:transparent;font-size:18px;padding:0;color:var(--cx-soft)}
+.cx-rail hr {width:70%;margin:4px auto;border:0;border-top:1px solid var(--cx-line)}
+.cx-center {flex:1;min-width:0;display:flex;flex-direction:column}
+.cx-grid {display:grid;gap:1px;background:var(--cx-line);grid-template-columns:repeat(2,minmax(0,1fr))}
+.cx-count-1 {grid-template-columns:minmax(0,1fr)}
+.cx-count-8 {grid-template-columns:repeat(4,minmax(0,1fr))}
+
+/* Panes */
+.cx-pane {position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--cx-bg)}
+.cx-pane.selected::after {content:"";position:absolute;inset:0;border:1px solid #2dd4a766;pointer-events:none}
+.cx-count-1 .cx-pane.selected::after {display:none}
+.cx-controls {gap:4px;min-height:34px;padding:2px 8px;border-bottom:1px solid var(--cx-line);font-size:12px}
+.cx-controls select {border-color:transparent;background:transparent;color:var(--cx-soft);padding:2px 4px}
+.cx-controls select:first-child {font-weight:700;color:var(--cx-text)}
+.cx-controls select:last-child {margin-left:auto;font-size:11px;color:var(--cx-muted)}
+.cx-readout {display:flex;align-items:center;flex-wrap:wrap;gap:4px 10px;padding:6px 12px 0;font-size:12px;font-variant-numeric:tabular-nums;color:var(--cx-muted)}
+.cx-readout b {color:var(--cx-text)} .cx-readout em {font-style:normal}
+.cx-readout-time {margin-left:auto}
+.cx-study-values {position:absolute;z-index:1;top:66px;left:12px;font-size:11px;line-height:18px;font-variant-numeric:tabular-nums;color:var(--cx-muted);pointer-events:none}
+.cx-study-values>div {display:flex;align-items:center;gap:5px;width:max-content;padding-right:4px;background:#0b0f14d9;border-radius:3px}
+.cx-study-values i {width:11px;height:2px}
+.cx-study-values button {pointer-events:auto;border:0;min-height:16px;padding:0 4px;background:transparent;color:var(--cx-faint)}
+.cx-plot {display:block;width:100%;height:clamp(180px,26vh,340px);background:var(--cx-bg);touch-action:none;user-select:none;cursor:grab}
+.cx-plot:active {cursor:grabbing}
+.cx-plot[data-tool=Crosshair],.cx-plot[data-tool="Horizontal line"] {cursor:crosshair}
+.cx-plot text {font:11px Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-variant-numeric:tabular-nums;fill:var(--cx-muted)}
+.cx-count-1 .cx-plot,.cx-count-2 .cx-plot {height:clamp(340px,calc(100dvh - 250px),900px)}
+.cx-center:has(.cx-bottom) .cx-count-1 .cx-plot,.cx-center:has(.cx-bottom) .cx-count-2 .cx-plot {height:clamp(320px,calc(100dvh - 460px),760px)}
+.cx-loading {display:grid;place-items:center;height:clamp(240px,40vh,520px);color:var(--cx-muted);font-size:12px}
+.cx-foot {gap:4px;padding:2px 8px;border-top:1px solid var(--cx-line);font-size:11px;color:var(--cx-muted)}
+.cx-foot span {margin-right:auto}
+.cx-foot button {min-height:22px;border:0;background:transparent;font-size:11px;color:var(--cx-soft)}
+.cx-resize {position:absolute;z-index:3;touch-action:none}
+.cx-resize-width {inset:0 0 10px auto;width:6px;cursor:col-resize}
+.cx-resize-height {inset:auto 0 0;height:6px;cursor:row-resize}
+.cx-resize:hover,.cx-resize:active {background:#2dd4a74a}
+.cx-count-1 .cx-resize-width {display:none}
+
+/* Indicator editor and favorites */
+.cx-studies {max-width:460px;margin:8px 10px 8px auto;padding:10px 12px;background:var(--cx-card);border:1px solid var(--cx-line);border-radius:7px}
+.cx-row {justify-content:space-between;padding:4px 0}
+.cx-row input[type=number] {width:64px}
+.cx-favorites {position:absolute;right:15%;top:56px;z-index:4;display:flex;flex-wrap:wrap;max-width:70%;padding:2px;background:var(--cx-card);border:1px solid var(--cx-line);border-radius:5px}
+.cx-favorites button {border:0}
+.cx-favorite-menu {display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding:10px;background:var(--cx-card);border-bottom:1px solid var(--cx-line)}
+
+/* Side panel */
+/* contain:size lets the chart column set the row height; the panel scrolls inside it. */
+.cx-side {width:288px;flex-shrink:0;display:flex;flex-direction:column;contain:size;overflow-y:auto;background:var(--cx-panel);border-left:1px solid var(--cx-line)}
+.cx-side section {padding:12px 14px;border-bottom:1px solid var(--cx-line)}
+.cx-side-head {display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.cx-side h2 {margin:0;font-size:13px;font-weight:650;color:var(--cx-text)}
+.cx-watch {padding-inline:0!important}
+.cx-watch .cx-side-head {padding:0 14px}
+.cx-watch table {width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+.cx-watch th {padding:2px 14px;font-size:11px;font-weight:500;color:var(--cx-faint);text-align:right}
+.cx-watch td {padding:6px 14px;text-align:right;color:var(--cx-soft)}
+.cx-watch th:first-child,.cx-watch td:first-child {text-align:left}
+.cx-watch tbody tr {cursor:pointer}
+.cx-watch tbody tr:hover {background:var(--cx-card)}
+.cx-watch tr.current {background:var(--cx-raise);box-shadow:inset 2px 0 var(--cx-accent)}
+.cx-watch td button {border:0;padding:0;min-height:0;background:transparent;font-weight:650;color:var(--cx-text)}
+.cx-price {display:flex;align-items:baseline;gap:8px;margin-bottom:10px;font-variant-numeric:tabular-nums}
+.cx-price strong {font-size:26px;font-weight:500;letter-spacing:-.5px}
+.cx-price span {font-weight:600}
+.cx-range>div:first-child {display:flex;justify-content:space-between;font-size:11px;color:var(--cx-muted)}
+.cx-range-bar {position:relative;height:4px;margin:6px 0 12px;border-radius:2px;background:var(--cx-line)}
+.cx-range-bar i {position:absolute;inset:0 auto 0 0;border-radius:2px;background:#2dd4a766}
+.cx-range-bar b {position:absolute;top:-3px;width:2px;height:10px;background:var(--cx-text)}
+.cx-stats {display:grid;grid-template-columns:1fr 1fr;gap:6px 16px;margin:0}
+.cx-stats div {display:flex;justify-content:space-between;font-size:12px}
+.cx-stats dt {color:var(--cx-muted)} .cx-stats dd {margin:0;font-weight:600;color:var(--cx-soft);font-variant-numeric:tabular-nums}
+.cx-ticket {display:flex;flex-direction:column;gap:8px;border-bottom:0!important}
+.cx-seg {display:flex;gap:2px;padding:2px;background:var(--cx-bg);border-radius:6px}
+.cx-seg button {flex:1;border:0;background:transparent;color:var(--cx-soft)}
+.cx-seg button[aria-pressed=true] {background:var(--cx-raise);color:var(--cx-text)}
+.cx-seg button.buy[aria-pressed=true] {background:var(--cx-up);color:#06231b}
+.cx-seg button.sell[aria-pressed=true] {background:var(--cx-down);color:#2a0a10}
+.cx-fields {display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.cx-fields label {display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--cx-muted)}
+.cx-fields input {width:100%;box-sizing:border-box;background:var(--cx-bg);color:var(--cx-text);font-variant-numeric:tabular-nums}
+.cx-rr {display:flex;justify-content:space-between;font-size:11px;color:var(--cx-muted)}
+.cx-rr b {color:var(--cx-soft)}
+.cx-submit {width:100%;min-height:36px!important;font-weight:650}
+
+/* Bottom panel */
+.cx-bottom {border-top:1px solid var(--cx-line);background:var(--cx-panel);min-height:150px}
+.cx-tabs {display:flex;align-items:stretch;gap:2px;padding:0 10px;border-bottom:1px solid var(--cx-line)}
+.cx-tabs button {display:flex;align-items:center;gap:6px;border:0;border-radius:0;background:transparent;color:var(--cx-muted);padding:9px 10px;border-bottom:2px solid transparent}
+.cx-tabs button[aria-selected=true] {color:var(--cx-text);font-weight:600;border-bottom-color:var(--cx-accent)}
+.cx-tabs button span {padding:0 5px;border-radius:3px;font-size:11px;background:var(--cx-raise)}
+.cx-tabs-note {margin-left:auto;align-self:center;font-size:11px;color:var(--cx-muted)}
+.cx-table {width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+.cx-table th {padding:7px 16px;font-size:11px;font-weight:500;text-align:left;color:var(--cx-muted);border-bottom:1px solid var(--cx-line)}
+.cx-table td {padding:8px 16px;color:var(--cx-soft);border-bottom:1px solid #161c24}
+.cx-table b {color:var(--cx-text)}
+.cx-account {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;padding:14px 16px}
+.cx-account div {display:flex;flex-direction:column;gap:3px}
+.cx-account span {font-size:11px;color:var(--cx-muted)}
+.cx-account b {font-variant-numeric:tabular-nums}
+.cx-status {padding:6px 12px;text-align:right;font-size:11px;color:var(--cx-muted);background:var(--cx-panel);border-top:1px solid var(--cx-line)}
+
+/* Give the chart the full width: collapse the app sidebar while it is shown. */
+@media(min-width:1000px){
+  .layout:has(.cx) {grid-template-columns:64px minmax(0,1fr)}
+  .layout:has(.cx) .sidebar {padding-inline:7px}
+  .layout:has(.cx) .sidebar .nav-item {justify-content:center}
+  .layout:has(.cx) .sidebar :is(.brand-text,.workspace-label,.nav-item span,.side-foot-meta,.sidebar-foot,.side-foot) {display:none}
+  .layout:has(.cx) .brand {justify-content:center}
+  .main:has(.cx) {max-width:none;padding:8px}
+  .main:has(.cx) .workspace-breadcrumb {display:none}
+}
+
+/* Narrower screens */
+@container(max-width:1100px){.cx-count-8 {grid-template-columns:repeat(2,minmax(0,1fr))}.cx-side {width:250px}}
+@container(max-width:820px){
+  .cx-body {flex-direction:column}
+  .cx-rail {flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--cx-line)}
+  .cx-rail hr {display:none}
+  .cx-study-values {position:static;display:flex;flex-wrap:wrap;gap:2px 10px;padding:4px 12px 0}
+  .cx-side {width:auto;contain:none;overflow:visible;border-left:0;border-top:1px solid var(--cx-line)}
+  .cx-grid {grid-template-columns:minmax(0,1fr)}
+  .cx-count-1 .cx-plot,.cx-count-2 .cx-plot,.cx-center:has(.cx-bottom) .cx-count-1 .cx-plot {height:clamp(300px,55vh,520px)}
+  .cx-account {grid-template-columns:1fr 1fr}
+  .cx-table th:nth-child(4),.cx-table td:nth-child(4) {display:none}
+  .cx-readout-time {margin-left:0}
+}
