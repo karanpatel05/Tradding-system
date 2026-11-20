@@ -141,6 +141,19 @@ in the script —
 launchctl kickstart -k gui/$(id -u)/com.tradingsystem.web   # restart after code changes
 ```
 
+To open it from a phone or another device on the same Wi-Fi, install it in LAN mode and
+browse to the Mac's address (e.g. `http://<mac>.local:8765`):
+
+```bash
+RUN_WEB_HOST=0.0.0.0 ./scripts/install_autostart.sh
+```
+
+LAN mode is plain HTTP and the dashboard's read views have no login, so anyone on the
+network can see account and position data. Gated actions (activate, kill, order routing)
+still need `APP_AUTH_TOKEN`, which each device stores separately (paste it in Connections).
+Never port-forward this to the internet; use the Docker stack below for remote access.
+Re-running the install script without `RUN_WEB_HOST` switches back to this Mac only.
+
 Logs go to `~/Library/Logs/trading-system.{out,err}.log`. The plist doesn't set
 `ENABLE_LIVE_ORDERS`; order routing follows `backend/.env` only. Re-run the install script
 after moving the repo. Rebuild the UI (`cd frontend && npm run build`) before restarting so

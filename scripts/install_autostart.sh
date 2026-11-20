@@ -3,8 +3,13 @@
 # server — API + built UI on http://127.0.0.1:8765 — on login (quietly, no browser) and
 # restarts it if it exits. Re-running it replaces the agent (e.g. after moving the repo).
 #
-#   ./scripts/install_autostart.sh      # generate + load the LaunchAgent
-#   ./scripts/uninstall_autostart.sh    # stop + remove it
+#   ./scripts/install_autostart.sh                   # this Mac only (127.0.0.1)
+#   RUN_WEB_HOST=0.0.0.0 ./scripts/install_autostart.sh   # also reachable on the LAN
+#   ./scripts/uninstall_autostart.sh                 # stop + remove it
+#
+# LAN mode has no TLS and read routes have no login: anyone on your Wi-Fi can view the
+# dashboard; order/kill/activate actions still need APP_AUTH_TOKEN. Never port-forward
+# it to the internet (use the Docker stack's Caddy TLS + Basic Auth for that).
 #
 # Order routing is NOT armed here: ENABLE_LIVE_ORDERS comes only from backend/.env
 # (default false = simulated fills). An env var in this plist would override that file,
@@ -19,6 +24,7 @@ LABEL="com.tradingsystem.web"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOGDIR="$HOME/Library/Logs"
 GUI="gui/$(id -u)"
+HOST="${RUN_WEB_HOST:-127.0.0.1}"
 
 mkdir -p "$HOME/Library/LaunchAgents" "$LOGDIR"
 
@@ -38,7 +44,7 @@ cat > "$PLIST" <<PLIST
   <dict>
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>RUN_WEB_OPEN</key><string>0</string>
-    <key>RUN_WEB_HOST</key><string>127.0.0.1</string>
+    <key>RUN_WEB_HOST</key><string>$HOST</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -60,3 +66,7 @@ echo "==> Loaded LaunchAgent '$LABEL' (starts on login, restarts on exit)."
 echo "    Logs: $LOGDIR/trading-system.{out,err}.log"
 echo "    Status: launchctl print $GUI/$LABEL | head"
 echo "    Server: http://127.0.0.1:8765  (give it a few seconds to boot)"
+if [[ "$HOST" == "0.0.0.0" ]]; then
+  LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || true)"
+  echo "    LAN:    http://${LAN_IP:-<this-mac-ip>}:8765  or  http://$(scutil --get LocalHostName).local:8765"
+fi
