@@ -76,7 +76,9 @@ async def stock_quote(symbol: str) -> dict | None:
         ask = q["ask"] if q else None
         mid = (bid + ask) / 2 if bid is not None and ask is not None else None
         price = last if last is not None else mid
-        d = {"bid": bid, "ask": ask, "last": last, "close": None, "price": price}
+        prev = getattr(st, "prev_close", None)
+        close = prev(symbol) if callable(prev) else None   # previous session close
+        d = {"bid": bid, "ask": ask, "last": last, "close": close, "price": price}
         return d if d["price"] is not None else None
 
     return await _race(f"stock_quote:{symbol}", tt)

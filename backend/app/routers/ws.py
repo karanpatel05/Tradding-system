@@ -110,6 +110,7 @@ async def ws_endpoint(websocket: WebSocket) -> None:
     broker_account: dict = {}
     try:
         while True:
+            market_stream.keep_alive()             # resubscribe after a feed drop
             # Broker positions hit the API, so refresh them only every Nth tick;
             # strategy-tracked (incl. paper) positions are cheap DB reads each tick.
             if tick % POSITIONS_EVERY == 0:

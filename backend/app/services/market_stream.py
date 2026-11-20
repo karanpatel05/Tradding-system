@@ -42,6 +42,13 @@ class MarketStream:
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._subscribe_all())
 
+    def keep_alive(self) -> None:
+        """Called every WS tick. After a DXLink drop the shared streamer clears its
+        connection and subscriptions; re-reading the overview symbols reconnects and
+        resubscribes them, so the board recovers without a page reload."""
+        if not self.connected:
+            self.ensure_started()
+
     async def stop(self) -> None:
         """Cancel any in-flight subscribe task. Does not tear down the shared
         streamer itself — other consumers (e.g. strategies) may still need it."""
@@ -76,7 +83,8 @@ class MarketStream:
                 bid, ask = q.get("bid"), q.get("ask")
                 if bid is not None and ask is not None:
                     last = (bid + ask) / 2
-            quote = {"last": last, "close": None, "day_volume": None} if (q or last is not None) else None
+            prev = getattr(streamer, "_prev_close", {}).get(sym)  # previous session close
+            quote = {"last": last, "close": prev, "day_volume": None} if (q or last is not None) else None
             rows.append(index_row(ix, quote))
         return rows
 

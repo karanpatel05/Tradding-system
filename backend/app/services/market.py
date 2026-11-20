@@ -108,12 +108,13 @@ async def get_market_overview() -> dict:
         _weekly_changes(symbols),
         return_exceptions=True,
     )
-    if isinstance(quotes, Exception):  # overview must never 500
+    # BaseException, not Exception: a cancelled child comes back as CancelledError.
+    if isinstance(quotes, BaseException):  # overview must never 500
         logger.warning("Overview quote fetch failed: %s", quotes)
         base["note"] = "Market data feed temporarily unavailable."
         base["indices"] = [{**ix, **_NULL_QUOTE} for ix in INDICES]
         return base
-    if isinstance(week_changes, Exception):  # weekly is best-effort, never fatal
+    if isinstance(week_changes, BaseException):  # weekly is best-effort, never fatal
         logger.warning("Weekly change fetch failed: %s", week_changes)
         week_changes = {}
 

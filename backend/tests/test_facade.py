@@ -117,3 +117,17 @@ async def test_null_price_quote_is_a_miss(monkeypatch):
     monkeypatch.setattr(facade, "_get_streamer",
                         lambda: _FakeStreamer(quote={"bid": None, "ask": None}, trade=None))
     assert await facade.stock_quote("QQQ") is None
+
+
+@pytest.mark.asyncio
+async def test_stock_quote_carries_previous_close(monkeypatch):
+    """The REST overview derives day change from quote["close"] (previous close)."""
+    _reset()
+
+    class _WithClose(_FakeStreamer):
+        def prev_close(self, symbol):
+            return 730.2
+    monkeypatch.setattr(facade, "_get_streamer",
+                        lambda: _WithClose(quote={"bid": 728.6, "ask": 728.7}, trade=728.63))
+    q = await facade.stock_quote("SPY")
+    assert q["close"] == 730.2 and q["price"] == 728.63
