@@ -10,12 +10,18 @@ straight from the streamer cache; only missing/crossed quotes are ignored
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Protocol
 
 logger = logging.getLogger("trading.xsp_fly.feed")
+
+# Network lookups never get to stall the strategy loop: candle requests queue behind the
+# chart's (facade.bars has no outer timeout), and a slow chain fetch must not eat the
+# 09:45 entry window. A timeout is a miss (None), retried by the caller.
+LOOKUP_TIMEOUT = 15.0
 
 
 @dataclass(frozen=True)
@@ -92,8 +98,8 @@ class TastytradeFeed:
             sess = await get_tt_session()
             if sess is None:
                 return None
-            chain = await get_option_chain(sess, ticker)
-        except Exception:  # noqa: BLE001 - a failed lookup is retryable, not a crash
+            chain = await asyncio.wait_for(get_option_chain(sess, ticker), LOOKUP_TIMEOUT)
+        except Exception:  # noqa: BLE001 - failed/timed-out lookup is retryable
             logger.warning("XSP chain lookup failed", exc_info=True)
             return None
         best: dict[tuple[str, float], Contract] = {}
@@ -149,9 +155,9 @@ class TastytradeFeed:
             return s.price
         try:
             from app.marketdata import facade
-            bars = await facade.bars(ticker, "1d", datetime.combine(
-                d, datetime.min.time(), tzinfo=timezone.utc))
-        except Exception:  # noqa: BLE001
+            bars = await asyncio.wait_for(facade.bars(ticker, "1d", datetime.combine(
+                d, datetime.min.time(), tzinfo=timezone.utc)), LOOKUP_TIMEOUT)
+        except Exception:  # noqa: BLE001 - incl. TimeoutError: a miss, retried later
             return None
         for b in bars or []:
             t = datetime.fromtimestamp(int(b["time"]) / 1000, tz=close_dt.tzinfo)

@@ -131,3 +131,35 @@ def test_tastytrade_feed_keeps_pm_xsp_contracts_only(monkeypatch):
         ("C", 600.0, ".XSP261120C600"), ("P", 600.0, ".XSP261120P600")]
     assert all(c.stops_trading_at == stop for c in out)
     assert asyncio.run(TastytradeFeed().contracts("XSP", date(2026, 11, 23))) == []
+
+
+def test_feed_lookups_time_out_instead_of_stalling(monkeypatch):
+    """facade.bars can queue behind chart candle requests with no outer timeout; the
+    settlement lookup (also run at worker start) and the chain fetch must not hang."""
+    import time as _time
+
+    import tastytrade.instruments as ti
+
+    import app.tastytrade.session as ts
+    from app.marketdata import facade
+    from app.strategies.xsp_iron_fly import feed as feed_mod
+    from app.strategies.xsp_iron_fly.feed import TastytradeFeed
+
+    async def hang(*a, **k):
+        await asyncio.sleep(3600)
+
+    async def sess():
+        return object()
+    monkeypatch.setattr(feed_mod, "LOOKUP_TIMEOUT", 0.05)
+    monkeypatch.setattr(facade, "bars", hang)
+    monkeypatch.setattr(ti, "get_option_chain", hang)
+    monkeypatch.setattr(ts, "get_tt_session", sess)
+    f = TastytradeFeed()
+    monkeypatch.setattr(f, "spot", lambda ticker: None)    # force the candle fallback
+    d = date(2026, 11, 20)
+    close = datetime(2026, 11, 20, 21, 0, tzinfo=timezone.utc)
+    t0 = _time.monotonic()
+    assert asyncio.run(f.settlement_price("XSP", d, close, close.replace(hour=22))) is None
+    assert asyncio.run(f.contracts("XSP", d)) is None       # a miss, not cached
+    assert ("XSP", d) not in f._contracts
+    assert _time.monotonic() - t0 < 2.0
