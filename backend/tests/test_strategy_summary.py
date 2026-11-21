@@ -203,3 +203,28 @@ def test_xsp_session_pnl_includes_unwind_loss_with_no_trade_rows(client, monkeyp
     monkeypatch.setattr(r, "_closed_trades_since", recent)
     xsp = next(s for s in client.get("/api/strategies").json()["strategies"] if s["key"] == "xsp_iron_fly")
     assert xsp["session_pnl"] == -12.4
+
+
+def test_one_strategy_summary_error_does_not_blank_the_list(client, monkeypatch, caplog):
+    """If a strategy's own store fails, the list still loads (so activate/stop stay
+    reachable) and that strategy's session_pnl is None; /record falls back too."""
+    from app.routers import strategies as r
+    from app.strategies.xsp_iron_fly import store
+
+    async def boom(*a, **k):
+        raise RuntimeError("session store down")
+
+    async def recent(days):
+        return []
+
+    monkeypatch.setattr(store, "get_session", boom)
+    monkeypatch.setattr(store, "recent_sessions", boom)
+    monkeypatch.setattr(r, "_closed_trades_since", recent)
+    with caplog.at_level("WARNING", logger="trading.strategies"):
+        resp = client.get("/api/strategies")
+        rec = client.get("/api/strategies/xsp_iron_fly/record")
+    assert resp.status_code == 200
+    xsp = next(s for s in resp.json()["strategies"] if s["key"] == "xsp_iron_fly")
+    assert xsp["session_pnl"] is None and xsp["ready"] is True
+    assert rec.status_code == 200 and rec.json()["source"] in ("none", "paper")
+    assert "xsp_iron_fly" in caplog.text

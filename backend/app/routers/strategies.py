@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -28,6 +29,7 @@ from app.strategies.registry import get_strategy, list_strategies
 # Strategies tab works before connecting a broker (the app lands on the Dashboard
 # without a login gate). Only deploying a strategy (activate) requires auth.
 router = APIRouter(prefix="/api/strategies", tags=["strategies"])
+logger = logging.getLogger("trading.strategies")
 
 
 def _require_ready(key: str):
@@ -111,9 +113,14 @@ async def list_all() -> dict:
             # their own records, so the app cannot report theirs (None, shown as "—").
             pnl = None
             if strat.ready and not strat.external_runner:
-                pnl = await strat.session_pnl_today(today)
-                if pnl is None:
-                    pnl = session_pnl([t for t in recent if t.strategy_key == strat.key], today)
+                # A summary error must never blank the whole list (and its controls).
+                try:
+                    pnl = await strat.session_pnl_today(today)
+                    if pnl is None:
+                        pnl = session_pnl([t for t in recent if t.strategy_key == strat.key], today)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Session P&L unavailable for %s: %s", strat.key, exc)
+                    pnl = None
             out.append({
                 "key": strat.key,
                 "name": strat.name,
@@ -150,7 +157,11 @@ async def record(key: str) -> dict:
     snap = None if strat.backtest_note else backtest_snapshot(backtest_store.load(key))
     if snap:
         return snap
-    own = await strat.research_record()  # e.g. XSP's session rows (source of truth)
+    try:
+        own = await strat.research_record()  # e.g. XSP's session rows (source of truth)
+    except Exception as exc:  # noqa: BLE001 - fall through to the ledger path
+        logger.warning("Research record unavailable for %s: %s", key, exc)
+        own = None
     if own:
         return own
     async with session_scope() as session:
