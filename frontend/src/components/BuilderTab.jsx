@@ -37,8 +37,8 @@ const fmtDay = (d) =>
     day: "numeric",
   });
 
-export default function BuilderTab() {
-  const [underlying, setUnderlying] = useState("QQQ");
+export default function BuilderTab({ initialUnderlying } = {}) {
+  const [underlying, setUnderlying] = useState(initialUnderlying || "QQQ");
   const [chain, setChain] = useState({ expirations: [], strikes: [] });
   const [legs, setLegs] = useState([]);
   const [netDebit, setNetDebit] = useState(null);
