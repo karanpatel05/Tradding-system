@@ -66,16 +66,28 @@ def paper_record(trades) -> dict | None:
 
 
 FINISHED = ("settled", "closed")
+# Entries that never became a fly but may still carry P&L: an unwind of a partial
+# entry books its gross P&L and fees on the session row only (no TradeRecord).
+NO_FLY = ("skipped", "failed")
+
+
+def _counts_as_session(s: dict) -> bool:
+    pnl = s.get("realized_pnl")
+    if pnl is None:
+        return False
+    return s.get("status") in FINISHED or (s.get("status") in NO_FLY and round(float(pnl), 2) != 0)
 
 
 def session_record(sessions: list[dict]) -> dict | None:
-    """Record from a strategy's own session rows (e.g. the XSP fly store). Only
-    settled/closed sessions with a realized P&L count as traded; skipped, missed,
-    killed and errored days are reported as counts. None when there are no rows."""
+    """Record from a strategy's own session rows (e.g. the XSP fly store), keyed by
+    session_date and using each row's realized_pnl, which includes unwind P&L and
+    fees that never reach a TradeRecord. Settled/closed sessions count, as do
+    skipped/failed days with a nonzero realized P&L (an unwind loss); other skipped,
+    missed, failed, killed and errored days are reported as counts. None when there
+    are no rows."""
     if not sessions:
         return None
-    done = sorted((s for s in sessions if s.get("status") in FINISHED and s.get("realized_pnl") is not None),
-                  key=lambda s: str(s.get("session_date")))
+    done = sorted((s for s in sessions if _counts_as_session(s)), key=lambda s: str(s.get("session_date")))
     pnls = [float(s["realized_pnl"]) for s in done]
     peak = equity = max_dd = 0.0
     for p in pnls:
@@ -92,7 +104,7 @@ def session_record(sessions: list[dict]) -> dict | None:
         "win_rate": round(wins / len(pnls), 4) if pnls else None,
         "net_pnl": round(sum(pnls), 2),
         "max_drawdown": round(max_dd, 2),
-        "skipped": count("skipped", "missed"),
+        "skipped": sum(1 for s in sessions if s.get("status") in ("skipped", "missed", "failed") and not _counts_as_session(s)),
         "killed": count("killed", "error"),
         "open": count("open", "entering"),
         "first_date": dates[0] if dates else None,

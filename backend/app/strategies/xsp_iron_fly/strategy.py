@@ -71,11 +71,14 @@ class XspIronFlyStrategy(BaseStrategy):
         return session_record(await store.recent_sessions(self.key, 1000))
 
     async def session_pnl_today(self, today) -> float | None:
+        """Today's session realized_pnl (exact: includes unwind P&L and fees that no
+        TradeRecord carries). While the fly is still open it is not set yet, and the
+        router falls back to the legs already closed today."""
         from app.strategies.xsp_iron_fly import store
         sess = await store.get_session(self.key, today)
         if sess and sess.get("realized_pnl") is not None:
             return round(sess["realized_pnl"], 2)
-        return None  # not finished yet: the router falls back to closed legs today
+        return None
 
     def activation_block_reason(self) -> str | None:
         p = self.params
