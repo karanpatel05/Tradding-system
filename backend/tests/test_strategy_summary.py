@@ -169,3 +169,37 @@ def test_xsp_unfinished_session_falls_back_to_closed_legs(client, monkeypatch):
     monkeypatch.setattr(r, "_closed_trades_since", recent)
     xsp = next(s for s in client.get("/api/strategies").json()["strategies"] if s["key"] == "xsp_iron_fly")
     assert xsp["session_pnl"] == -30.0
+
+
+def test_unwind_loss_day_counts_with_session_pnl():
+    """A failed or skipped entry whose partial fill was unwound books its loss on the
+    session row only (extra_pnl - fees, no TradeRecord). It must count."""
+    rows = [
+        {"session_date": date(2026, 11, 16), "status": "settled", "realized_pnl": 90.0},
+        {"session_date": date(2026, 11, 17), "status": "skipped", "realized_pnl": -12.4},   # unwind loss
+        {"session_date": date(2026, 11, 18), "status": "failed", "realized_pnl": -7.6},     # unwind loss
+        {"session_date": date(2026, 11, 19), "status": "skipped", "realized_pnl": 0.0},     # plain skip
+        {"session_date": date(2026, 11, 20), "status": "failed", "realized_pnl": None},
+    ]
+    r = ss.session_record(rows)
+    assert r["sessions"] == 3 and r["wins"] == 1
+    assert r["net_pnl"] == 70.0
+    assert r["max_drawdown"] == -20.0       # 90 -> 77.6 -> 70
+    assert r["skipped"] == 2                # the zero-P&L skip and the P&L-less failure
+    assert (r["first_date"], r["last_date"]) == ("2026-11-16", "2026-11-18")
+
+
+def test_xsp_session_pnl_includes_unwind_loss_with_no_trade_rows(client, monkeypatch):
+    from app.routers import strategies as r
+    from app.strategies.xsp_iron_fly import store
+
+    async def get_session(key, d):
+        return {"session_date": d, "status": "skipped", "realized_pnl": -12.4}
+
+    async def recent(days):  # the ledger has nothing for an unwind
+        return []
+
+    monkeypatch.setattr(store, "get_session", get_session)
+    monkeypatch.setattr(r, "_closed_trades_since", recent)
+    xsp = next(s for s in client.get("/api/strategies").json()["strategies"] if s["key"] == "xsp_iron_fly")
+    assert xsp["session_pnl"] == -12.4
