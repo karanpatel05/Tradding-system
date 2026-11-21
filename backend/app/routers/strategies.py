@@ -109,8 +109,11 @@ async def list_all() -> dict:
             st = await session.get(StrategyState, strat.key)
             # Realized P&L today from the app's trade ledger. External runners keep
             # their own records, so the app cannot report theirs (None, shown as "—").
-            pnl = (session_pnl([t for t in recent if t.strategy_key == strat.key], today)
-                   if strat.ready and not strat.external_runner else None)
+            pnl = None
+            if strat.ready and not strat.external_runner:
+                pnl = await strat.session_pnl_today(today)
+                if pnl is None:
+                    pnl = session_pnl([t for t in recent if t.strategy_key == strat.key], today)
             out.append({
                 "key": strat.key,
                 "name": strat.name,
@@ -133,7 +136,7 @@ async def list_all() -> dict:
 @router.get("/{key}/record")
 async def record(key: str) -> dict:
     """Research snapshot for the Strategies screen: the stored backtest when there is
-    one, otherwise the strategy's simulated/paper sessions from the app's trade ledger.
+    one, else the strategy's own session store (XSP), else the app's trade ledger.
     External runners keep their own records ("external"); "none" before any result."""
     from sqlalchemy import select
 
@@ -147,6 +150,9 @@ async def record(key: str) -> dict:
     snap = None if strat.backtest_note else backtest_snapshot(backtest_store.load(key))
     if snap:
         return snap
+    own = await strat.research_record()  # e.g. XSP's session rows (source of truth)
+    if own:
+        return own
     async with session_scope() as session:
         trades = (await session.execute(
             select(TradeRecord).where(TradeRecord.strategy_key == key, TradeRecord.status == "closed")

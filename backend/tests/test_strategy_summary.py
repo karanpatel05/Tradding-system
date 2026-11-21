@@ -105,3 +105,67 @@ def test_record_endpoint_sources(client, monkeypatch):
     assert client.get("/api/strategies/nope/record").status_code == 404
     xsp = client.get("/api/strategies/xsp_iron_fly/record").json()
     assert xsp["source"] in ("none", "paper")
+
+
+def test_session_record_uses_session_status_not_ledger_rows():
+    rows = [
+        {"session_date": date(2026, 11, 16), "status": "settled", "realized_pnl": 60.0},
+        {"session_date": date(2026, 11, 17), "status": "closed", "realized_pnl": -150.0},
+        {"session_date": date(2026, 11, 18), "status": "skipped", "realized_pnl": None},
+        {"session_date": date(2026, 11, 19), "status": "missed", "realized_pnl": None},
+        {"session_date": date(2026, 11, 20), "status": "killed", "realized_pnl": None},
+        {"session_date": date(2026, 11, 21), "status": "open", "realized_pnl": None},
+        {"session_date": date(2026, 11, 13), "status": "settled", "realized_pnl": 40.0},
+    ]
+    r = ss.session_record(rows)
+    assert r["source"] == "sessions"
+    assert r["sessions"] == 3 and r["wins"] == 2 and r["win_rate"] == round(2 / 3, 4)
+    assert r["net_pnl"] == -50.0
+    assert r["max_drawdown"] == -150.0      # +40, +100 peak, then -50
+    assert (r["skipped"], r["killed"], r["open"]) == (2, 1, 1)
+    assert (r["first_date"], r["last_date"]) == ("2026-11-13", "2026-11-17")
+    only_skips = ss.session_record([{"session_date": date(2026, 11, 18), "status": "skipped"}])
+    assert only_skips["sessions"] == 0 and only_skips["win_rate"] is None and only_skips["skipped"] == 1
+    assert ss.session_record([]) is None
+
+
+def test_xsp_record_and_pnl_come_from_its_session_store(client, monkeypatch):
+    from app.routers import strategies as r
+    from app.strategies.xsp_iron_fly import store
+
+    today = ss.today_et()
+
+    async def recent_sessions(key, limit=10):
+        return [{"session_date": today, "status": "settled", "realized_pnl": 75.0},
+                {"session_date": date(2026, 11, 2), "status": "skipped", "realized_pnl": None}]
+
+    async def get_session(key, d):
+        return {"session_date": d, "status": "settled", "realized_pnl": 75.0} if d == today else None
+
+    async def recent(days):  # leg rows would double count; the session row wins
+        now = datetime.now(timezone.utc)
+        return [_t(now, 100.0), _t(now, -25.0), _t(now, 10.0), _t(now, -10.0)]
+
+    monkeypatch.setattr(store, "recent_sessions", recent_sessions)
+    monkeypatch.setattr(store, "get_session", get_session)
+    monkeypatch.setattr(r, "_closed_trades_since", recent)
+    rec = client.get("/api/strategies/xsp_iron_fly/record").json()
+    assert rec["source"] == "sessions" and rec["sessions"] == 1 and rec["skipped"] == 1
+    xsp = next(s for s in client.get("/api/strategies").json()["strategies"] if s["key"] == "xsp_iron_fly")
+    assert xsp["session_pnl"] == 75.0
+
+
+def test_xsp_unfinished_session_falls_back_to_closed_legs(client, monkeypatch):
+    from app.routers import strategies as r
+    from app.strategies.xsp_iron_fly import store
+
+    async def get_session(key, d):
+        return {"session_date": d, "status": "open", "realized_pnl": None}
+
+    async def recent(days):  # one short leg already stopped out today
+        return [_t(datetime.now(timezone.utc), -30.0)]
+
+    monkeypatch.setattr(store, "get_session", get_session)
+    monkeypatch.setattr(r, "_closed_trades_since", recent)
+    xsp = next(s for s in client.get("/api/strategies").json()["strategies"] if s["key"] == "xsp_iron_fly")
+    assert xsp["session_pnl"] == -30.0

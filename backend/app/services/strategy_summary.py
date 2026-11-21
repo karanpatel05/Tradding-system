@@ -65,6 +65,41 @@ def paper_record(trades) -> dict | None:
     }
 
 
+FINISHED = ("settled", "closed")
+
+
+def session_record(sessions: list[dict]) -> dict | None:
+    """Record from a strategy's own session rows (e.g. the XSP fly store). Only
+    settled/closed sessions with a realized P&L count as traded; skipped, missed,
+    killed and errored days are reported as counts. None when there are no rows."""
+    if not sessions:
+        return None
+    done = sorted((s for s in sessions if s.get("status") in FINISHED and s.get("realized_pnl") is not None),
+                  key=lambda s: str(s.get("session_date")))
+    pnls = [float(s["realized_pnl"]) for s in done]
+    peak = equity = max_dd = 0.0
+    for p in pnls:
+        equity += p
+        peak = max(peak, equity)
+        max_dd = min(max_dd, equity - peak)
+    wins = sum(1 for p in pnls if p > 0)
+    count = lambda *st: sum(1 for s in sessions if s.get("status") in st)
+    dates = [str(s.get("session_date")) for s in done]
+    return {
+        "source": "sessions",
+        "sessions": len(pnls),
+        "wins": wins,
+        "win_rate": round(wins / len(pnls), 4) if pnls else None,
+        "net_pnl": round(sum(pnls), 2),
+        "max_drawdown": round(max_dd, 2),
+        "skipped": count("skipped", "missed"),
+        "killed": count("killed", "error"),
+        "open": count("open", "entering"),
+        "first_date": dates[0] if dates else None,
+        "last_date": dates[-1] if dates else None,
+    }
+
+
 def backtest_snapshot(result: dict | None) -> dict | None:
     """Snapshot from a stored backtest result (the longest timeframe it has)."""
     if not result or not result.get("timeframes"):

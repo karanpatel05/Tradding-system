@@ -45,7 +45,7 @@ class XspIronFlyStrategy(BaseStrategy):
     selection_criteria = "Fixed underlying: XSP 0DTE (PM-settled)."
     backtest_note = ("No in-app backtest: the app's backtester is equity-only and there is "
                      "no historical XSP option quote data here. Validate with the "
-                     "simulated paper sessions (GET /api/strategies/xsp_iron_fly/record).")
+                     "simulated paper sessions (GET /api/strategies/xsp_iron_fly/sessions).")
 
     def __init__(self, params: IronFlyParams | None = None) -> None:
         self._params = params
@@ -62,6 +62,20 @@ class XspIronFlyStrategy(BaseStrategy):
 
     def execution_label(self) -> str:
         return "Simulated fills"  # sim mode only; live mode is refused below
+
+    # The session row (one per day, 4 leg TradeRecords) is the source of truth for
+    # the Strategies screen, not a count of ledger rows.
+    async def research_record(self) -> dict | None:
+        from app.services.strategy_summary import session_record
+        from app.strategies.xsp_iron_fly import store
+        return session_record(await store.recent_sessions(self.key, 1000))
+
+    async def session_pnl_today(self, today) -> float | None:
+        from app.strategies.xsp_iron_fly import store
+        sess = await store.get_session(self.key, today)
+        if sess and sess.get("realized_pnl") is not None:
+            return round(sess["realized_pnl"], 2)
+        return None  # not finished yet: the router falls back to closed legs today
 
     def activation_block_reason(self) -> str | None:
         p = self.params

@@ -71,6 +71,15 @@ class BaseStrategy(ABC):
         from app.config import get_settings
         return "Alpaca paper" if get_settings().enable_live_orders else "Simulated"
 
+    async def research_record(self) -> dict | None:
+        """Research snapshot from a strategy's own session store, or None to let the
+        Strategies screen fall back to the stored backtest / trade ledger."""
+        return None
+
+    async def session_pnl_today(self, today) -> float | None:
+        """Realized P&L today from the strategy's own records, or None for the ledger."""
+        return None
+
     def activation_block_reason(self) -> str | None:
         """Why this (ready) strategy must not run in this app right now, or None.
         Non-None refuses activation (409) and skips auto-resume at boot."""
