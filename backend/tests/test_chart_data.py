@@ -110,3 +110,18 @@ async def test_quotes_reject_bad_lists():
         await chart_data.get_quotes("")
     with pytest.raises(chart_data.ChartDataError):
         await chart_data.get_quotes(",".join(f"S{i}" for i in range(25)))
+
+
+@pytest.mark.asyncio
+async def test_empty_result_is_not_cached(monkeypatch):
+    """An empty answer (feed still reconnecting) must not pin the chart to sample data
+    for the cache TTL: the next poll asks the feed again."""
+    answers = [[], [_bar(1, 500.0)]]
+
+    async def bars(symbol, interval, start, end=None):
+        return answers.pop(0)
+
+    monkeypatch.setattr(chart_data, "facade_bars", bars)
+    first = await chart_data.get_bars("QQQ", "5m", now=100.0)
+    second = await chart_data.get_bars("QQQ", "5m", now=101.0)
+    assert first["bars"] == [] and len(second["bars"]) == 1

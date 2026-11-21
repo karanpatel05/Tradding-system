@@ -249,9 +249,12 @@ class TTStreamer:
 
     async def candles(self, symbol: str, interval: str,
                       start: datetime, end: datetime | None = None,
-                      idle_seconds: float = 2.0) -> list[dict]:
-        """Collect Candle history: subscribe from `start`, wait until no new events
-        arrive for `idle_seconds`, unsubscribe, return bars in [start, end] oldest-first."""
+                      idle_seconds: float = 2.0,
+                      first_event_timeout: float = 10.0) -> list[dict]:
+        """Collect Candle history: subscribe from `start`, wait for the first event (up to
+        `first_event_timeout`; right after a reconnect it can lag well past two idle
+        periods), then until no new events arrive for `idle_seconds`, unsubscribe, and
+        return bars in [start, end] oldest-first."""
         dx_interval = _INTERVALS.get(interval)
         if dx_interval is None or not await self._ensure():
             return []
@@ -268,6 +271,10 @@ class TTStreamer:
                 del self._candles[k]
             async with self._sub_lock:              # same channel-setup race as above
                 await self._dx.subscribe_candle([symbol], dx_interval, start_time=start)
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + first_event_timeout
+            while _bucket_count() == 0 and loop.time() < deadline:
+                await asyncio.sleep(min(idle_seconds, 0.25))
             seen = -1
             while True:
                 await asyncio.sleep(idle_seconds)
