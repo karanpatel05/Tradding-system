@@ -1,0 +1,38 @@
+/* Strategies workspace (operator console, light). */
+.strat-session { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.strat-session .btn { margin-top: 6px; }
+.strategies-tab .stat-value.pos { color: var(--pos); }
+.strategies-tab .stat-value.neg { color: var(--neg); }
+.strat-table td.pos { color: var(--pos); }
+.strat-table td.neg { color: var(--neg); }
+.strat-table tbody tr { cursor: pointer; }
+.strat-table tbody tr.selected { background: var(--accent-soft); }
+.strat-table tbody tr.selected:hover { background: var(--accent-soft); }
+.strat-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.strat-action { text-align: right; white-space: nowrap; }
+.strat-confirm { display: inline-flex; gap: 6px; }
+.strat-note { margin: 10px 2px 0; }
+.pill.soon { background: #f1ecfa; color: #6c4f9e; }
+.pill.external { background: #e8effc; color: #2f5fb8; }
+.pill.blocked { background: #fbf1dd; color: #8b5a13; }
+.pill.selected-tag { background: var(--accent-soft); color: var(--accent); }
+.strat-bottom { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; margin-top: 16px; align-items: start; }
+.strat-selected-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.strat-selected-head h2, .strat-research h2 { margin: 0; }
+.strat-desc { margin: 14px 0; max-width: 70ch; }
+.strat-facts { display: grid; grid-template-columns: repeat(4, minmax(0, auto)); gap: 12px 32px; justify-content: start; margin: 8px 0 16px; }
+.strat-facts div, .strat-metrics div { display: flex; flex-direction: column; gap: 4px; }
+.strat-facts span, .strat-metrics span { font-size: 12px; color: var(--muted); }
+.strat-facts b { font-size: 18px; font-weight: 600; color: var(--text); }
+.strat-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.strat-research p { margin: 12px 0; }
+.strat-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 14px 0 6px; }
+.strat-metrics b { font-size: 18px; font-weight: 600; color: var(--text); }
+.strat-metrics b.neg { color: var(--neg); }
+@media (max-width: 900px) {
+  .strat-bottom { grid-template-columns: minmax(0, 1fr); }
+  .strat-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 600px) {
+  .strat-session { align-items: flex-start; text-align: left; }
+}
