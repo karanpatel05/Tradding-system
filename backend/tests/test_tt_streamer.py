@@ -308,3 +308,28 @@ async def test_candles_give_up_after_first_event_timeout(monkeypatch):
                            idle_seconds=0.1, first_event_timeout=0.5)
     await s.teardown()
     assert bars == [] and 0.4 < loop.time() - t < 1.5
+
+
+@pytest.mark.asyncio
+async def test_candles_stop_at_max_seconds_even_if_events_keep_coming(monkeypatch):
+    fake = _FakeDx()
+    s = st_mod.TTStreamer()
+    monkeypatch.setattr(s, "_connect", _fake_connect(fake, s))
+    from tastytrade.dxfeed import Candle
+    t0 = datetime.now(timezone.utc) - timedelta(minutes=30)
+    base = int(t0.timestamp() * 1000)
+
+    async def flood():
+        for i in range(200):
+            await fake._q(Candle).put(SimpleNamespace(
+                event_symbol="QQQ{=1m}", time=base + i * 60_000, open=1.0, high=2.0,
+                low=0.5, close=1.5, volume=1))
+            await asyncio.sleep(0.02)
+
+    task = asyncio.create_task(flood())
+    loop = asyncio.get_running_loop()
+    t = loop.time()
+    bars = await s.candles("QQQ", "1m", start=t0, idle_seconds=0.1, max_seconds=0.6)
+    elapsed = loop.time() - t
+    task.cancel(); await s.teardown()
+    assert bars and elapsed < 1.2

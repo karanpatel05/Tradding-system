@@ -131,3 +131,24 @@ async def test_stock_quote_carries_previous_close(monkeypatch):
                         lambda: _WithClose(quote={"bid": 728.6, "ask": 728.7}, trade=728.63))
     q = await facade.stock_quote("SPY")
     assert q["close"] == 730.2 and q["price"] == 728.63
+
+
+@pytest.mark.asyncio
+async def test_bars_not_cut_off_while_queued_for_the_candle_collector(monkeypatch):
+    """Candle collection runs one symbol at a time. Time spent queued behind another
+    symbol must not count against the per-call source timeout, or concurrent chart
+    panes get [] and fall back to sample data."""
+    import asyncio
+    _reset()
+    monkeypatch.setattr(facade, "_SOURCE_TIMEOUT", 0.3)
+    lock = asyncio.Lock()
+
+    class _SerialCandles:
+        async def candles(self, symbol, timeframe, start=None, end=None):
+            async with lock:            # stands in for TTStreamer._candle_lock
+                await asyncio.sleep(0.2)
+            return [{"time": 1, "close": 1.0, "symbol": symbol}]
+
+    monkeypatch.setattr(facade, "_get_streamer", lambda: _SerialCandles())
+    out = await asyncio.gather(*(facade.bars(s, "5m", start=None) for s in ("A", "B", "C")))
+    assert all(len(b) == 1 for b in out)  # C waited ~0.4s in the queue, still served

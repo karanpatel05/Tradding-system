@@ -50,13 +50,18 @@ async def _note_source(op: str, source: str) -> None:
                     category="action")
 
 
-async def _race(op: str, tt_call, ib_call=None):
+_DEFAULT = object()
+
+
+async def _race(op: str, tt_call, ib_call=None, timeout=_DEFAULT):
     """Call Tastytrade; a result of None/[]/{} is a miss. Exceptions count as misses.
     `ib_call` is accepted for call-site compatibility but always ignored — Tastytrade
     is the sole data source, there is no fallback. `op` is an instrument-scoped key
-    (e.g. "stock_quote:QQQ") used for source tracking."""
+    (e.g. "stock_quote:QQQ") used for source tracking. `timeout` defaults to
+    ``_SOURCE_TIMEOUT``; None means the call bounds its own time."""
+    limit = _SOURCE_TIMEOUT if timeout is _DEFAULT else timeout
     try:
-        out = await asyncio.wait_for(tt_call(), _SOURCE_TIMEOUT)
+        out = await (asyncio.wait_for(tt_call(), limit) if limit is not None else tt_call())
     except Exception:  # noqa: BLE001 - a failed source is a miss, not a crash
         out = None
     if out not in (None, [], {}):
@@ -199,7 +204,10 @@ async def bars(symbol: str, timeframe: str, start, end=None) -> list[dict]:
     async def tt():
         return await _get_streamer().candles(symbol, timeframe, start=start, end=end) or None
 
-    return await _race(f"bars:{symbol}", tt) or []
+    # No outer timeout: candle collection is serialized, so a fixed cap would also count
+    # the time spent queued behind other symbols and cut the call off with []. The
+    # collector bounds its own time once it holds the lock.
+    return await _race(f"bars:{symbol}", tt, timeout=None) or []
 
 
 def data_status(window_seconds: float = 900.0) -> dict:
