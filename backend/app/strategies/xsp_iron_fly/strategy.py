@@ -12,6 +12,8 @@ class XspIronFlyStrategy(BaseStrategy):
     key = "xsp_iron_fly"
     name = "XSP 0DTE Iron Fly"
     ready = True
+    category = "Options · 0DTE iron fly"
+    universe = ("XSP",)
 
     description = (
         "Sells a 10-point-wide XSP (Mini-SPX, cash-settled, European) 0DTE iron fly at "
@@ -57,6 +59,23 @@ class XspIronFlyStrategy(BaseStrategy):
 
     def bar_interval(self) -> str:
         return "1m"
+
+    def execution_label(self) -> str:
+        return "Simulated fills"  # sim mode only; live mode is refused below
+
+    # The session row (one per day, 4 leg TradeRecords) is the source of truth for
+    # the Strategies screen, not a count of ledger rows.
+    async def research_record(self) -> dict | None:
+        from app.services.strategy_summary import session_record
+        from app.strategies.xsp_iron_fly import store
+        return session_record(await store.recent_sessions(self.key, 1000))
+
+    async def session_pnl_today(self, today) -> float | None:
+        from app.strategies.xsp_iron_fly import store
+        sess = await store.get_session(self.key, today)
+        if sess and sess.get("realized_pnl") is not None:
+            return round(sess["realized_pnl"], 2)
+        return None  # not finished yet: the router falls back to closed legs today
 
     def activation_block_reason(self) -> str | None:
         p = self.params
