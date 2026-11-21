@@ -179,12 +179,7 @@ class IronFlyRunner:
     # ------------------------------------------------------------------ recovery
     async def _recover_today(self, s: dict) -> dict:
         if s["status"] == "entering":
-            s["status"] = "failed"
-            s["reason"] = ("interrupted during entry before fills were recorded (simulated "
-                           "orders do not survive a restart); not re-entering today")
-            await store.save(s)
-            await self._log(f"{s['session_date']}: {s['reason']}", level="warning")
-            return s
+            return await self._resume_entry(s)
         if s["status"] != "open":
             return s
         await self._detect_killed(s)
@@ -214,14 +209,51 @@ class IronFlyRunner:
         await self._log(f"{s['session_date']}: {len(hit)} leg(s) closed by the kill switch; "
                         "not managed further today", level="warning")
 
+    async def _resume_entry(self, s: dict) -> dict:
+        """A restart found the day mid-entry. Simulated orders do not survive a restart,
+        but every fill was saved as it happened, so filled legs are positions. Before the
+        close: unwind whatever does not pair up (excess body first) and manage the
+        matched fly. At or after the close: open the filled legs as they are so they
+        settle at the close print. Never re-enters."""
+        d = s["session_date"]
+        legs = s.get("legs") or []
+        if not any(int(l.get("qty") or 0) for l in legs):
+            s.update(status="failed", closed_time=self.clock.now(),
+                     reason="interrupted during entry before any fill (simulated orders "
+                            "do not survive a restart); not re-entering today")
+            await store.save(s)
+            await self._log(f"{d}: {s['reason']}", level="warning")
+            return s
+        close = s.get("close_time") or cal.close_time(d)
+        if self.clock.now() < close:
+            f = min(int(l.get("qty") or 0) for l in legs)
+            for role in L.SHORT_ROLES + L.LONG_ROLES:
+                leg = self._leg(s, role)
+                await self._unwind(s, leg, int(leg.get("qty") or 0) - f)
+            if s["status"] == "error":      # an unwind failed: SAFE_MODE is already tripped
+                return s
+            if f == 0:
+                s.update(status="failed", contracts=0, closed_time=self.clock.now(),
+                         realized_pnl=round(float(s["extra_pnl"]) - float(s["fees"]), 2),
+                         reason="interrupted during entry; unmatched fills unwound, no fly "
+                                "opened; not re-entering today")
+                await store.save(s)
+                await self._log(f"{d}: {s['reason']}", level="warning")
+                return s
+        await self._activate(s)
+        await self._log(
+            f"{d}: resumed an interrupted entry: opened "
+            f"{[(l['role'], l['qty']) for l in legs if int(l.get('qty') or 0)]}"
+            + ("" if self.clock.now() < close else "; settling at the close print"),
+            level="warning", category="action")
+        return s
+
     async def recover_stale(self, today: date) -> None:
         for s in await store.unfinished_before(self.key, today):
             if s["status"] == "entering":
-                s["status"] = "failed"
-                s["reason"] = "interrupted during entry (found on a later day)"
-                await store.save(s)
-                continue
-            await self._detect_killed(s)
+                await self._resume_entry(s)
+            else:
+                await self._detect_killed(s)
             if s["status"] != "open":
                 continue
             close_dt = s.get("close_time") or cal.close_time(s["session_date"])
@@ -360,18 +392,8 @@ class IronFlyRunner:
             await self._log(f"{d}: no fly opened ({s['reason']})", level="warning")
             return s
 
-        now = self.clock.now()
-        fills = {l["role"]: l["entry_price"] for l in s["legs"]}
-        net = L.net_credit(fills)
-        cw, pw = plan["widths"]
-        for l in s["legs"]:
-            l["status"] = "open"
-            if l["action"] == "SELL":
-                l["stop_level"] = round(L.stop_level(l["entry_price"], self.p.stop_mult), 4)
-        s.update(status="open", contracts=qty, net_credit=round(net, 4),
-                 max_loss=round(L.max_loss_per_fly(cw, pw, net, self.p.multiplier) * qty, 2),
-                 entry_time=now)
-        await store.finalize_entry(s, self.key, now)
+        await self._activate(s)
+        net = s["net_credit"]
         await self._log(
             f"{d}: ENTERED x{qty}: net credit {net:.2f} (mid {plan['mid_credit']:.2f}, "
             f"slippage {plan['mid_credit'] - net:+.2f}); max loss ${s['max_loss']:.0f}; "
@@ -381,6 +403,25 @@ class IronFlyRunner:
                   "slippage_vs_mid": round(plan["mid_credit"] - net, 4),
                   "max_loss": s["max_loss"], "legs": s["legs"]})
         return s
+
+    async def _activate(self, s: dict) -> None:
+        """Open every filled leg: a stop level per short, one open TradeRecord per leg,
+        session 'open'. A balanced 4-leg fly also gets its net credit and max loss."""
+        now = self.clock.now()
+        filled = [l for l in s["legs"] if int(l.get("qty") or 0) > 0]
+        for l in filled:
+            l["status"] = "open"
+            if l["action"] == "SELL":
+                l["stop_level"] = round(L.stop_level(l["entry_price"], self.p.stop_mult), 4)
+        qtys = {int(l["qty"]) for l in filled}
+        s.update(status="open", contracts=min(qtys), entry_time=now)
+        if len(filled) == len(s["legs"]) and len(qtys) == 1:
+            net = L.net_credit({l["role"]: l["entry_price"] for l in filled})
+            cw, pw = L.wing_widths(s["body_strike"], self._leg(s, "long_call")["strike"],
+                                   self._leg(s, "long_put")["strike"])
+            s.update(net_credit=round(net, 4), max_loss=round(
+                L.max_loss_per_fly(cw, pw, net, self.p.multiplier) * min(qtys), 2))
+        await store.finalize_entry(s, self.key, now)
 
     def _leg(self, s: dict, role: str) -> dict:
         return next(l for l in s["legs"] if l["role"] == role)
@@ -411,7 +452,8 @@ class IronFlyRunner:
             if quotes is not None:
                 mid_c, _ = L.combo_credits(quotes)
                 limit = L.round_to_tick(mid_c - k * p.entry_reprice_step, p.tick, "down")
-                res = await self.ex.combo(s["legs"], target - filled, limit)
+                res = await self.ex.combo(s["legs"], target - filled, limit,
+                                          max_age=p.max_quote_age)
                 if res.status == "rejected":
                     s["reason"] = f"combo rejected: {res.detail}"
                     break
@@ -443,12 +485,14 @@ class IronFlyRunner:
             if q is not None and L.quote_valid(q.bid, q.ask):
                 lim = L.marketable_limit(side, q.bid, q.ask, self.p.limit_through, self.p.tick)
                 if lim is not None:
-                    res = await self.ex.single(leg, side, qty - got, lim)
+                    res = await self.ex.single(leg, side, qty - got, lim,
+                                               max_age=self.p.max_quote_age)
                     if res.filled_qty:
                         px, m = res.prices[leg["role"]], res.mids.get(leg["role"])
                         self._add_entry(leg, res.filled_qty, px, m)
                         self._record_fill(s, leg, side, res.filled_qty, px, m, "entry")
                         got += res.filled_qty
+                        await store.save(s)     # a restart must see every fill
             if got >= qty:
                 break
             await self.clock.sleep(self.p.entry_reprice_seconds)
@@ -517,7 +561,9 @@ class IronFlyRunner:
     async def _close_qty(self, s: dict, leg: dict, qty: int, kind: str,
                          until: datetime) -> tuple[int, float, bool]:
         """Marketable-limit close of ``qty`` (BUY back a short / SELL a long), repriced
-        from the live touch until filled or ``until``. Returns (filled, avg, no_bid)."""
+        from the live touch until filled or ``until`` (``until=now`` = one attempt).
+        A quote older than feed_stale_alert_seconds does not fill. Returns (filled,
+        avg, no_bid)."""
         side = "BUY" if leg["action"] == "SELL" else "SELL"
         got, notional, no_bid = 0, 0.0, False
         while got < qty:
@@ -527,7 +573,8 @@ class IronFlyRunner:
                 if lim is None:
                     no_bid = True
                     break
-                res = await self.ex.single(leg, side, qty - got, lim)
+                res = await self.ex.single(leg, side, qty - got, lim,
+                                           max_age=self.p.feed_stale_alert_seconds)
                 if res.status == "rejected":
                     await self._log(f"{kind} close rejected for {leg['role']}: {res.detail}",
                                     level="error")
@@ -545,7 +592,12 @@ class IronFlyRunner:
         return got, (notional / got if got else 0.0), no_bid
 
     async def _stop_leg(self, s: dict, leg: dict, trigger_quote=None) -> None:
-        if leg["status"] != "stopping":
+        """Mark the leg 'stopping' (persisted first), then make ONE buy-to-close attempt.
+        _manage calls this again every tick while the leg stays 'stopping', so a close
+        that cannot fill never blinds the other short's stop or the daily-loss check.
+        Whatever is still open at the close is flattened or settles."""
+        first = leg["status"] != "stopping"
+        if first:
             leg["status"] = "stopping"
             leg["stop_triggered_at"] = _iso(self.clock.now())
             if trigger_quote is not None:
@@ -556,35 +608,46 @@ class IronFlyRunner:
                 f"{(trigger_quote.ask if trigger_quote else float('nan')):.2f} >= stop "
                 f"{leg['stop_level']:.2f} (entry {leg['entry_price']:.2f})", category="signal")
         remaining = int(leg["qty"]) - int(leg.get("exit_qty") or 0)
-        got, px, _ = await self._close_qty(s, leg, remaining, "stop", s["close_time"])
+        got, px, _ = await self._close_qty(s, leg, remaining, "stop", self.clock.now())
         if got:
             self._add_exit(leg, got, px, by_order=True)
-        if int(leg["exit_qty"] or 0) >= int(leg["qty"]):
+        if int(leg.get("exit_qty") or 0) >= int(leg["qty"]):
             await self._finish_leg(s, leg, "stopped", "stop")
+            px = float(leg["exit_price"])
             await self._log(
-                f"STOPPED {leg['role']} x{got} @ {px:.2f} (stop {leg['stop_level']:.2f}, "
-                f"slippage vs stop {px - leg['stop_level']:+.2f}); leg P&L ${leg['pnl']:.2f}. "
-                "Other legs unchanged.", category="trade",
+                f"STOPPED {leg['role']} x{leg['qty']} @ {px:.2f} (stop "
+                f"{leg['stop_level']:.2f}, slippage vs stop {px - leg['stop_level']:+.2f}); "
+                f"leg P&L ${leg['pnl']:.2f}. Other legs unchanged.", category="trade",
                 data={"role": leg["role"], "fill": px, "stop_level": leg["stop_level"],
                       "slippage_vs_stop": round(px - leg["stop_level"], 4),
                       "pnl": leg["pnl"]})
-        else:
-            await self._log(f"stop close for {leg['role']} incomplete before the close "
-                            f"({leg['exit_qty']}/{leg['qty']}); remainder settles",
+        elif first:
+            await self._log(f"stop close for {leg['role']} not filled yet "
+                            f"({leg.get('exit_qty') or 0}/{leg['qty']}); retrying every tick",
                             level="warning")
         await store.save(s)
 
     async def _flatten(self, s: dict, reason: str) -> None:
-        legs = sorted(self._legs_open(s), key=lambda l: l["action"] != "SELL")  # shorts 1st
-        for leg in legs:
-            remaining = int(leg["qty"]) - int(leg.get("exit_qty") or 0)
-            got, px, no_bid = await self._close_qty(s, leg, remaining, reason, s["close_time"])
-            if got:
-                self._add_exit(leg, got, px, by_order=True)
-            if int(leg["exit_qty"]) >= int(leg["qty"]):
-                await self._finish_leg(s, leg, "closed", reason)
-            elif no_bid:
-                await self._log(f"{reason}: {leg['role']} has no bid; left to settle")
+        """Close every open leg, shorts first, one attempt per leg per round until all
+        are closed or the session close, so a leg with no usable quote never holds up
+        the others. A leg nobody bids for is left to settle."""
+        left = sorted(self._legs_open(s), key=lambda l: l["action"] != "SELL")
+        while left:
+            for leg in list(left):
+                remaining = int(leg["qty"]) - int(leg.get("exit_qty") or 0)
+                got, px, no_bid = await self._close_qty(s, leg, remaining, reason,
+                                                        self.clock.now())
+                if got:
+                    self._add_exit(leg, got, px, by_order=True)
+                if int(leg.get("exit_qty") or 0) >= int(leg["qty"]):
+                    await self._finish_leg(s, leg, "closed", reason)
+                    left.remove(leg)
+                elif no_bid:
+                    await self._log(f"{reason}: {leg['role']} has no bid; left to settle")
+                    left.remove(leg)
+            if not left or self.clock.now() >= s["close_time"]:
+                break
+            await self.clock.sleep(self.p.close_retry_seconds)
         await store.save(s)
         await self._log(f"flattened remaining legs ({reason})", category="trade")
 
@@ -620,13 +683,14 @@ class IronFlyRunner:
             newest = None
             for leg in open_legs:
                 q = self.feed.quote(leg["symbol"])
-                if q is None:
-                    continue
-                if q.ts is not None and (newest is None or q.ts > newest):
-                    newest = q.ts
-                if L.quote_valid(q.bid, q.ask):
-                    marks[leg["role"]] = L.mid(q.bid, q.ask)
-                if (leg["action"] == "SELL" and leg["status"] == "open"
+                if q is not None:
+                    if q.ts is not None and (newest is None or q.ts > newest):
+                        newest = q.ts
+                    if L.quote_valid(q.bid, q.ask):
+                        marks[leg["role"]] = L.mid(q.bid, q.ask)
+                if leg["status"] == "stopping":
+                    await self._stop_leg(s, leg)        # retry the unfilled stop close
+                elif (q is not None and leg["action"] == "SELL" and leg["status"] == "open"
                         and L.stop_triggered(q.bid, q.ask, leg["stop_level"], p.stop_trigger)):
                     await self._stop_leg(s, leg, q)
             age = None if newest is None else (self.clock.now() - newest).total_seconds()
@@ -649,6 +713,11 @@ class IronFlyRunner:
                             await self._flatten(s, "daily_loss")
                             break
             await self.clock.sleep(p.monitor_interval)
+        for leg in self._legs_open(s):
+            if leg["status"] == "stopping":
+                await self._log(f"stop close for {leg['role']} incomplete at the end of "
+                                f"monitoring ({leg.get('exit_qty') or 0}/{leg['qty']}); the "
+                                "remainder is flattened or settles", level="warning")
         if flatten_at and self.clock.now() >= flatten_at and self._legs_open(s):
             await self._flatten(s, "pre_settlement")
         await self._settle(s)

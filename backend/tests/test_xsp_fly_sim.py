@@ -53,7 +53,8 @@ class SimClock:
 class FakeFeed:
     """Spot from ``path(t)``; option mids from Black-Scholes on that spot with time to
     the close; bid/ask = mid -/+ half_spread. ``overrides[(role_symbol)] = fn(t)``
-    returning (bid, ask) or None replaces a quote (gaps, wide spreads)."""
+    returning (bid, ask), (bid, ask, receive_ts) or None replaces a quote (gaps, wide
+    spreads, frozen feeds)."""
 
     def __init__(self, clock, path, *, iv=0.30, half_spread=0.02, has_expiry=True,
                  spot_stale_until: datetime | None = None, settle_none=False) -> None:
@@ -98,7 +99,7 @@ class FakeFeed:
         if fn is not None:
             o = fn(now)
             if o is not None:
-                return Quote(o[0], o[1], now)
+                return Quote(o[0], o[1], o[2] if len(o) > 2 else now)
         r, k, exp = self.meta[symbol]
         close = cal.close_time(exp)
         T = max((close - now).total_seconds(), 0) / (365 * 24 * 3600)
@@ -140,7 +141,7 @@ def make(clock, feed, params=P, *, capital=5000.0, executor=None, alerts=None,
         if alerts is not None:
             alerts.append((kind, msg))
 
-    return IronFlyRunner(KEY, params, feed, executor or SimExecutor(feed), clock,
+    return IronFlyRunner(KEY, params, feed, executor or SimExecutor(feed, clock), clock,
                          capital_fn=cap, safe_mode_fn=sm, alert_fn=alert)
 
 
@@ -465,7 +466,7 @@ async def test_combo_partial_fills_accumulate_to_target():
     feed = FakeFeed(clock, flat())
     params = replace(P, max_contracts=2, max_daily_loss=2500)
     s = await make(clock, feed, params, capital=10_000,
-                   executor=SimExecutor(feed, max_fill_qty=1)).run_session(D)
+                   executor=SimExecutor(feed, clock, max_fill_qty=1)).run_session(D)
     assert s["contracts"] == 2 and all(l["qty"] == 2 for l in s["legs"])
     assert len(entry_fills(s)) == 8
     assert s["reconciliation"]["ok"]
@@ -475,7 +476,7 @@ async def test_combo_partial_fills_accumulate_to_target():
 async def test_leg_in_buys_wings_before_body():
     clock = SimClock(at(D, 9, 0))
     feed = FakeFeed(clock, flat())
-    s = await make(clock, feed, executor=SimExecutor(feed, supports_combo=False)).run_session(D)
+    s = await make(clock, feed, executor=SimExecutor(feed, clock, supports_combo=False)).run_session(D)
     order = [(f["role"], f["side"]) for f in entry_fills(s)]
     assert order[:2] == [("long_call", "BUY"), ("long_put", "BUY")]
     assert set(order[2:]) == {("short_call", "SELL"), ("short_put", "SELL")}
@@ -485,17 +486,17 @@ async def test_leg_in_buys_wings_before_body():
 class _NoPutBody(SimExecutor):
     """The short put never fills: the leg-in must unwind everything else."""
 
-    async def single(self, leg, side, qty, limit):
+    async def single(self, leg, side, qty, limit, **kw):
         if leg["role"] == "short_put" and side == "SELL":
             return OrderResult("unfilled", detail="no fill")
-        return await super().single(leg, side, qty, limit)
+        return await super().single(leg, side, qty, limit, **kw)
 
 
 @pytest.mark.asyncio
 async def test_leg_in_unwinds_cleanly_when_body_does_not_fill():
     clock = SimClock(at(D, 9, 0))
     feed = FakeFeed(clock, flat())
-    s = await make(clock, feed, executor=_NoPutBody(feed, supports_combo=False)).run_session(D)
+    s = await make(clock, feed, executor=_NoPutBody(feed, clock, supports_combo=False)).run_session(D)
     assert s["status"] == "skipped" and s["contracts"] == 0
     net: dict[str, int] = {}
     for f in s["fills"]:
@@ -582,3 +583,160 @@ def test_reconcile_flags_open_leg_and_unflat_ledger():
     rec = reconcile_session(s, {1: {"status": "open", "pnl": None}})
     assert not rec["ok"] and len(rec["issues"]) == 3
     assert "sim mode has no broker statement" in rec["scope"]
+
+
+# --- review fixes: stuck stop closes, stale quotes, interrupted entries, kill view ----
+class _StuckCallStop(SimExecutor):
+    """Nobody sells the short call back: its stop close can never fill."""
+
+    async def single(self, leg, side, qty, limit, **kw):
+        if leg["role"] == "short_call" and side == "BUY":
+            return OrderResult("unfilled", detail="no liquidity")
+        return await super().single(leg, side, qty, limit, **kw)
+
+
+@pytest.mark.asyncio
+async def test_unfilled_stop_close_does_not_blind_the_other_short():
+    clock = SimClock(at(D, 9, 0))
+    feed = FakeFeed(clock, lambda t: 600.0 if t < at(D, 11) else ramp(
+        at(D, 11), at(D, 13), 600.0, 596.0)(t))
+    feed.overrides[feed.sym(D, "C", 600)] = lambda t: (4.20, 4.32) if t >= at(D, 10, 30) else None
+    s = await make(clock, feed, executor=_StuckCallStop(feed, clock)).run_session(D)
+    sc, sp = leg(s, "short_call"), leg(s, "short_put")
+    # The call's stop fired but never filled: it stays on and settles at the close...
+    assert sc["stop_triggered_at"] is not None and sc["exit_reason"] == "settlement"
+    # ...while the put's stop was still watched and fired on the afternoon slide.
+    assert sp["status"] == "stopped"
+    assert datetime.fromisoformat(sp["exit_time"]) < at(D, 13, 30)
+    assert s["status"] == "settled" and s["reconciliation"]["ok"]
+
+
+@pytest.mark.asyncio
+async def test_sim_executor_does_not_fill_a_stale_quote():
+    clock = SimClock(at(D, 10, 0))
+    feed = FakeFeed(clock, flat())
+    await feed.contracts("XSP", D)
+    sym = feed.sym(D, "C", 600)
+    feed.overrides[sym] = lambda t: (1.00, 1.04, at(D, 9, 59, 20))     # 40 s old
+    ex = SimExecutor(feed, clock)
+    one = {"role": "short_call", "symbol": sym}
+    res = await ex.single(one, "BUY", 1, 1.10, max_age=30.0)
+    assert res.status == "unfilled" and "stale" in res.detail
+    res = await ex.combo([one], 1, 0.5, max_age=30.0)
+    assert res.status == "unfilled" and "stale" in res.detail
+    assert (await ex.single(one, "BUY", 1, 1.10, max_age=60.0)).filled_qty == 1
+
+
+@pytest.mark.asyncio
+async def test_flatten_does_not_book_a_frozen_quote():
+    clock = SimClock(at(D, 9, 0))
+    feed = FakeFeed(clock, flat(600.4))
+    frozen = at(D, 15, 50)
+    feed.overrides[feed.sym(D, "C", 600)] = lambda t: (0.30, 0.34, frozen) if t >= frozen else None
+    s = await make(clock, feed, replace(P, close_before_settlement=True)).run_session(D)
+    sc, sp = leg(s, "short_call"), leg(s, "short_put")
+    assert sp["exit_reason"] == "pre_settlement"              # fresh quote: flattened
+    assert sc["exit_reason"] == "settlement"                  # frozen quote: not filled
+    assert not [f for f in s["fills"] if f["role"] == "short_call" and f["kind"] != "entry"
+                and f["kind"] != "settle"]
+    assert s["reconciliation"]["ok"]
+
+
+class _HangAfterFirstFill(SimExecutor):
+    """Fills one combo then never answers again: a process killed mid-entry."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.combos = 0
+        self.hung = asyncio.Event()
+
+    async def _hang(self):
+        self.hung.set()
+        await asyncio.Event().wait()
+
+    async def combo(self, legs, qty, limit_credit, **kw):
+        if self.combos:
+            await self._hang()
+        res = await super().combo(legs, 1, limit_credit, **kw)
+        self.combos += res.filled_qty
+        return res
+
+    async def single(self, leg, side, qty, limit, **kw):
+        if side == "SELL" and leg["action"] == "SELL":   # the body: hang before it fills
+            await self._hang()
+        return await super().single(leg, side, qty, limit, **kw)
+
+
+TWO = replace(P, max_contracts=2, max_daily_loss=5000, entry_reprice_seconds=1.0)
+
+
+async def _interrupted_entry(clock, *, combo=True):
+    feed = FakeFeed(clock, flat())
+    ex = _HangAfterFirstFill(feed, clock, supports_combo=combo, max_fill_qty=1)
+    task = asyncio.ensure_future(
+        make(clock, feed, TWO, capital=10_000, executor=ex).run_session(D))
+    await asyncio.wait_for(ex.hung.wait(), 10)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    s = await store.get_session(KEY, D)
+    assert s["status"] == "entering"
+    return s
+
+
+@pytest.mark.asyncio
+async def test_restart_mid_combo_entry_manages_the_filled_fly():
+    clock = SimClock(at(D, 9, 0))
+    s0 = await _interrupted_entry(clock)
+    assert [l["qty"] for l in s0["legs"]] == [1, 1, 1, 1]
+    feed2 = FakeFeed(clock, flat())
+    await feed2.contracts("XSP", D)
+    s = await make(clock, feed2, TWO, capital=10_000).run_session(D)
+    assert s["id"] == s0["id"] and len(entry_fills(s)) == 4   # resumed, never re-entered
+    assert s["contracts"] == 1 and s["net_credit"] > 0
+    assert all(l["stop_level"] for l in s["legs"] if l["action"] == "SELL")
+    assert s["status"] == "settled" and s["reconciliation"]["ok"]
+    assert len(await trades()) == 4
+
+
+@pytest.mark.asyncio
+async def test_restart_mid_leg_in_unwinds_unmatched_wings():
+    clock = SimClock(at(D, 9, 0))
+    s0 = await _interrupted_entry(clock, combo=False)
+    assert {l["role"]: l["qty"] for l in s0["legs"]} == {
+        "short_call": 0, "short_put": 0, "long_call": 2, "long_put": 2}
+    feed2 = FakeFeed(clock, flat())
+    await feed2.contracts("XSP", D)
+    s = await make(clock, feed2, TWO, capital=10_000).run_session(D)
+    assert s["status"] == "failed" and "unmatched fills unwound" in s["reason"]
+    net: dict[str, int] = {}
+    for f in s["fills"]:
+        net[f["symbol"]] = net.get(f["symbol"], 0) + (-1 if f["side"] == "SELL" else 1) * f["qty"]
+    assert set(net.values()) == {0} and await trades() == []
+
+
+@pytest.mark.asyncio
+async def test_entry_interrupted_on_a_prior_day_settles_its_fills():
+    clock = SimClock(at(D, 9, 0))
+    await _interrupted_entry(clock)
+    nxt = D + timedelta(days=1)
+    clock.t = at(nxt, 8, 0)
+    feed2 = FakeFeed(clock, flat(600.2))
+    await feed2.contracts("XSP", D)
+    await make(clock, feed2, TWO, capital=10_000).recover_stale(nxt)
+    s = await store.get_session(KEY, D)
+    assert s["status"] == "settled" and s["settlement_price"] == pytest.approx(600.2)
+    assert s["reconciliation"]["ok"] and len(await trades()) == 4
+
+
+@pytest.mark.asyncio
+async def test_status_view_shows_killed_right_after_the_kill_switch():
+    from app.engine.worker import close_open_trades
+    from app.strategies.xsp_iron_fly import XspIronFlyStrategy
+    clock = SimClock(at(D, 9, 0))
+    await _run_until(make(clock, FakeFeed(clock, flat())).run_session(D), clock, at(D, 11))
+    view = await XspIronFlyStrategy(IronFlyParams()).status_view()
+    assert view["sessions"][0]["status"] == "open"
+    await close_open_trades()
+    view = await XspIronFlyStrategy(IronFlyParams()).status_view()
+    assert view["sessions"][0]["status"] == "killed"

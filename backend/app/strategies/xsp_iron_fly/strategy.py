@@ -77,8 +77,9 @@ class XspIronFlyStrategy(BaseStrategy):
 
         p = self.params
         feed = TastytradeFeed()
-        executor = SimExecutor(feed) if p.mode == "sim" else LiveExecutorUnavailable()
-        return IronFlyRunner(self.key, p, feed, executor, RealClock(),
+        clock = RealClock()
+        executor = SimExecutor(feed, clock) if p.mode == "sim" else LiveExecutorUnavailable()
+        return IronFlyRunner(self.key, p, feed, executor, clock,
                              capital_fn=self._capital, safe_mode_fn=is_safe_mode,
                              alert_fn=send_alert)
 
@@ -97,12 +98,25 @@ class XspIronFlyStrategy(BaseStrategy):
         from app.strategies.xsp_iron_fly import store
         recent = await store.recent_sessions(self.key, 10)
 
+        def live_ids(s: dict) -> list[int]:
+            return [l["trade_id"] for l in s.get("legs") or []
+                    if l.get("trade_id") and l.get("status") in ("open", "stopping")]
+
+        # The kill switch closes the leg TradeRecords but the runner only marks the
+        # session killed on its next start; show it as killed meanwhile.
+        states = await store.trade_states(
+            [i for s in recent if s.get("status") == "open" for i in live_ids(s)])
+
         def view(s: dict) -> dict:
             out = {k: v for k, v in s.items() if k != "fills"}
             for k, v in out.items():
                 if hasattr(v, "isoformat"):
                     out[k] = v.isoformat()
             out["fill_count"] = len(s.get("fills") or [])
+            ids = live_ids(s) if s.get("status") == "open" else []
+            if ids and all(states.get(i, {}).get("status") == "closed" for i in ids):
+                out["status"] = "killed"
+                out["reason"] = "legs closed by the kill switch; exit prices unknown"
             return out
 
         return {"mode": self.params.mode, "halt": await store.halt_reason(),
