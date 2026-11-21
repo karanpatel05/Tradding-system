@@ -54,6 +54,7 @@ class IronFlyRunner:
         self.safe_mode_fn = safe_mode_fn
         self.alert_fn = alert_fn
         self._contracts: dict[date, list] = {}
+        self._last_miss = ""          # why the latest entry order did not fill
 
     # ------------------------------------------------------------------ utilities
     async def _log(self, msg: str, category: str = "decision", level: str = "info",
@@ -227,6 +228,9 @@ class IronFlyRunner:
         close = s.get("close_time") or cal.close_time(d)
         if self.clock.now() < close:
             f = min(int(l.get("qty") or 0) for l in legs)
+            excess = [l for l in legs if int(l.get("qty") or 0) > f]
+            if excess:
+                await self._await_quotes(excess)
             for role in L.SHORT_ROLES + L.LONG_ROLES:
                 leg = self._leg(s, role)
                 await self._unwind(s, leg, int(leg.get("qty") or 0) - f)
@@ -247,6 +251,23 @@ class IronFlyRunner:
             + ("" if self.clock.now() < close else "; settling at the close print"),
             level="warning", category="action")
         return s
+
+    async def _await_quotes(self, legs: list[dict], timeout: float = 120.0) -> None:
+        """After a restart nothing is subscribed yet and the quote cache is empty:
+        subscribe the legs and give the feed time to deliver fresh quotes before any
+        close order is sized off them."""
+        await self.feed.subscribe([l["symbol"] for l in legs])
+        deadline = self.clock.now() + timedelta(seconds=timeout)
+        while self.clock.now() < deadline:
+            now = self.clock.now()
+            qs = [self.feed.quote(l["symbol"]) for l in legs]
+            if self.feed.data_ready() and all(
+                    q is not None and (q.age(now) or 1e9) <= self.p.feed_stale_alert_seconds
+                    for q in qs):
+                return
+            await self.clock.sleep(1.0)
+        await self._log("quotes for the legs to unwind did not arrive within "
+                        f"{timeout:.0f}s; unwinding anyway", level="warning")
 
     async def recover_stale(self, today: date) -> None:
         for s in await store.unfinished_before(self.key, today):
@@ -358,6 +379,7 @@ class IronFlyRunner:
                 last = why
             await self.clock.sleep(1.0)
 
+        self._last_miss = ""
         legs = [dict(l, qty=0, exit_qty=0, status="pending") for l in plan["legs"]]
         s = await store.create_session(
             self.key, d, status="entering", mode=self.p.mode, ticker=self.p.ticker,
@@ -385,6 +407,8 @@ class IronFlyRunner:
         if qty == 0:
             s["status"] = "skipped" if s["status"] == "entering" else s["status"]
             s["reason"] = s.get("reason") or "entry not filled within max_entry_concession"
+            if self._last_miss:
+                s["reason"] += f" (last attempt: {self._last_miss})"
             s["contracts"] = 0
             s["closed_time"] = self.clock.now()
             s["realized_pnl"] = round(float(s["extra_pnl"]) - float(s["fees"]), 2)
@@ -457,6 +481,8 @@ class IronFlyRunner:
                 if res.status == "rejected":
                     s["reason"] = f"combo rejected: {res.detail}"
                     break
+                if not res.filled_qty:
+                    self._last_miss = res.detail
                 if res.filled_qty:
                     for l in s["legs"]:
                         px, m = res.prices[l["role"]], res.mids.get(l["role"])
@@ -487,6 +513,8 @@ class IronFlyRunner:
                 if lim is not None:
                     res = await self.ex.single(leg, side, qty - got, lim,
                                                max_age=self.p.max_quote_age)
+                    if not res.filled_qty:
+                        self._last_miss = res.detail
                     if res.filled_qty:
                         px, m = res.prices[leg["role"]], res.mids.get(leg["role"])
                         self._add_entry(leg, res.filled_qty, px, m)

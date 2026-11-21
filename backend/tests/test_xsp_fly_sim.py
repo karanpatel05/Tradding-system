@@ -57,7 +57,10 @@ class FakeFeed:
     spreads, frozen feeds)."""
 
     def __init__(self, clock, path, *, iv=0.30, half_spread=0.02, has_expiry=True,
-                 spot_stale_until: datetime | None = None, settle_none=False) -> None:
+                 spot_stale_until: datetime | None = None, settle_none=False,
+                 needs_subscribe=False) -> None:
+        self.needs_subscribe = needs_subscribe      # like the live cache: no sub, no quote
+        self.subscribed: set[str] = set()
         self.clock, self.path, self.iv, self.hs = clock, path, iv, half_spread
         self.has_expiry = has_expiry
         self.spot_stale_until = spot_stale_until
@@ -81,7 +84,7 @@ class FakeFeed:
         return out
 
     async def subscribe(self, symbols):
-        return None
+        self.subscribed.update(symbols)
 
     def data_ready(self):
         return True
@@ -94,6 +97,8 @@ class FakeFeed:
         return Spot(self.path(now), ts)
 
     def quote(self, symbol):
+        if self.needs_subscribe and symbol not in self.subscribed:
+            return None
         now = self.clock.now()
         fn = self.overrides.get(symbol)
         if fn is not None:
@@ -705,14 +710,23 @@ async def test_restart_mid_leg_in_unwinds_unmatched_wings():
     s0 = await _interrupted_entry(clock, combo=False)
     assert {l["role"]: l["qty"] for l in s0["legs"]} == {
         "short_call": 0, "short_put": 0, "long_call": 2, "long_put": 2}
-    feed2 = FakeFeed(clock, flat())
+    feed2 = FakeFeed(clock, flat(), needs_subscribe=True)   # fresh process: empty cache
     await feed2.contracts("XSP", D)
     s = await make(clock, feed2, TWO, capital=10_000).run_session(D)
     assert s["status"] == "failed" and "unmatched fills unwound" in s["reason"]
     net: dict[str, int] = {}
     for f in s["fills"]:
         net[f["symbol"]] = net.get(f["symbol"], 0) + (-1 if f["side"] == "SELL" else 1) * f["qty"]
-    assert set(net.values()) == {0} and await trades() == []
+    assert set(net.values()) == {0} and await trades() == []   # no _fatal / SAFE_MODE
+
+
+@pytest.mark.asyncio
+async def test_entry_skip_reason_names_stale_option_quotes():
+    clock = SimClock(at(D, 9, 0))
+    feed = FakeFeed(clock, flat())
+    feed.overrides[feed.sym(D, "P", 590)] = lambda t: (0.10, 0.12, t - timedelta(seconds=20))
+    s = await make(clock, feed).run_session(D)
+    assert s["status"] == "skipped" and "stale quote" in s["reason"], s["reason"]
 
 
 @pytest.mark.asyncio
