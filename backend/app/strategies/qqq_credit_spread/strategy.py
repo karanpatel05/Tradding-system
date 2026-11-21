@@ -32,6 +32,8 @@ class QqqCreditSpreadStrategy(BaseStrategy):
     name = "QQQ First-Hour Credit Spread"
     ready = True
     external_runner = True
+    category = "Options · 0DTE credit spread"
+    universe = ("QQQ",)
 
     description = (
         "0DTE QQQ $1-wide ATM credit spread sold on the direction of the first hour. "

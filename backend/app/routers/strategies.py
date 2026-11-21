@@ -82,12 +82,35 @@ def _market_open() -> tuple[dict, bool]:
         return {}, False
 
 
+async def _closed_trades_since(days: int):
+    """Closed trades that exited in the last `days` days (all strategies)."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+
+    from app.db.models import TradeRecord
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    async with session_scope() as session:
+        return (await session.execute(
+            select(TradeRecord).where(TradeRecord.status == "closed", TradeRecord.exit_time >= since)
+        )).scalars().all()
+
+
 @router.get("")
 async def list_all() -> dict:
+    from app.services.strategy_summary import session_pnl, today_et
+
+    today = today_et()
+    recent = await _closed_trades_since(2)
     out = []
     async with session_scope() as session:
         for strat in list_strategies():
             st = await session.get(StrategyState, strat.key)
+            # Realized P&L today from the app's trade ledger. External runners keep
+            # their own records, so the app cannot report theirs (None, shown as "—").
+            pnl = (session_pnl([t for t in recent if t.strategy_key == strat.key], today)
+                   if strat.ready and not strat.external_runner else None)
             out.append({
                 "key": strat.key,
                 "name": strat.name,
@@ -98,8 +121,37 @@ async def list_all() -> dict:
                 "running": engine_manager.is_running(strat.key),
                 "external_runner": strat.external_runner,
                 "activation_blocked": strat.activation_block_reason() if strat.ready else None,
+                "category": strat.category if strat.ready else None,
+                "universe": list(strat.universe) if strat.ready else [],
+                "description": strat.description if strat.ready else None,
+                "execution": strat.execution_label() if strat.ready else None,
+                "session_pnl": pnl,
             })
-    return {"strategies": out}
+    return {"strategies": out, "session_date": today.isoformat()}
+
+
+@router.get("/{key}/record")
+async def record(key: str) -> dict:
+    """Research snapshot for the Strategies screen: the stored backtest when there is
+    one, otherwise the strategy's simulated/paper sessions from the app's trade ledger.
+    External runners keep their own records ("external"); "none" before any result."""
+    from sqlalchemy import select
+
+    from app.db.models import TradeRecord
+    from app.services.strategy_summary import backtest_snapshot, paper_record
+
+    strat = _require_ready(key)
+    if strat.external_runner:
+        return {"source": "external",
+                "note": "Results are kept by the external runner, not this app."}
+    snap = None if strat.backtest_note else backtest_snapshot(backtest_store.load(key))
+    if snap:
+        return snap
+    async with session_scope() as session:
+        trades = (await session.execute(
+            select(TradeRecord).where(TradeRecord.strategy_key == key, TradeRecord.status == "closed")
+        )).scalars().all()
+    return paper_record(trades) or {"source": "none"}
 
 
 @router.get("/{key}")

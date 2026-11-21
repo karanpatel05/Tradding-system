@@ -102,6 +102,7 @@ export const api = {
   },
   // The last persisted backtest result (reloads after a page/server restart).
   backtestLast: (key) => request(`/api/strategies/${key}/backtest/last`),
+  strategyRecord: (key) => request(`/api/strategies/${key}/record`),
   // Live detail/metrics for the strategy's open position (TP/SL/fill/live price).
   position: (key) => request(`/api/strategies/${key}/position`),
   // Options Strategy Builder (tracked paper trades — no orders transmitted).

@@ -12,6 +12,8 @@ class XspIronFlyStrategy(BaseStrategy):
     key = "xsp_iron_fly"
     name = "XSP 0DTE Iron Fly"
     ready = True
+    category = "Options · 0DTE iron fly"
+    universe = ("XSP",)
 
     description = (
         "Sells a 10-point-wide XSP (Mini-SPX, cash-settled, European) 0DTE iron fly at "
@@ -43,7 +45,7 @@ class XspIronFlyStrategy(BaseStrategy):
     selection_criteria = "Fixed underlying: XSP 0DTE (PM-settled)."
     backtest_note = ("No in-app backtest: the app's backtester is equity-only and there is "
                      "no historical XSP option quote data here. Validate with the "
-                     "simulated paper sessions (GET /api/strategies/xsp_iron_fly/sessions).")
+                     "simulated paper sessions (GET /api/strategies/xsp_iron_fly/record).")
 
     def __init__(self, params: IronFlyParams | None = None) -> None:
         self._params = params
@@ -57,6 +59,9 @@ class XspIronFlyStrategy(BaseStrategy):
 
     def bar_interval(self) -> str:
         return "1m"
+
+    def execution_label(self) -> str:
+        return "Simulated fills"  # sim mode only; live mode is refused below
 
     def activation_block_reason(self) -> str | None:
         p = self.params
