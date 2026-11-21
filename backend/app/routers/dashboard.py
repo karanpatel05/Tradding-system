@@ -31,12 +31,13 @@ async def market_status() -> dict:
     return get_market_status()
 
 
-@router.get("/market/overview", dependencies=[Depends(require_auth)])
+@router.get("/market/overview")
 async def market_overview() -> dict:
+    """Ungated public market data (index ETF quotes). Account routes stay gated."""
     return await get_market_overview()
 
 
-@router.get("/market/bars", dependencies=[Depends(require_auth)])
+@router.get("/market/bars")
 async def market_bars(symbol: str, interval: str = "5m") -> dict:
     """Candle history for the Chart screen (1m, 5m, 15m or 1d). Empty with a note when
     the feed has nothing; the frontend then falls back to labelled sample data."""
@@ -46,7 +47,7 @@ async def market_bars(symbol: str, interval: str = "5m") -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get("/market/quotes", dependencies=[Depends(require_auth)])
+@router.get("/market/quotes")
 async def market_quotes(symbols: str) -> dict:
     """Watchlist quotes: last price and change from the previous close."""
     try:
