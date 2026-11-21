@@ -87,10 +87,12 @@ async def get_bars(symbol: str, interval: str, now: float | None = None) -> dict
         bars = [b for b in (_clean_bar(x) for x in raw or []) if b]
         bars.sort(key=lambda b: b["time"])
         result["bars"] = bars
-        if bars:
-            result["source"] = "tastytrade"
-        else:
+        if not bars:
+            # Not cached: an empty answer usually means the feed is still (re)connecting,
+            # and caching it would pin every chart pane to sample data for the TTL.
             result["note"] = "No candle data returned (feed not connected or market closed)."
+            return result
+        result["source"] = "tastytrade"
         _bars_cache[key] = (clock(), result)
         return result
 

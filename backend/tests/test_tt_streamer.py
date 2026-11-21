@@ -271,3 +271,40 @@ async def test_trade_change_gives_previous_close(monkeypatch):
     assert s.prev_close("SPY") == 730.2
     assert s.prev_close("QQQ") is None
     await s.teardown()
+
+
+@pytest.mark.asyncio
+async def test_candles_wait_for_a_slow_first_event(monkeypatch):
+    """Right after a (re)connect the first candle can take longer than two idle periods.
+    Collection must keep waiting for the first event instead of returning []."""
+    fake = _FakeDx()
+    s = st_mod.TTStreamer()
+    monkeypatch.setattr(s, "_connect", _fake_connect(fake, s))
+    from tastytrade.dxfeed import Candle
+    t0 = datetime(2026, 7, 8, 14, 30, tzinfo=timezone.utc)
+    ms = int(t0.timestamp() * 1000)
+    ev = SimpleNamespace(event_symbol="QQQ{=5m}", time=ms, open=1.0, high=2.0,
+                         low=0.5, close=1.5, volume=100)
+
+    async def push_slow():
+        await asyncio.sleep(0.7)  # > 2 x idle_seconds
+        await fake._q(Candle).put(ev)
+
+    task = asyncio.create_task(push_slow())
+    bars = await s.candles("QQQ", "5m", start=t0 - timedelta(hours=1), idle_seconds=0.2,
+                           first_event_timeout=3.0)
+    await task; await s.teardown()
+    assert [b["close"] for b in bars] == [1.5]
+
+
+@pytest.mark.asyncio
+async def test_candles_give_up_after_first_event_timeout(monkeypatch):
+    fake = _FakeDx()
+    s = st_mod.TTStreamer()
+    monkeypatch.setattr(s, "_connect", _fake_connect(fake, s))
+    loop = asyncio.get_running_loop()
+    t = loop.time()
+    bars = await s.candles("QQQ", "5m", start=datetime.now(timezone.utc) - timedelta(hours=1),
+                           idle_seconds=0.1, first_event_timeout=0.5)
+    await s.teardown()
+    assert bars == [] and 0.4 < loop.time() - t < 1.5
