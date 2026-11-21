@@ -376,8 +376,9 @@ async def backtest(
     strategy page's backtest-config controls (``direction`` = long/short/both for
     the multi-position crossover)."""
     strat = _require_ready(key)
-    if strat.external_runner:
-        return {"data_available": False, "note": _EXTERNAL_BACKTEST_NOTE}
+    if strat.external_runner or strat.backtest_note:
+        return {"data_available": False,
+                "note": strat.backtest_note or _EXTERNAL_BACKTEST_NOTE}
     from app.backtest import run_backtest
 
     overrides = {"symbol": symbol, "start": start, "end": end, "capital": capital,
@@ -395,7 +396,8 @@ async def backtest(
 async def backtest_last(key: str) -> dict:
     """The most recent backtest result for this strategy, persisted locally so it
     reloads after a page/server restart. Returns ``{}`` when none is stored yet."""
-    _require_ready(key)
+    if _require_ready(key).backtest_note:
+        return {}
     return backtest_store.load(key) or {}
 
 
@@ -419,6 +421,8 @@ async def backtest_stream(
     then ``{"type":"result","result":{...}}`` (or ``{"type":"error","detail":...}``).
     The page renders a determinate progress bar from the progress lines."""
     strat = _require_in_app(key)
+    if strat.backtest_note:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=strat.backtest_note)
     from app.backtest import run_backtest
 
     overrides = {"symbol": symbol, "start": start, "end": end, "capital": capital,

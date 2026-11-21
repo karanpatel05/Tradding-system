@@ -23,6 +23,7 @@ from app.routers.journal import logs_router, router as journal_router
 from app.routers.strategies import router as strategies_router
 from app.routers.system import router as system_router
 from app.routers.ws import router as ws_router
+from app.routers.xsp_fly import router as xsp_fly_router
 from app.strategies.registry import seed_strategy_state
 
 logging.basicConfig(level=logging.INFO)
@@ -114,6 +115,7 @@ app.include_router(logs_router)
 app.include_router(strategies_router)
 app.include_router(system_router)
 app.include_router(ws_router)
+app.include_router(xsp_fly_router)
 
 
 @app.get("/health", tags=["system"])

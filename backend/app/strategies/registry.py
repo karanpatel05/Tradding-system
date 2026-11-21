@@ -14,20 +14,25 @@ from app.db.base import session_scope
 from app.db.models import StrategyState
 from app.strategies.base import BaseStrategy, ComingSoonStrategy
 from app.strategies.qqq_credit_spread import QqqCreditSpreadStrategy
+from app.strategies.xsp_iron_fly import XspIronFlyStrategy
 
 settings = get_settings()
 
 # The QQQ first-hour credit spread is listed with its real rules but runs OUTSIDE this
 # app (com.karan.spreadlive); it is switched off here (activation always refused).
+# The XSP 0DTE iron fly runs in-app on SIMULATED fills (live XSP routing is refused).
 # The other slots are "Coming Soon" placeholders. The 9/15 EMA crossover (slot
 # strategy_1) and the Triple Calendar (slot strategy_2) were removed. To make a slot
 # live, register a ready BaseStrategy subclass under its key.
 _qqq = QqqCreditSpreadStrategy()
+_xsp = XspIronFlyStrategy()
 _STRATEGIES: dict[str, BaseStrategy] = {
     _qqq.key: _qqq,
+    _xsp.key: _xsp,
+    # Coming Soon slots fill the rest (strategy_2..strategy_<max-1>; 5 cards total).
     **{
         f"strategy_{i}": ComingSoonStrategy(key=f"strategy_{i}", name=f"Strategy {i}")
-        for i in range(2, settings.max_strategies + 1)
+        for i in range(2, settings.max_strategies)
     },
 }
 

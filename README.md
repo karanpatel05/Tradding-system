@@ -181,6 +181,32 @@ Running it in-app later means porting two-leg spread execution into the engine (
 today places equity orders only) and lifting the block in
 `backend/app/strategies/qqq_credit_spread/strategy.py`.
 
+**XSP 0DTE Iron Fly** (`xsp_iron_fly`) runs **in this app on simulated fills**. It sells a
+10-point-wide XSP iron fly at 09:45 ET, gives each short leg its own 1.5x stop, and holds the
+rest to the 4:00 pm cash settlement. Code: `backend/app/strategies/xsp_iron_fly/`.
+
+- **Paper only.** Orders fill in a simulator against live Tastytrade NBBO: marketable limits
+  fill at the touch, and a combo fills only at or below the natural credit. Nothing is sent
+  to any broker. `XSP_FLY_MODE=live` refuses activation, because there's no live XSP order
+  route (Alpaca has no verified index-option support, and this app never sends orders to
+  Tastytrade). `ENABLE_LIVE_ORDERS` doesn't affect this strategy.
+- **Settings** are `XSP_FLY_*` in `backend/.env` (see `config.py`). Defaults:
+  `max_contracts=1`, `max_daily_loss=$1000` (this also caps sizing),
+  `max_leg_spread=0.15`, `max_quote_age=5s` and `min_minutes_to_close=240`, which skips
+  13:00 half days. Size comes from the strategy's capital allocation, at 1 fly per $5,000.
+- **State.** Each trading day gets one `xsp_fly_sessions` row, unique per day and written
+  before any order, plus one `TradeRecord` per leg. A restart never enters the same day
+  twice, and it picks up open legs with their stop levels. The emergency stop closes the
+  leg records, treats the day as done, and leaves the strategy `stopped` so it doesn't
+  auto-resume at boot. A plain **Stop** while a fly is open leaves its legs open and
+  unmanaged until you activate it again (same day: monitoring resumes; later: the legs are
+  settled at that day's close).
+- **Daily-loss breach.** A breach sets a persisted halt that blocks later entries until it's
+  cleared with `POST /api/strategies/xsp_iron_fly/clear-halt`.
+  `GET /api/strategies/xsp_iron_fly/sessions` shows recent days: legs, stops, P&L and the
+  end-of-day reconciliation. In sim mode, reconciliation checks the app's own records, not
+  a broker statement.
+
 ## Run the full stack (Docker, hosted)
 
 Postgres + FastAPI (serves the UI same-origin) + Caddy (TLS + Basic Auth). One image

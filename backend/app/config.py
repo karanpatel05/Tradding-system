@@ -114,6 +114,26 @@ class Settings(BaseSettings):
     # reads its lock + live_state.json to show status and to refuse activation.
     qqq_spread_live_dir: str = str(Path.home() / "live_system_maintenance" / "live")
 
+    # --- XSP 0DTE iron fly (xsp_iron_fly) ---
+    # Fills are SIMULATED against live Tastytrade NBBO ("sim"); "live" is refused
+    # because there is no live XSP order route (see strategies/xsp_iron_fly/executor.py).
+    # ENABLE_LIVE_ORDERS does not affect this strategy.
+    xsp_fly_mode: str = "sim"
+    xsp_fly_entry_time: str = "09:45"            # ET
+    xsp_fly_wing_width: float = 10.0             # index points
+    xsp_fly_stop_mult: float = 1.5               # per short leg
+    xsp_fly_capital_per_fly: float = 5000.0
+    xsp_fly_close_before_settlement: bool = False
+    xsp_fly_max_contracts: int = 1               # keep small until live results validate
+    xsp_fly_max_daily_loss: float = 1000.0       # $; halts entries and caps sizing
+    xsp_fly_flatten_on_daily_loss: bool = False
+    xsp_fly_max_leg_spread: float = 0.15         # index points
+    xsp_fly_max_quote_age: float = 5.0           # seconds
+    xsp_fly_min_minutes_to_close: float = 240.0  # skips 13:00 half days by default
+    xsp_fly_entry_grace_seconds: float = 120.0
+    xsp_fly_fees_per_contract: float = 1.00
+    xsp_fly_stop_trigger: str = "ask"            # "ask" | "mark"
+
     # --- 9/15 EMA Scalping strategy (strategy_1) ---
     # Signal: EMA9/EMA15 on 5-min candles; ATR(14) for slope/stop scaling.
     ema_fast: int = 9
