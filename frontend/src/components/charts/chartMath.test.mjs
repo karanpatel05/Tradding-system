@@ -1,5 +1,5 @@
 // Plain-node test (no runner configured). Run: node frontend/src/components/charts/chartMath.test.mjs
-import { aggregate, crossovers, ema, normalizeBars, rsi, sessionOf, sessionStats } from "./chartMath.js";
+import { aggregate, bollinger, crossovers, donchian, ema, heikinAshi, makeScale, normalizeBars, rsi, sessionOf, sessionStats, sma, sourceValues } from "./chartMath.js";
 import { studyValues } from "./chartData.js";
 
 const eq = (a, b, msg) => {
@@ -70,5 +70,35 @@ const vwap = studyValues(quiet, { type: "VWAP" });
 eq(Number.isFinite(vwap[0]), true, "zero-volume first bar gives finite VWAP");
 eq(vwap[0], quiet[0].close, "VWAP uses the close until volume arrives");
 eq(vwap[1], quiet[1].value / quiet[1].volume, "VWAP accumulates once volume arrives");
+
+// SMA, Bollinger, Donchian, Heikin Ashi, sources and the shared scale.
+const s3 = sma([1, 2, 3, 4], 3);
+eq(s3[1], null, "sma is null before the period");
+eq(s3[2], 2, "sma of 1,2,3");
+eq(s3[3], 3, "sma rolls forward");
+const bb = bollinger([2, 4, 4, 4, 5, 5, 7, 9], 8, 2);
+eq(bb.mid[7], 5, "bollinger middle is the sma");
+eq(bb.upper[7], 9, "bollinger upper = mid + 2 * population sd (sd 2)");
+eq(bb.lower[7], 1, "bollinger lower = mid - 2 * sd");
+eq(bb.upper[6], null, "bollinger bands null before the period");
+const dc = donchian(bars, 3);
+eq(dc.upper[1], null, "donchian null before the period");
+eq(dc.upper[2], 104, "donchian upper is the highest high");
+eq(dc.lower[2], 99, "donchian lower is the lowest low");
+eq(dc.mid[2], 101.5, "donchian middle");
+const ha = heikinAshi(bars);
+eq(ha[0].close, (100 + 102 + 99 + 101) / 4, "heikin ashi close is the OHLC average");
+eq(ha[1].open, (ha[0].open + ha[0].close) / 2, "heikin ashi open is the prior HA midpoint");
+eq(ha[0].high >= ha[0].open && ha[0].high >= ha[0].close, true, "heikin ashi high covers body");
+eq(sourceValues(bars, "hl2")[0], 100.5, "hl2 source");
+eq(sourceValues(bars, "open")[0], 100, "open source");
+const lin = makeScale({ low: 100, high: 200, top: 10, height: 100 });
+eq(lin.y(200), 10, "linear scale maps high to top");
+eq(lin.y(150), 60, "linear scale midpoint");
+eq(lin.invert(60), 150, "linear invert round-trips");
+const lg = makeScale({ low: 100, high: 400, top: 0, height: 100, mode: "log" });
+eq(lg.y(200), 50, "log scale puts the geometric midpoint at half height");
+eq(lg.invert(lg.y(321)), 321, "log invert round-trips");
+eq(makeScale({ low: 1, high: 2, top: 0, height: 1, mode: "percent", base: 100 }).label(105), "+5.00%", "percent labels from base");
 
 console.log("chartMath: all tests passed");

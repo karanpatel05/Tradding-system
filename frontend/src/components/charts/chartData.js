@@ -1,4 +1,5 @@
 // Fixed, reproducible preview sessions. Every timeframe aggregates the same minutes.
+import { bollinger, donchian, ema, sma, sourceValues } from "./chartMath.js";
 const prices = { QQQ: 490, SPY: 560, IWM: 212, NVDA: 140, AAPL: 225, TSLA: 310, MSFT: 410, AMZN: 210 };
 export const symbols = Object.keys(prices);
 export const intervals = { "1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "1D": 390 };
@@ -6,7 +7,8 @@ const cache = new Map();
 function minutes(symbol) {
   let seed = [...symbol].reduce((n, c) => n * 31 + c.charCodeAt(0), 7);
   const random = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
-  let close = prices[symbol];
+  // Unknown symbols (free typed in search) get a fixed, symbol-derived start price.
+  let close = prices[symbol] ?? 40 + ((seed >>> 0) % 460);
   const bars = [];
   for (let day = 0; day < 42; day++) {
     const start = Date.UTC(2026, 9, 5 + day, 13, 30);
@@ -50,16 +52,70 @@ export function getBars(symbol, interval) {
   return cache.get(key);
 }
 export function studyValues(bars, study) {
-  let ema, value = 0, volume = 0, session;
+  if (study.type === "EMA") return ema(sourceValues(bars, study.source), study.period);
+  if (study.type === "SMA") return sma(sourceValues(bars, study.source), study.period);
+  let value = 0, volume = 0, session;
   return bars.map(bar => {
-    if (study.type === "EMA") {
-      ema = ema === undefined ? bar.close : ema + 2 / (study.period + 1) * (bar.close - ema);
-      return ema;
-    }
     if (session !== bar.session) { session = bar.session; value = volume = 0; }
     value += bar.value;
     volume += bar.volume;
     // A session can open with zero-volume bars; use the close until volume arrives.
     return volume ? value / volume : bar.close;
   });
+}
+
+// Indicator catalogue: defaults and the library's categories.
+export const STUDY_DEFAULTS = {
+  EMA: { period: 9, source: "close", color: "#f5b84a", width: 1.5, markers: true },
+  SMA: { period: 20, source: "close", color: "#5ec8f5", width: 1.5 },
+  VWAP: { color: "#9aa7b6", width: 1.5 },
+  "Bollinger Bands": { period: 20, mult: 2, source: "close", color: "#b58cff", width: 1 },
+  "Donchian Channel": { period: 20, color: "#5ec8f5", width: 1 },
+  RSI: { period: 14, color: "#b58cff", width: 1.5 },
+  Volume: {},
+};
+export const STUDY_CATALOG = [
+  { type: "EMA", category: "Trend", desc: "Exponential moving average" },
+  { type: "SMA", category: "Trend", desc: "Simple moving average" },
+  { type: "VWAP", category: "Trend", desc: "Session volume-weighted price" },
+  { type: "RSI", category: "Momentum", desc: "Relative strength index, separate pane" },
+  { type: "Volume", category: "Volume", desc: "Bar volume under the candles" },
+  { type: "Bollinger Bands", category: "Volatility", desc: "SMA with standard-deviation bands" },
+  { type: "Donchian Channel", category: "Volatility", desc: "Highest high and lowest low" },
+];
+// Types that can appear more than once (different lengths).
+export const MULTI = new Set(["EMA", "SMA"]);
+export const PRICE_STUDIES = new Set(["EMA", "SMA", "VWAP", "Bollinger Bands", "Donchian Channel"]);
+
+export function newStudy(type) {
+  const id = globalThis.crypto?.randomUUID?.() || String(Date.now() + Math.random());
+  return { id, type, visible: true, ...STUDY_DEFAULTS[type] };
+}
+
+export function studyLabel(s) {
+  if (s.type === "Bollinger Bands") return `BB ${s.period ?? 20} ${s.mult ?? 2}`;
+  if (s.type === "Donchian Channel") return `DC ${s.period ?? 20}`;
+  return s.period && s.type !== "VWAP" ? `${s.type} ${s.period}` : s.type;
+}
+
+// Lines a price-pane study draws. Values may start with nulls; renderers skip them.
+export function studyLines(bars, s) {
+  const color = s.color || "#9aa7b6", width = s.width || 1.5;
+  if (s.type === "Bollinger Bands") {
+    const b = bollinger(sourceValues(bars, s.source), s.period || 20, s.mult ?? 2);
+    return [
+      { key: "upper", values: b.upper, color, width },
+      { key: "mid", values: b.mid, color, width, dash: "4 3" },
+      { key: "lower", values: b.lower, color, width },
+    ];
+  }
+  if (s.type === "Donchian Channel") {
+    const d = donchian(bars, s.period || 20);
+    return [
+      { key: "upper", values: d.upper, color, width },
+      { key: "mid", values: d.mid, color, width, dash: "4 3" },
+      { key: "lower", values: d.lower, color, width },
+    ];
+  }
+  return [{ key: "line", values: studyValues(bars, s), color, width }];
 }

@@ -80,6 +80,82 @@ export function crossovers(fast, slow) {
   return out;
 }
 
+// Price series a study reads: close, open, high, low, hl2 or hlc3.
+export function sourceValues(bars, source = "close") {
+  switch (source) {
+    case "open": return bars.map(b => b.open);
+    case "high": return bars.map(b => b.high);
+    case "low": return bars.map(b => b.low);
+    case "hl2": return bars.map(b => (b.high + b.low) / 2);
+    case "hlc3": return bars.map(b => (b.high + b.low + b.close) / 3);
+    default: return bars.map(b => b.close);
+  }
+}
+
+// Simple moving average; null until `period` values exist.
+export function sma(values, period) {
+  let sum = 0;
+  return values.map((v, i) => {
+    sum += v;
+    if (i >= period) sum -= values[i - period];
+    return i >= period - 1 ? sum / period : null;
+  });
+}
+
+// Bollinger Bands: SMA middle and +/- mult population standard deviations.
+export function bollinger(values, period = 20, mult = 2) {
+  const mid = sma(values, period);
+  const upper = [], lower = [];
+  values.forEach((_, i) => {
+    if (mid[i] === null) { upper.push(null); lower.push(null); return; }
+    let sq = 0;
+    for (let j = i - period + 1; j <= i; j++) sq += (values[j] - mid[i]) ** 2;
+    const sd = Math.sqrt(sq / period);
+    upper.push(mid[i] + mult * sd);
+    lower.push(mid[i] - mult * sd);
+  });
+  return { mid, upper, lower };
+}
+
+// Donchian channel: highest high and lowest low of the last `period` bars.
+export function donchian(bars, period = 20) {
+  const upper = [], lower = [], mid = [];
+  bars.forEach((_, i) => {
+    if (i < period - 1) { upper.push(null); lower.push(null); mid.push(null); return; }
+    let hi = -Infinity, lo = Infinity;
+    for (let j = i - period + 1; j <= i; j++) { hi = Math.max(hi, bars[j].high); lo = Math.min(lo, bars[j].low); }
+    upper.push(hi); lower.push(lo); mid.push((hi + lo) / 2);
+  });
+  return { upper, lower, mid };
+}
+
+// Heikin Ashi candles, used only for drawing; real prices stay everywhere else.
+export function heikinAshi(bars) {
+  const out = [];
+  bars.forEach((b, i) => {
+    const close = (b.open + b.high + b.low + b.close) / 4;
+    const open = i === 0 ? (b.open + b.close) / 2 : (out[i - 1].open + out[i - 1].close) / 2;
+    out.push({ ...b, open, close, high: Math.max(b.high, open, close), low: Math.min(b.low, open, close) });
+  });
+  return out;
+}
+
+// One price<->pixel mapping shared by candles, studies, drawings, crosshair,
+// context menu and alert lines. mode: "auto" (linear), "log", or "percent"
+// (linear, labelled as % change from `base`).
+export function makeScale({ low, high, top, height, mode = "auto", base }) {
+  const log = mode === "log" && low > 0;
+  const f = log ? Math.log : v => v;
+  const inv = log ? Math.exp : v => v;
+  const lo = f(low), hi = f(high), span = hi - lo || 1;
+  const y = p => top + height * (hi - f(p)) / span;
+  const invert = dy => inv(hi - (dy - top) * span / height);
+  const label = p => mode === "percent" && base
+    ? ((p / base - 1) * 100 >= 0 ? "+" : "") + ((p / base - 1) * 100).toFixed(2) + "%"
+    : p.toFixed(2);
+  return { y, invert, label, mode: log ? "log" : mode };
+}
+
 // Latest session's stats for the details panel: last, change from the prior
 // session's close, open, day high/low, volume and VWAP.
 export function sessionStats(bars) {
