@@ -41,6 +41,8 @@ export default function Drawings({pane,tool,bars,start,length,x,y,axisX,height,i
     const item=items.find(d=>d.id===e.target.closest("[data-drawing]")?.dataset.drawing);
     if(!drawing && (!item || tool==="Pan")) return;
     e.stopPropagation();
+    // A locked drawing can be selected (to unlock or restyle it) but not moved.
+    if(!drawing && item.locked){ onSelect(item.id); return; }
     const anchor=point(e);
     const shape=drawing?{id:globalThis.crypto?.randomUUID?.()||String(Date.now()),type:tool,points:[anchor,anchor]}:item;
     if(drawing && tool==="Text"){
@@ -72,11 +74,11 @@ export default function Drawings({pane,tool,bars,start,length,x,y,axisX,height,i
     const ax=x(barIndex(bars,a.time)-start),bx=x(barIndex(bars,b.time)-start);
     const ay=y(a.price),by=y(b.price),left=Math.min(ax,bx),width=Math.max(2,Math.abs(bx-ax));
     const line=(x1,y1,x2,y2)=><line {...{x1,y1,x2,y2}}/>;
-    const label=(px,py,text)=><text x={px} y={py} stroke="none" style={{fill:"#203952",paintOrder:"stroke",stroke:"white",strokeWidth:2.5}}>{text}</text>;
+    const label=(px,py,text)=><text x={px} y={py} stroke="none" style={{fill:"#e6edf3",paintOrder:"stroke",stroke:"#0b0f14",strokeWidth:3}}>{text}</text>;
     let body;
     switch(d.type){
       case "Horizontal line": body=line(0,ay,axisX,ay); break;
-      case "Rectangle": body=<rect x={left} y={Math.min(ay,by)} width={width} height={Math.max(2,Math.abs(by-ay))} fill="#3675ca22"/>;break;
+      case "Rectangle": body=<rect x={left} y={Math.min(ay,by)} width={width} height={Math.max(2,Math.abs(by-ay))} fill={(d.color||"#7aa2ff")+"22"}/>;break;
       case "Brush": body=<polyline points={d.points.map(p=>x(barIndex(bars,p.time)-start)+","+y(p.price)).join(" ")}/>;break;
       case "Text": body=label(ax,ay,d.text);break;
       case "Fib retracement": body=[0,.236,.382,.5,.618,.786,1].map(f=><g key={f}>{line(left,ay+(by-ay)*f,left+width,ay+(by-ay)*f)}{label(left+2,ay+(by-ay)*f-2,String(f))}</g>);break;
@@ -87,7 +89,9 @@ export default function Drawings({pane,tool,bars,start,length,x,y,axisX,height,i
       }
       default: body=<>{line(ax,ay,bx,by)}{d.type==="Measure" && label(left+2,(ay+by)/2-5,(b.price-a.price).toFixed(2)+" · "+((b.price/a.price-1)*100).toFixed(2)+"% · "+Math.abs(barIndex(bars,a.time)-barIndex(bars,b.time))+" bars")}</>;
     }
-    return <g key={d.id} data-drawing={d.id} stroke={selected===d.id?"#195bc0":"#467bab"} strokeWidth={selected===d.id?2.5:1.7} fill="none" style={{cursor:locked?"inherit":"move"}}><title>{d.type}</title>{body}</g>;
+    const dash={dashed:"7 5",dotted:"2 4"}[d.dash];
+    const note=d.label && d.type!=="Text" && label(Math.max(ax,bx)+6,(d.type==="Horizontal line"?ay:by)-6,d.label);
+    return <g key={d.id} data-drawing={d.id} stroke={d.color||"#7aa2ff"} strokeWidth={(d.width||1.7)+(selected===d.id?1:0)} strokeDasharray={dash} fill="none" style={{cursor:locked||d.locked?"inherit":"move"}}><title>{d.type}{d.locked?" (locked)":""}</title>{body}{note}</g>;
   }
   if(hidden) return null;
   return <g onPointerDown={down} onPointerMove={e=>{if(gesture.current){e.stopPropagation();setDraft(next(e));}}}

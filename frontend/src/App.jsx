@@ -48,6 +48,7 @@ export default function App() {
   const [auth, setAuth] = useState(null); // null = loading
   const [tab, setTab] = useState("Dashboard");
   const [focusKey, setFocusKey] = useState(null); // strategy to open from the dashboard
+  const [builderSymbol, setBuilderSymbol] = useState(null); // set by the chart's "Open in options builder"
   const [connecting, setConnecting] = useState(false);
   const [acct, setAcct] = useState(null);
   const [accountError, setAccountError] = useState(null);
@@ -233,7 +234,14 @@ export default function App() {
               Workspace / {NAV_LABELS[tab]}
             </div>
             {tab === "Chart" && (
-              <ChartWorkspace account={acct} accountError={accountError} />
+              <ChartWorkspace
+                account={acct}
+                accountError={accountError}
+                onOpenBuilder={(symbol) => {
+                  setBuilderSymbol(symbol);
+                  setTab("Builder");
+                }}
+              />
             )}
             {tab === "Dashboard" && (
               <Dashboard
@@ -256,7 +264,7 @@ export default function App() {
               />
             )}
             {tab === "Journal" && <CalendarTab />}
-            {tab === "Builder" && <BuilderTab />}
+            {tab === "Builder" && <BuilderTab initialUnderlying={builderSymbol} />}
             {tab === "API" && <ApiTab onChange={refresh} />}
             <footer className="operator-footer">
               <span>TradingSystem</span>
