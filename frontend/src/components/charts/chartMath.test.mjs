@@ -1,6 +1,6 @@
 // Plain-node test (no runner configured). Run: node frontend/src/components/charts/chartMath.test.mjs
 import { aggregate, bollinger, crossovers, donchian, ema, heikinAshi, makeScale, normalizeBars, rsi, sessionOf, sessionStats, sma, sourceValues } from "./chartMath.js";
-import { studyValues } from "./chartData.js";
+import { applyStudy, studyValues } from "./chartData.js";
 
 const eq = (a, b, msg) => {
   const ok = typeof b === "number" ? Math.abs(a - b) < 1e-6 : a === b;
@@ -100,5 +100,19 @@ const lg = makeScale({ low: 100, high: 400, top: 0, height: 100, mode: "log" });
 eq(lg.y(200), 50, "log scale puts the geometric midpoint at half height");
 eq(lg.invert(lg.y(321)), 321, "log invert round-trips");
 eq(makeScale({ low: 1, high: 2, top: 0, height: 1, mode: "percent", base: 100 }).label(105), "+5.00%", "percent labels from base");
+
+// Apply-to-all never overwrites an unrelated EMA/SMA line.
+const pane2 = [{ id: "fast", type: "EMA", period: 9 }, { id: "r", type: "RSI", period: 14 }];
+const ema50 = { id: "new1", type: "EMA", period: 50, color: "#f0657a" };
+const applied = applyStudy(pane2, ema50);
+eq(applied.length, 3, "EMA 50 is appended when the pane has no EMA 50");
+eq(applied[0].period, 9, "existing EMA 9 is untouched");
+eq(applied[2].period, 50, "appended copy has the new length");
+eq(applied[2].id !== "new1", true, "appended copy gets its own id");
+eq(applyStudy(applied, { ...ema50, id: "other", color: "#fff" }).length, 3, "a matching EMA 50 is updated, not duplicated");
+eq(applyStudy(pane2, { id: "x", type: "EMA", period: 9, color: "#abc" })[0].color, "#abc", "same type + length updates in place");
+eq(applyStudy(pane2, { id: "fast", type: "EMA", period: 12 })[0].period, 12, "id match updates that study");
+eq(applyStudy(pane2, { id: "zz", type: "RSI", period: 21 })[1].period, 21, "single-instance types replace their study");
+eq(applyStudy(pane2, { id: "zz", type: "RSI", period: 21 })[1].id, "r", "replaced study keeps the pane's id");
 
 console.log("chartMath: all tests passed");

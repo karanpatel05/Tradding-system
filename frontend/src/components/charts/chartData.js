@@ -119,3 +119,14 @@ export function studyLines(bars, s) {
   }
   return [{ key: "line", values: studyValues(bars, s), color, width }];
 }
+
+// Apply one study's settings to another pane's list. Match by id; EMA/SMA (which can
+// appear several times) then match type + length, otherwise a copy is appended so an
+// unrelated line is never overwritten. Single-instance types replace their one study.
+export function applyStudy(studies, st) {
+  let t = studies.findIndex(x => x.id === st.id);
+  if (t < 0) t = MULTI.has(st.type)
+    ? studies.findIndex(x => x.type === st.type && x.period === st.period)
+    : studies.findIndex(x => x.type === st.type);
+  return t < 0 ? [...studies, {...st, id: newStudy(st.type).id}] : studies.map((x, j) => j === t ? {...st, id: x.id} : x);
+}

@@ -8,9 +8,16 @@ function useDismiss(open, onClose, panel, anchor) {
   useEffect(() => {
     if (!open) return;
     const returnTo = anchor?.current || document.activeElement;
-    const key = e => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } };
+    // Overlays can stack (Settings opened from the Indicators library). Only the
+    // topmost one reacts to Escape, and a click inside another overlay (a newer
+    // dialog, or a toast) is not "outside" this one.
+    const layer = () => panel.current?.closest(".cx-layer");
+    const isTop = () => { const all = document.querySelectorAll(".cx-layer:not(.cx-toasts)"); return all[all.length-1] === layer(); };
+    const key = e => { if (e.key === "Escape" && isTop()) { e.stopImmediatePropagation(); onClose(); } };
     const down = e => {
       if (panel.current?.contains(e.target) || anchor?.current?.contains(e.target)) return;
+      const other = e.target.closest?.(".cx-layer");
+      if (other && other !== layer()) return;
       onClose();
     };
     document.addEventListener("keydown", key, true);

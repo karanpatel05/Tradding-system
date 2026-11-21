@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Drawings from "./Drawings.jsx";
 import { crossovers, heikinAshi, makeScale, rsi } from "./chartMath.js";
 import { PRICE_STUDIES, studyLabel, studyLines } from "./chartData.js";
-import { publishHover, useHoverTime } from "./syncStore.js";
+import { clearHover, publishHover, useHoverTime } from "./syncStore.js";
+import { sessionCloseAfter } from "./alerts.js";
 
 const C = {
   grid: "#151b23", axis: "#7d8a9a", cross: "#5f6b7a", tag: "#2a3340", entry: "#7aa2ff",
@@ -142,7 +143,8 @@ export default function PriceChart({pane, paneId, bars, tool, drawingProps, onRe
   // Crosshair sync: publish the hovered bar; draw other panes' hovered time here.
   const [syncTime, syncSource] = useHoverTime();
   const hoverTime = hover !== null ? visible[hover]?.time : null;
-  useEffect(() => { if (S.syncCrosshair) publishHover(hoverTime ?? null, hoverTime == null ? null : paneId); }, [hoverTime, S.syncCrosshair]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!S.syncCrosshair) return; if (hoverTime != null) publishHover(hoverTime, paneId); else clearHover(paneId); }, [hoverTime, S.syncCrosshair]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => clearHover(paneId), [paneId]); // remount/unmount: drop our stale sync time
   const syncIndex = S.syncCrosshair && syncTime != null && syncSource !== paneId && hover === null ? barIndexAt(bars, syncTime) - start : null;
 
   const shown = hover ?? (syncIndex !== null && syncIndex >= 0 && syncIndex < visible.length ? syncIndex : visible.length-1);
@@ -264,7 +266,7 @@ export default function PriceChart({pane, paneId, bars, tool, drawingProps, onRe
       })()}
       {(()=> {
         const pos=y(lastBar.close), isUp=lastBar.close>=lastBar.open, color=isUp?up:down;
-        const countdown = S.countdown && live && intervalMs ? <Countdown endsAt={lastBar.time+intervalMs} intervalMs={intervalMs} x={axisX+6} y={pos+17} color={ink(color)}/> : null;
+        const countdown = S.countdown && live && intervalMs ? <Countdown endsAt={Math.min(lastBar.time+intervalMs, sessionCloseAfter(lastBar.time))} intervalMs={intervalMs} x={axisX+6} y={pos+17} color={ink(color)}/> : null;
         return pos>=6 && pos<=volBase && <g>{S.lastLine && <path d={`M0 ${pos}H${axisX}`} stroke={color} strokeDasharray="2 3" opacity=".6"/>}
           {tag(pos, color, sc.label(lastBar.close), ink(color), countdown)}</g>;
       })()}
@@ -295,8 +297,8 @@ export default function PriceChart({pane, paneId, bars, tool, drawingProps, onRe
       {[["auto","A","Auto scale"],["log","L","Logarithmic scale"],["percent","%","Percent scale"]].map(([m,t,title])=><button key={m} title={title} aria-label={title} aria-pressed={S.scale===m} onClick={()=>onSettings({scale:m})}>{t}</button>)}
     </div>
     <div className={"cx-nav"+(nearBottom?" show":"")} role="toolbar" aria-label="Chart navigation" style={{bottom:size.height-plotBottom+10}} onPointerEnter={()=>setNearBottom(true)}>
-      <button aria-label="Zoom out" title="Zoom out" disabled={length>=Math.min(400,total)} onClick={()=>zoom(1.25,.5)}>−</button>
-      <button aria-label="Zoom in" title="Zoom in" disabled={length<=Math.min(10,total)} onClick={()=>zoom(.8,.5)}>+</button>
+      <button aria-label="Zoom out (overlay)" title="Zoom out" disabled={length>=Math.min(400,total)} onClick={()=>zoom(1.25,.5)}>−</button>
+      <button aria-label="Zoom in (overlay)" title="Zoom in" disabled={length<=Math.min(10,total)} onClick={()=>zoom(.8,.5)}>+</button>
       <span className="cx-nav-sep"/>
       <button aria-label="Scroll back" title="Scroll back" disabled={offset>=total-length} onClick={()=>scroll(1)}>‹</button>
       <button aria-label="Scroll forward" title="Scroll forward" disabled={offset===0} onClick={()=>scroll(-1)}>›</button>
@@ -318,5 +320,7 @@ export default function PriceChart({pane, paneId, bars, tool, drawingProps, onRe
       </div>;
     })()}
     </div>
-    <div className="cx-foot"><span>{selected.session} · ET</span><button title="Restore latest candles and fit price scale" onClick={resetView}>Reset view</button></div></>;
+    <div className="cx-foot"><span>{selected.session} · ET</span><button title="Restore latest candles and fit price scale" onClick={resetView}>Reset view</button>
+      <button aria-label="Zoom out" title="Zoom out" disabled={length>=Math.min(400,total)} onClick={()=>zoom(1.25,.5)}>−</button>
+      <button aria-label="Zoom in" title="Zoom in" disabled={length<=Math.min(10,total)} onClick={()=>zoom(.8,.5)}>+</button></div></>;
 }

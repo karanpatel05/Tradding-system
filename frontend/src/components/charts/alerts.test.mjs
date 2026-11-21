@@ -20,6 +20,10 @@ eq(sessionCloseAfter(Date.UTC(2026, 10, 20, 15)), Date.UTC(2026, 10, 20, 21), "c
 eq(sessionCloseAfter(Date.UTC(2026, 10, 20, 21, 30)), Date.UTC(2026, 10, 23, 21), "after Friday close rolls to Monday");
 // Summer (EDT): 1 Jul 2026 14:00 UTC -> 20:00 UTC.
 eq(sessionCloseAfter(Date.UTC(2026, 6, 1, 14)), Date.UTC(2026, 6, 1, 20), "daylight time close is 20:00 UTC");
+// Holidays and early closes (2026): Thanksgiving 26 Nov is closed, 27 Nov closes 13:00 ET.
+eq(sessionCloseAfter(Date.UTC(2026, 10, 25, 22)), Date.UTC(2026, 10, 27, 18), "skips Thanksgiving to the 13:00 early close");
+eq(sessionCloseAfter(Date.UTC(2026, 10, 27, 15)), Date.UTC(2026, 10, 27, 18), "early close day ends at 13:00 ET");
+eq(sessionCloseAfter(Date.UTC(2026, 11, 24, 19)), Date.UTC(2026, 11, 28, 21), "after the 24 Dec early close, skips Christmas and the weekend");
 // One poll at a time through stepAlerts.
 const NOW = Date.UTC(2026, 10, 20, 15);
 const base = { id: "a", symbol: "QQQ", condition: "crossing_up", value: 100, active: true, trigger: "once", expires: NOW + 3600e3 };

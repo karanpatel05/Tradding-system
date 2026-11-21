@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import {drawingTools,symbolDrawings} from "./Drawings.jsx";
 import PaneResize from "./PaneResize.jsx";
 import PriceChart from "./PriceChart.jsx";
-import { intervals, newStudy, symbols } from "./chartData.js";
+import { applyStudy, intervals, symbols } from "./chartData.js";
 import { sessionStats } from "./chartMath.js";
 import { useBars, usePositions, useQuotes } from "./marketData.js";
 import { conditionLabel, rearm, useAlertEngine, useAlerts } from "./alerts.js";
@@ -215,7 +215,7 @@ export default function ChartWorkspace({account, accountError, onOpenBuilder}) {
   const quotes=useQuotes(quoteSymbols.length?quoteSymbols:["QQQ"]);
   const {positions, note:positionsNote}=usePositions();
   const notify=text=>{const id=Date.now()+Math.random(); setToasts(t=>[...t,{id,text}]); setTimeout(()=>setToasts(t=>t.filter(x=>x.id!==id)),8000);};
-  useAlertEngine(alerts, setAlerts, quotes, a=>notify(`${a.symbol} alert · ${a.message} · last ${fmt(a.price)}`));
+  useAlertEngine(alerts, setAlerts, quotes, (a, muted)=>notify(`${a.symbol} alert · ${a.message} · last ${fmt(a.price)}${muted?" (sound blocked by the browser until you click the page)":""}`));
 
   function patch(i,changes) {
     set(old=>({...old,active:i,panes:old.panes.map((p,j)=>{
@@ -290,7 +290,7 @@ export default function ChartWorkspace({account, accountError, onOpenBuilder}) {
           onActivate={()=>set(old=>old.active===i?old:{...old,active:i})} patch={changes=>patch(i,changes)}
           onSearch={()=>setSearch({target:i, query:""})} onEditStudy={id=>setEditStudy({pane:i,id})}
           onContextMenu={info=>setCtx({...info, pane:i})}
-          selectedDrawing={sel && !hidden ? sel : null} onDrawingChange={updateSel}
+          selectedDrawing={sel && !hidden && !locked ? sel : null} onDrawingChange={updateSel}
           onDrawingDelete={()=>{saveDrawings(i, drawingsOf(p).filter(d=>d.id!==selected)); setSelected(null);}}
           onDrawingCopy={()=>{const copy={...sel, id:globalThis.crypto?.randomUUID?.()||String(Date.now()), locked:false, points:sel.points.map(pt=>({...pt, price:pt.price*1.002}))}; saveDrawings(i,[...drawingsOf(p), copy]); setSelected(copy.id);}}
           onDrawingAlert={()=>setAlertDraft({symbol:p.symbol, price:sel.points[0].price})}
@@ -323,11 +323,7 @@ export default function ChartWorkspace({account, accountError, onOpenBuilder}) {
       onEdit={id=>setEditStudy({pane:s.active,id})} onApplyAll={()=>{set(old=>({...old,panes:old.panes.map((p,i)=>ids.includes(i)?{...p,studies:active.studies}:p)}));notify("Indicators applied to all visible panes");}}/>
     <StudySettingsDialog open={!!studyBeingEdited} onClose={()=>setEditStudy(null)} study={studyBeingEdited}
       onChange={st=>patch(editStudy.pane,{studies:editPane.studies.map(x=>x.id===st.id?st:x)})}
-      onApplyAll={st=>{set(old=>({...old,panes:old.panes.map((p,i)=>{
-        if(!ids.includes(i)) return p;
-        const k=p.studies.findIndex(x=>x.id===st.id), t=k<0?p.studies.findIndex(x=>x.type===st.type):k;
-        return {...p, studies: t<0 ? [...p.studies, {...st, id:newStudy(st.type).id}] : p.studies.map((x,j)=>j===t?{...st,id:x.id}:x)};
-      })}));notify(st.type+" settings applied to all visible panes");}}/>
+      onApplyAll={st=>{set(old=>({...old,panes:old.panes.map((p,i)=>ids.includes(i)?{...p, studies:applyStudy(p.studies, st)}:p)}));notify(st.type+" settings applied to all visible panes");}}/>
     <ChartSettingsDialog open={open==="settings"} onClose={()=>setOpen(null)} settings={s.settings} onSave={v=>set(old=>({...old,settings:v}))}/>
     <AlertDialog open={!!alertDraft} onClose={()=>setAlertDraft(null)} symbol={alertDraft?.symbol || active.symbol} price={alertDraft?.price}
       onCreate={a=>{setAlerts(list=>[a,...list]);notify(`Alert created: ${a.symbol} ${conditionLabel(a.condition).toLowerCase()} ${fmt(a.value)}`);}}/>

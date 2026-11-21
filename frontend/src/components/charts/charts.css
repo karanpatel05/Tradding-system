@@ -341,3 +341,10 @@
 
 .cx-ico {display:inline-block;vertical-align:-3px;flex-shrink:0}
 .cx-tool-btn {display:inline-flex;align-items:center;gap:5px}
+
+/* Touch screens have no hover: keep navigation and scale controls visible and tappable. */
+@media (hover:none) {
+  .cx-nav {opacity:1;pointer-events:auto}
+  .cx-scale-modes {opacity:1}
+  .cx-nav button,.cx-foot button {min-width:36px;min-height:32px!important}
+}
