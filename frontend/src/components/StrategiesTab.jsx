@@ -76,7 +76,7 @@ function ResearchSnapshot({ strategy, record, error }) {
       </>
     );
   else if (record.source === "sessions") {
-    const other = [record.skipped && `${record.skipped} skipped or missed`, record.killed && `${record.killed} killed or errored`, record.open && `${record.open} in progress`].filter(Boolean).join(" · ");
+    const other = [record.skipped && `${record.skipped} skipped, missed or failed without P&L`, record.killed && `${record.killed} killed or errored`, record.open && `${record.open} in progress`].filter(Boolean).join(" · ");
     body = (
       <>
         <p className="muted">Simulated sessions recorded by {strategy.name}.</p>
@@ -87,7 +87,7 @@ function ResearchSnapshot({ strategy, record, error }) {
         </div>
         <p className="muted small">
           {record.sessions ? `Net ${signedUsd(record.net_pnl)} · ${record.first_date} to ${record.last_date}` : "No settled sessions yet"}
-          {other ? ` · ${other}` : ""} · settled and closed sessions only, not a backtest.
+          {other ? ` · ${other}` : ""} · from each session's realized P&L (including unwind losses), not a backtest.
         </p>
       </>
     );
