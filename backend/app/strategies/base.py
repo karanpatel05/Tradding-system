@@ -38,6 +38,10 @@ class BaseStrategy(ABC):
     backtest_note: str | None = None
 
     # --- metadata (shown in the Strategy tab once ready) ------------------
+    #: Short category under the name in the Strategies table, e.g. "Options".
+    category: str = ""
+    #: Symbols the strategy trades (fixed underlyings); empty when it scans.
+    universe: tuple[str, ...] = ()
     description: str = "Coming Soon"
     rules: list[str] = []
     entry_logic: str = ""
@@ -59,6 +63,22 @@ class BaseStrategy(ABC):
             "exit_logic": self.exit_logic,
             "selection_criteria": self.selection_criteria,
         }
+
+    def execution_label(self) -> str:
+        """Where this strategy's orders go, for the Strategies screen."""
+        if self.external_runner:
+            return "External runner"
+        from app.config import get_settings
+        return "Alpaca paper" if get_settings().enable_live_orders else "Simulated"
+
+    async def research_record(self) -> dict | None:
+        """Research snapshot from a strategy's own session store, or None to let the
+        Strategies screen fall back to the stored backtest / trade ledger."""
+        return None
+
+    async def session_pnl_today(self, today) -> float | None:
+        """Realized P&L today from the strategy's own records, or None for the ledger."""
+        return None
 
     def activation_block_reason(self) -> str | None:
         """Why this (ready) strategy must not run in this app right now, or None.
