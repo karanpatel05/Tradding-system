@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Float, Integer, String, Text, event
+from sqlalchemy import (JSON, Boolean, Date, DateTime, Float, Integer, String, Text,
+                        UniqueConstraint, event)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -198,6 +199,48 @@ class WorkerState(Base):
     armed: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     open_trade_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_bar_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
+class XspFlySession(Base):
+    """One XSP 0DTE iron-fly trading day. The unique (strategy_key, session_date) row is
+    the idempotency key: written as ``entering`` BEFORE any order, so a day is never
+    entered twice and a restart recovers open legs and their stop levels from ``legs``.
+    Each filled leg is also an ordinary ``TradeRecord`` (``legs[i].trade_id``)."""
+
+    __tablename__ = "xsp_fly_sessions"
+    __table_args__ = (UniqueConstraint("strategy_key", "session_date",
+                                       name="uq_xsp_fly_day"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    strategy_key: Mapped[str] = mapped_column(String(32), index=True)
+    session_date: Mapped[date] = mapped_column(Date, index=True)
+    # entering | open | settled | closed | skipped | missed | failed | killed | error
+    status: Mapped[str] = mapped_column(String(16), default="entering")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    mode: Mapped[str] = mapped_column(String(8), default="sim")
+    ticker: Mapped[str] = mapped_column(String(8), default="XSP")
+    expiry: Mapped[date | None] = mapped_column(Date, nullable=True)
+    close_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    spot_at_entry: Mapped[float | None] = mapped_column(Float, nullable=True)
+    body_strike: Mapped[float | None] = mapped_column(Float, nullable=True)
+    contracts: Mapped[int] = mapped_column(Integer, default=0)
+    mid_credit: Mapped[float | None] = mapped_column(Float, nullable=True)   # at decision
+    net_credit: Mapped[float | None] = mapped_column(Float, nullable=True)   # filled, per 1x
+    max_loss: Mapped[float | None] = mapped_column(Float, nullable=True)     # $ total
+    legs: Mapped[list] = mapped_column(JSON, default=list)
+    fills: Mapped[list] = mapped_column(JSON, default=list)
+    extra_pnl: Mapped[float] = mapped_column(Float, default=0.0)   # $ gross, unwinds
+    fees: Mapped[float] = mapped_column(Float, default=0.0)        # $ total
+    realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)  # $ net
+    settlement_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    daily_loss_breached: Mapped[bool] = mapped_column(Boolean, default=False)
+    reconciliation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    entry_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )

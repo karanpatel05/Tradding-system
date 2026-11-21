@@ -103,7 +103,24 @@ async def kill_switch() -> dict:
     # positions, and the ledger row, standing.
     result = report.to_dict()
     result["trades_closed"] = await close_open_trades()
+    result["strategies_stopped"] = await _mark_strategies_stopped()
     return result
+
+
+async def _mark_strategies_stopped() -> list[str]:
+    """The kill switch STOPS strategies: persist status "stopped" so the boot-time
+    auto-resume (which restarts scanning/active/paused rows) does not bring a killed
+    strategy back after the next process restart."""
+    from sqlalchemy import select
+
+    from app.db.base import session_scope
+    from app.db.models import StrategyState
+    async with session_scope() as session:
+        rows = (await session.execute(select(StrategyState).where(
+            StrategyState.status.in_(("scanning", "active", "paused"))))).scalars().all()
+        for st in rows:
+            st.status = "stopped"
+        return [st.key for st in rows]
 
 
 def _num(value) -> float | None:

@@ -54,6 +54,11 @@ class TTStreamer:
         self._pumps: list[asyncio.Task] = []
         self._quotes: dict[str, dict] = {}
         self._trades: dict[str, float] = {}
+        # Wall-clock receive time (epoch seconds) of the latest Quote/Trade per symbol,
+        # so consumers can enforce a max quote age. Kept across reconnects on purpose:
+        # a dropped feed shows up as an ageing timestamp, never as a fresh-looking value.
+        self._quote_ts: dict[str, float] = {}
+        self._trade_ts: dict[str, float] = {}
         # Previous session close per symbol, from Trade.change (price - change).
         self._prev_close: dict[str, float] = {}
         self._candles: dict[str, dict[int, dict]] = {}
@@ -164,10 +169,12 @@ class TTStreamer:
                 if cls is Quote:
                     self._quotes[ev.event_symbol] = {
                         "bid": _num(ev.bid_price), "ask": _num(ev.ask_price)}
+                    self._quote_ts[ev.event_symbol] = time.time()
                 elif cls is Trade:
                     p = _num(ev.price)
                     if p is not None:
                         self._trades[ev.event_symbol] = p
+                        self._trade_ts[ev.event_symbol] = time.time()
                         # dxfeed Trade.change is vs the previous session's close.
                         ch = _num(getattr(ev, "change", None))
                         if ch is not None and p - ch > 0:
@@ -210,6 +217,15 @@ class TTStreamer:
     def prev_close(self, symbol: str) -> float | None:
         """Previous session close (from the latest Trade), or None. Sync cache read."""
         return self._prev_close.get(symbol)
+
+    def cached_quote(self, symbol: str) -> tuple[dict | None, float | None]:
+        """Latest cached Quote and its receive time (epoch s), without waiting or
+        subscribing. For fast monitor loops; call ``quote()`` once to subscribe."""
+        return self._quotes.get(symbol), self._quote_ts.get(symbol)
+
+    def cached_trade(self, symbol: str) -> tuple[float | None, float | None]:
+        """Latest cached Trade price and its receive time (epoch s), non-blocking."""
+        return self._trades.get(symbol), self._trade_ts.get(symbol)
 
     async def _wait_for(self, cache: dict, symbol: str, timeout: float):
         deadline = time.monotonic() + timeout

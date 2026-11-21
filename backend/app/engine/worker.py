@@ -58,6 +58,11 @@ async def _entry_blocked_by_gap(strategy, bars) -> bool:
 
 
 async def run_strategy(strategy: BaseStrategy) -> None:
+    # Self-scheduling strategies (the XSP iron fly) own their whole loop. Checked FIRST
+    # so the generic fallback never calls their (empty) scan every minute.
+    if hasattr(strategy, "run_live"):
+        await strategy.run_live()
+        return
     # Multi-position strategies (the EMA crossover) run a watchlist-wide loop and
     # MUST be dispatched before the single-position rule-driven check (both expose
     # ``live_decision``, but the crossover holds one position per symbol).
