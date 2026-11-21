@@ -29,12 +29,21 @@ REGULAR_CLOSE = time(16, 0)
 PREMARKET_OPEN = time(4, 0)
 AFTERHOURS_CLOSE = time(20, 0)
 
-# NYSE full-day closures for 2026 (early-close half days are treated as open).
-NYSE_HOLIDAYS_2026 = {
+# NYSE full-day closures (early-close half days are treated as open). Verified against
+# pandas_market_calendars. Add the next year before it starts: an uncovered year logs a
+# warning and treats every weekday as a trading day.
+NYSE_HOLIDAYS = {
+    # 2026
     date(2026, 1, 1), date(2026, 1, 19), date(2026, 2, 16), date(2026, 4, 3),
     date(2026, 5, 25), date(2026, 6, 19), date(2026, 7, 3), date(2026, 9, 7),
     date(2026, 11, 26), date(2026, 12, 25),
+    # 2027
+    date(2027, 1, 1), date(2027, 1, 18), date(2027, 2, 15), date(2027, 3, 26),
+    date(2027, 5, 31), date(2027, 6, 18), date(2027, 7, 5), date(2027, 9, 6),
+    date(2027, 11, 25), date(2027, 12, 24),
 }
+_HOLIDAY_YEARS = {d.year for d in NYSE_HOLIDAYS}
+_warned_years: set[int] = set()
 
 # Liquid ETF proxies for the market overview (IBKR stock quotes). ``featured`` marks
 # the headline ticker; ``kind`` distinguishes a volatility gauge from a price index
@@ -67,7 +76,12 @@ def index_row(ix: dict, quote: dict | None, week_change: float | None = None) ->
 
 
 def _is_trading_day(d: date) -> bool:
-    return d.weekday() < 5 and d not in NYSE_HOLIDAYS_2026
+    if d.year not in _HOLIDAY_YEARS and d.year not in _warned_years:
+        _warned_years.add(d.year)
+        logger.warning("NYSE holiday calendar has no entries for %d; holidays will show "
+                       "as trading days until NYSE_HOLIDAYS in app/services/market.py "
+                       "is updated", d.year)
+    return d.weekday() < 5 and d not in NYSE_HOLIDAYS
 
 
 def get_market_status() -> dict:
@@ -131,57 +145,84 @@ async def get_market_overview() -> dict:
 
 
 # Weekly % change moves only on the daily close, so it's cached to keep it off the
-# hot path — the dashboard polls every 15s and we don't want to re-pull two weeks
-# of candles each time.
+# hot path. Candle collection is serialized and takes seconds per symbol, so a refresh
+# NEVER runs inline: readers get the cached value (stale included) immediately and at
+# most one background task refreshes the whole set. Inline refreshes used to block the
+# overview for 20s+ and, with no dedupe, every concurrent poll queued its own five
+# fetches in front of the charts and strategies that share the candle collector.
 _WEEKLY_TTL = 600.0  # seconds
 _weekly_cache: dict[str, tuple[float | None, float]] = {}
-_WEEKLY_CONCURRENCY = asyncio.Semaphore(3)
+_WEEKLY_CONCURRENCY = 3  # parallel candle requests within one refresh
+_weekly_task: asyncio.Task | None = None  # strong ref: asyncio only holds tasks weakly
+
+
+def _weekly_stale(symbols: list[str], now: float) -> list[str]:
+    return [s for s in symbols
+            if (c := _weekly_cache.get(s)) is None or now - c[1] >= _WEEKLY_TTL]
+
+
+def _schedule_weekly_refresh(symbols: list[str]) -> None:
+    """Start the background refresh unless one is already running (or no loop is)."""
+    global _weekly_task
+    if _weekly_task is not None and not _weekly_task.done():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    _weekly_task = loop.create_task(_refresh_weekly(symbols), name="weekly-change-refresh")
 
 
 def cached_week_change(sym: str) -> float | None:
-    """Synchronous read of the cached weekly % for a symbol (None if absent/stale).
-    Used by the live stream's snapshot builder, which must not block on the feed."""
+    """Synchronous read of the cached weekly % for a symbol (stale values included;
+    None if never fetched). Used by the live stream's snapshot builder, which must not
+    block on the feed; a stale or missing entry kicks the single background refresh."""
+    if _weekly_stale([sym], monotonic()):
+        _schedule_weekly_refresh([ix["symbol"] for ix in INDICES])
     cached = _weekly_cache.get(sym)
-    if cached and monotonic() - cached[1] < _WEEKLY_TTL:
-        return cached[0]
-    return None
+    return cached[0] if cached else None
 
 
 async def _weekly_changes(symbols: list[str]) -> dict[str, float | None]:
-    """5-trading-day % change per symbol from daily candles, cached for ``_WEEKLY_TTL``.
+    """5-trading-day % change per symbol, from cache only (never waits on the feed).
 
-    Best-effort: a symbol with insufficient bars (or a feed hiccup) maps to None.
-    Only cache-stale symbols hit the feed, throttled by ``_WEEKLY_CONCURRENCY``."""
-    now = monotonic()
-    result: dict[str, float | None] = {}
-    stale: list[str] = []
-    for sym in symbols:
-        cached = _weekly_cache.get(sym)
-        if cached and now - cached[1] < _WEEKLY_TTL:
-            result[sym] = cached[0]
-        else:
-            stale.append(sym)
+    Stale or missing symbols trigger one background refresh; until it lands they keep
+    their last value, or None if never fetched."""
+    if _weekly_stale(symbols, monotonic()):
+        _schedule_weekly_refresh(symbols)
+    return {s: (c[0] if (c := _weekly_cache.get(s)) else None) for s in symbols}
 
-    if not stale:
-        return result
 
-    start = datetime.now(timezone.utc) - timedelta(days=16)
+def _history_provider():
+    """Daily-candle source for the weekly refresh (a seam tests replace)."""
     from app.providers import get_historical_provider
-    provider = get_historical_provider()
+    return get_historical_provider()
 
-    async def one(sym: str) -> tuple[str, float | None]:
-        try:
-            async with _WEEKLY_CONCURRENCY:
-                bars = await provider.get_bars(sym, "1d", start=start)
-            closes = [b["close"] for b in bars if b["close"]]
-            if len(closes) < 6:
+
+async def _refresh_weekly(symbols: list[str]) -> None:
+    """Fetch daily candles for the stale symbols and update the cache. Best-effort:
+    a symbol with insufficient bars or a feed error maps to None; never raises."""
+    try:
+        stale = _weekly_stale(symbols, monotonic())
+        if not stale:
+            return
+        start = datetime.now(timezone.utc) - timedelta(days=16)
+        provider = _history_provider()
+        gate = asyncio.Semaphore(_WEEKLY_CONCURRENCY)  # per refresh: binds to this loop
+
+        async def one(sym: str) -> tuple[str, float | None]:
+            try:
+                async with gate:
+                    bars = await provider.get_bars(sym, "1d", start=start)
+                closes = [b["close"] for b in bars if b["close"]]
+                if len(closes) < 6:
+                    return sym, None
+                ref, last = closes[-6], closes[-1]  # ~5 trading days back
+                return sym, round(last / ref - 1.0, 4) if ref else None
+            except Exception:  # noqa: BLE001
                 return sym, None
-            ref, last = closes[-6], closes[-1]  # ~5 trading days back
-            return sym, round(last / ref - 1.0, 4) if ref else None
-        except Exception:  # noqa: BLE001
-            return sym, None
 
-    for sym, val in await asyncio.gather(*(one(s) for s in stale)):
-        _weekly_cache[sym] = (val, now)
-        result[sym] = val
-    return result
+        for sym, val in await asyncio.gather(*(one(s) for s in stale)):
+            _weekly_cache[sym] = (val, monotonic())
+    except Exception:  # noqa: BLE001 - background task: log, never leak
+        logger.warning("Weekly change refresh failed", exc_info=True)
