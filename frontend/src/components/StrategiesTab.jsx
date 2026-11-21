@@ -75,7 +75,23 @@ function ResearchSnapshot({ strategy, record, error }) {
         <p className="muted small">Net {signedUsd(record.net_pnl)} · {record.first_date} to {record.last_date} · from the app's trade ledger, not a backtest.</p>
       </>
     );
-  else if (record.source === "external")
+  else if (record.source === "sessions") {
+    const other = [record.skipped && `${record.skipped} skipped or missed`, record.killed && `${record.killed} killed or errored`, record.open && `${record.open} in progress`].filter(Boolean).join(" · ");
+    body = (
+      <>
+        <p className="muted">Simulated sessions recorded by {strategy.name}.</p>
+        <div className="strat-metrics">
+          <div><span>Sessions</span><b>{record.sessions}</b></div>
+          <div><span>Win rate</span><b>{pct(record.win_rate)}</b></div>
+          <div><span>Max drawdown</span><b className={record.max_drawdown < 0 ? "neg" : ""}>{signedUsd(record.max_drawdown)}</b></div>
+        </div>
+        <p className="muted small">
+          {record.sessions ? `Net ${signedUsd(record.net_pnl)} · ${record.first_date} to ${record.last_date}` : "No settled sessions yet"}
+          {other ? ` · ${other}` : ""} · settled and closed sessions only, not a backtest.
+        </p>
+      </>
+    );
+  } else if (record.source === "external")
     body = <p className="muted">{record.note}</p>;
   else body = <p className="muted">No results yet. Simulated sessions appear here after the first closed trade.</p>;
   return (
