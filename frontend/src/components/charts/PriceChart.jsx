@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Drawings from "./Drawings.jsx";
+import Icon from "./controls/icons.jsx";
 import { crossovers, heikinAshi, makeScale, rsi } from "./chartMath.js";
 import { PRICE_STUDIES, studyLabel, studyLines } from "./chartData.js";
 import { clearHover, publishHover, useHoverTime } from "./syncStore.js";
@@ -185,7 +186,7 @@ export default function PriceChart({pane, paneId, bars, tool, drawingProps, onRe
     </div>
     <div className="cx-plot-wrap" onPointerLeave={()=>setNearBottom(false)}>
     <div className="cx-study-values">{series.map(study=><div key={study.id}><i style={{background:study.color}}/>{studyLabel(study)} <b style={{color:study.color}}>{study.lines.map(l=>l.values[start+shown]).filter(Number.isFinite).map(v=>v.toFixed(2)).join(" · ")||"—"}</b>
-        <button aria-label={"Settings for "+studyLabel(study)} onClick={()=>onEditStudy(study.id)}>⚙</button><button aria-label={"Remove "+studyLabel(study)} onClick={()=>onRemove(study.id)}>×</button></div>)}
+        <button aria-label={"Settings for "+studyLabel(study)} onClick={()=>onEditStudy(study.id)}><Icon name="gear" size={12}/></button><button aria-label={"Remove "+studyLabel(study)} onClick={()=>onRemove(study.id)}>×</button></div>)}
       {volume && <div><i style={{background:C.axis}}/>Vol <b>{Math.round(selected.volume).toLocaleString()}</b><button aria-label="Remove volume" onClick={()=>onRemove(volume.id)}>×</button></div>}
     </div>
     <svg ref={plot} data-tool={tool} className="cx-plot" tabIndex={0} onContextMenu={contextMenu}
@@ -247,7 +248,7 @@ export default function PriceChart({pane, paneId, bars, tool, drawingProps, onRe
         const py=isUp?y(b.low)+6:y(b.high)-20;
         return <g key={"sig"+s.index} pointerEvents="none"><title>{isUp?"EMA cross up":"EMA cross down"}</title>
           <rect x={x(i)-8} y={py} width="16" height="14" rx="2" fill={isUp?up:down}/>
-          <text x={x(i)} y={py+11} textAnchor="middle" style={{fill:isUp?C.ink:C.inkDown,fontWeight:700}}>{isUp?"B":"S"}</text></g>;
+          <text x={x(i)} y={py+11} textAnchor="middle" style={{fill:isUp?C.ink:C.inkDown,fontWeight:600}}>{isUp?"B":"S"}</text></g>;
       })}
       {alerts.map(a=>{
         const py=y(a.value);

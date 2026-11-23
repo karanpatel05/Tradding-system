@@ -172,12 +172,15 @@ export default function App() {
                 "T"}
             </div>
             <div className="side-foot-meta">
-              <div className="side-foot-acct">{acct?.account || "—"}</div>
-              <div className="side-foot-nl num">
-                {acct?.net_liquidation != null
-                  ? `$${Number(acct.net_liquidation).toLocaleString()}`
-                  : "—"}
-              </div>
+              <div className="side-foot-acct">{acct?.account || "Alpaca paper"}</div>
+              {acct?.net_liquidation != null && (
+                <div className="side-foot-nl num">
+                  {`$${Number(acct.net_liquidation).toLocaleString(undefined, {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}`}
+                </div>
+              )}
             </div>
             <span
               className={`dot ${auth?.connected ? "on" : ""}`}

@@ -92,7 +92,7 @@ export default function MarketOverview({ snapshot }) {
   return (
     <section className="overview card">
       <div className="overview-head">
-        <h2>Market Overview</h2>
+        <h2>Market overview</h2>
         <span className={`feed-badge ${live ? "live" : ""}`}>
           <span className="dot" />{" "}
           {live

@@ -56,15 +56,53 @@ select:focus-visible,
 }
 h1 {
   font-size: 29px;
-  font-weight: 650;
-  letter-spacing: -0.8px;
+  font-weight: 600;
+  letter-spacing: -0.6px;
 }
 h2 {
   font-size: 15px;
-  font-weight: 650;
+  font-weight: 600;
+  letter-spacing: 0;
 }
 h4 {
   text-transform: none;
+  letter-spacing: 0;
+}
+/* Weights: 400 for text, 500 for labels and controls, 600 for headings and key
+   figures. Brings the legacy 550/650/700+ rules in styles.css onto that scale. */
+b,
+strong,
+.brand-text,
+.ticker-sym,
+.ticker-chg,
+.ticker.featured .ticker-name,
+.hdr-price,
+.olabel b,
+.metric-value,
+.trade-pnl,
+.side-badge,
+.mode-badge,
+.price-chip,
+.side-foot-nl,
+.avatar,
+.sruler-badge,
+.chain-grid tr.atm .strike,
+.btn.primary,
+.btn.danger,
+.btn.big {
+  font-weight: 600;
+}
+.btn,
+.nav-item,
+.label,
+.stat-label,
+.chip,
+.ticker-name,
+.selected-sym,
+.cfg-grid .label {
+  font-weight: 500;
+}
+.btn.big {
   letter-spacing: 0;
 }
 p {
@@ -107,7 +145,8 @@ code {
 }
 .brand-text {
   font-size: 17px;
-  font-weight: 650;
+  font-weight: 600;
+  letter-spacing: 0;
   color: #fff;
 }
 .brand-accent {
@@ -120,13 +159,14 @@ code {
   font-size: 11px;
 }
 .nav {
-  gap: 7px;
+  gap: 4px;
 }
 .nav-item {
   color: #bbc8d8;
   border-radius: 5px;
-  padding: 13px 12px;
+  padding: 8px 12px;
   font-size: 13px;
+  font-weight: 500;
 }
 .nav-item:hover {
   background: #25364a;
@@ -188,7 +228,7 @@ code {
   align-items: center;
   flex-wrap: wrap;
   gap: 12px;
-  font-weight: 650;
+  font-weight: 600;
   white-space: nowrap;
 }
 .operator-tools {
@@ -289,7 +329,7 @@ code {
 .stat-value {
   font-weight: 600;
   font-size: 25px;
-  letter-spacing: -0.6px;
+  letter-spacing: -0.4px;
   overflow-wrap: anywhere;
 }
 .stat-sub {
@@ -355,7 +395,7 @@ code {
   margin-bottom: 9px;
 }
 .allocation-row b {
-  font-weight: 550;
+  font-weight: 500;
   white-space: nowrap;
 }
 .allocation-track {
@@ -409,7 +449,7 @@ code {
 .account-details dd {
   margin: 8px 0 0;
   font-size: 19px;
-  font-weight: 550;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
 .btn {
@@ -446,7 +486,7 @@ code {
 }
 .btn.big {
   font-size: 12px;
-  font-weight: 550;
+  font-weight: 500;
   padding: 9px 13px;
   letter-spacing: 0;
 }
@@ -462,7 +502,7 @@ code {
   cursor: pointer;
   text-align: left;
   font-size: 12px;
-  font-weight: 550;
+  font-weight: 500;
 }
 .input,
 select {
@@ -802,7 +842,11 @@ select:focus {
   box-shadow: none;
 }
 .stat-card .stat-label {
+  font-size: 11px;
   letter-spacing: 0;
+}
+.stat-sym {
+  color: var(--faint);
 }
 .stat-num {
   font-size: 20px;
