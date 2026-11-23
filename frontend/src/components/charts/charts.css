@@ -348,3 +348,7 @@
   .cx-scale-modes {opacity:1}
   .cx-nav button,.cx-foot button {min-width:36px;min-height:32px!important}
 }
+
+.cx-goto {display:inline-flex;align-items:center;gap:6px;color:var(--cx-soft);font-size:12px}
+.cx-goto input {color-scheme:dark}
+.cx-live-btn {background:var(--cx-accent)!important;color:#06231b!important;font-weight:650}

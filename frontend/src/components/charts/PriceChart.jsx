@@ -4,6 +4,7 @@ import { crossovers, heikinAshi, makeScale, rsi } from "./chartMath.js";
 import { PRICE_STUDIES, studyLabel, studyLines } from "./chartData.js";
 import { clearHover, publishHover, useHoverTime } from "./syncStore.js";
 import { sessionCloseAfter } from "./alerts.js";
+import { offsetAfterAppend, shouldLoad } from "./historyPaging.js";
 
 const C = {
   grid: "#151b23", axis: "#7d8a9a", cross: "#5f6b7a", tag: "#2a3340", entry: "#7aa2ff",
@@ -44,7 +45,7 @@ function Countdown({endsAt, intervalMs, x, y, color}) {
 }
 
 export default function PriceChart({pane, paneId, bars, tool, drawingProps, onRemove, onEditStudy, position, live,
-  settings, onSettings, alerts = [], resetToken, onContextMenu}) {
+  settings, onSettings, alerts = [], resetToken, onContextMenu, onNearEdge, hasMoreBefore, hasMoreAfter, earliest, focusTime, appended, appendedFor}) {
   const {interval, studies, symbol} = pane;
   const S = settings;
   const limit = (n, min, max) => Math.max(min, Math.min(max, n));
@@ -64,6 +65,35 @@ export default function PriceChart({pane, paneId, bars, tool, drawingProps, onRe
     observer.observe(plot.current);
     return ()=>observer.disconnect();
   },[]);
+
+  // Page in more history when the view nears a loaded edge. Keyed on the view and the loaded bars only,
+  // so a failing backend is not retried on every render. Indicators need `lookback` warm-up bars behind the view.
+  const lookback = Math.max(0, ...studies.filter(s => s.visible).map(s => s.period || 0));
+  useEffect(() => {
+    if (!onNearEdge) return;
+    const loaded = {hasMoreBefore, hasMoreAfter, inFlight: {before: false, after: false}}; // loadMore guards in-flight itself
+    for (const side of ["before", "after"]) if (shouldLoad({length, offset}, total, loaded, side, Math.max(100, lookback))) onNearEdge(side);
+  }, [total, length, offset, lookback, hasMoreBefore, hasMoreAfter]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Bars added on the right by a "load newer" page keep the same candles in view. `appendedFor` identifies the
+  // load so two pages of the same size both count.
+  const handledAppend = useRef(appendedFor);
+  useEffect(() => {
+    if (appendedFor === handledAppend.current) return;
+    handledAppend.current = appendedFor;
+    if (appended > 0) setView(old => ({...old, offset: offsetAfterAppend(old.offset, appended)}));
+  }, [appendedFor]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Go-to-date: centre the bar nearest that day (~10 ET, so a holiday or weekend lands on the last bar before it).
+  // Back to live (focusTime null again) returns to the newest bar.
+  const handledFocus = useRef(focusTime);
+  useEffect(() => {
+    if (focusTime === handledFocus.current) return;
+    handledFocus.current = focusTime;
+    if (focusTime == null) { setView(old => ({...old, offset: 0})); return; }
+    const at = Math.max(0, barIndexAt(bars, focusTime + 15 * 3600e3));
+    const half = Math.floor(length / 2);
+    setView({length, offset: limit(total - (at + 1 + half), 0, total - length)});
+    setHover(null);
+  }, [focusTime]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const rsiStudy = studies.find(s => s.visible && s.type === "RSI");
   const axisW = 62;
@@ -229,6 +259,9 @@ export default function PriceChart({pane, paneId, bars, tool, drawingProps, onRe
       {[0,1,2,3,4,5].map(i=>{const py=priceTop+priceHeight*i/5, price=sc.invert(py);return <g key={i}>{S.grid && <path d={`M0 ${py}H${axisX}`} stroke={C.grid}/>}<text x={axisX+6} y={py+4}>{sc.label(price)}</text></g>})}
       {S.sessionBreaks && interval!=="1D" && visible.map((b,i)=>i>0 && b.session!==visible[i-1].session && <path key={"sb"+b.time} d={`M${x(i)-step/2} 0V${plotBottom}`} stroke="#2a3340" strokeDasharray="2 4"/>)}
       <path d={`M${axisX} 0V${plotBottom}M0 ${plotBottom}H${size.width}`} stroke="#1c232d"/>
+      {earliest != null && !hasMoreBefore && start === 0 && <g pointerEvents="none">
+        <path d={`M${x(0)} 0V${plotBottom}`} stroke={C.alert} strokeDasharray="5 4"/>
+        <text x={x(0)+6} y={20} style={{fill:C.alert}}>History starts</text></g>}
       {volume && visible.map((b,i)=><rect key={"v"+b.time} x={x(i)-step*.32} y={volBase-volMax*b.volume/maxVolume} width={step*.64} height={volMax*b.volume/maxVolume} fill={b.close>=b.open?up:down} opacity=".22"/>)}
       {(S.type==="Line" || S.type==="Area") ? (()=>{
         const pts = drawn.map((b,i)=>x(i).toFixed(1)+","+y(b.close).toFixed(1));
