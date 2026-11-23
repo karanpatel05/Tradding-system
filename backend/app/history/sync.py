@@ -24,6 +24,7 @@ HISTORY_START = datetime(2022, 1, 3, 14, 30, tzinfo=UTC)
 
 _MINUTE_MS = 60_000
 _CHUNK = timedelta(days=30)              # one store write (and crash-resume point) per chunk
+_TOP_UP_OVERLAP = 2                      # minutes each top-up re-fetches (upsert by ts)
 _SIP_DELAY = timedelta(minutes=16)       # free plans may not query the latest 15 min of SIP
 _SPLIT_TOLERANCE = 0.0001
 _SPLIT_MIN_OVERLAP = 10
@@ -88,8 +89,8 @@ class HistorySync:
             cursor = HISTORY_START
         elif first:   # the IEX-tail map is lost on restart: re-check the last 20 minutes
             cursor = max(HISTORY_START, _from_ms(latest) - timedelta(minutes=20))
-        else:
-            cursor = _from_ms(latest + _MINUTE_MS)
+        else:   # re-read the last 2 stored minutes: a forming minute may have been stored
+            cursor = max(HISTORY_START, _from_ms(latest - _TOP_UP_OVERLAP * _MINUTE_MS))
             if symbol in self._iex_since:
                 cursor = min(cursor, _from_ms(self._iex_since[symbol]))
         sip_end = now

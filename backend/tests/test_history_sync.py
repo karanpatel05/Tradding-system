@@ -92,10 +92,34 @@ async def test_backfill_resumes_after_crash(store):
         await sync.sync_symbol("SPY")
     first = store.bounds("SPY")[1]
     assert first == bars[4]["time"]          # only the first chunk landed
+    n0 = len(f.calls)
     await sync.sync_symbol("SPY")
-    assert f.calls[-3]["start"] == datetime.fromtimestamp((first + MIN) / 1000, UTC)
+    # top-ups re-read the last 2 stored minutes (a forming minute may have been stored)
+    assert f.calls[n0]["start"] == datetime.fromtimestamp((first - 2 * MIN) / 1000, UTC)
     stored = store.minutes("SPY", 0, ms(now))
     assert [b["time"] for b in stored] == [b["time"] for b in bars]
+
+
+@pytest.mark.asyncio
+async def test_top_up_refetches_a_stored_partial_minute(store):
+    """F7: if Alpaca returned the still-forming minute, the next top-up replaces it."""
+    t = ms(datetime(2026, 11, 20, 15, 0, tzinfo=UTC))
+    now = datetime(2026, 11, 20, 15, 0, 30, tzinfo=UTC)
+    f = FakeFetch({"SPY": [bar(t - MIN, 100.0), bar(t, 100.5)]})   # forming minute, partial
+    box = [now]
+    sync = S.HistorySync(store, fetch=f, now=lambda: box[0])
+    sync._seen.add("SPY")
+    store.upsert_minutes("SPY", [bar(t - 2 * MIN, 99.0)])
+    await sync.sync_symbol("SPY")
+    assert store.minutes("SPY", t, t + 1)[0]["close"] == 100.5
+    f.bars["SPY"] = [bar(t - MIN, 100.0), bar(t, 101.25), bar(t + MIN, 101.5)]   # final values
+    box[0] = now + timedelta(minutes=2)
+    n0 = len(f.calls)
+    await sync.sync_symbol("SPY")
+    assert f.calls[n0]["start"] == datetime.fromtimestamp((t - 2 * MIN) / 1000, UTC)
+    assert store.minutes("SPY", t, t + 1)[0]["close"] == 101.25
+    assert [b["time"] for b in store.minutes("SPY", 0, t + 10 * MIN)] == [
+        t - 2 * MIN, t - MIN, t, t + MIN]
 
 
 @pytest.mark.asyncio
