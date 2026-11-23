@@ -67,6 +67,21 @@ class HistoryStore:
         with closing(self._connect()) as c, c:
             c.executemany("INSERT OR REPLACE INTO bars_1d VALUES (?,?,?,?,?,?,?,?)", data)
 
+    def upsert_minutes_and_daily(self, symbol: str, bars: list[dict],
+                                 daily_rows: list[dict]) -> int:
+        """Upsert minutes and their rebuilt daily rows in ONE transaction: a crash or error
+        between the two can never leave minutes stored without their daily rows."""
+        minutes = [(symbol, int(b["time"]), b["open"], b["high"], b["low"], b["close"],
+                    b["volume"]) for b in bars]
+        days = [(symbol, r["session"], int(r["time"]), r["open"], r["high"], r["low"],
+                 r["close"], r["volume"]) for r in daily_rows]
+        with closing(self._connect()) as c, c:
+            if minutes:
+                c.executemany("INSERT OR REPLACE INTO bars_1m VALUES (?,?,?,?,?,?,?)", minutes)
+            if days:
+                c.executemany("INSERT OR REPLACE INTO bars_1d VALUES (?,?,?,?,?,?,?,?)", days)
+        return len(minutes)
+
     def daily(self, symbol: str, start_ms: int, end_ms: int) -> list[dict]:
         with closing(self._connect()) as c:
             cur = c.execute(

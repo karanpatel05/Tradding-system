@@ -64,18 +64,21 @@ class HistorySync:
         return await asyncio.to_thread(fn, *args, **kw)
 
     def _write_chunk(self, symbol: str, bars: list[dict]) -> int:
-        """Upsert a batch and rebuild the daily rows of every ET date it touched."""
+        """Upsert a batch and rebuild the daily rows of every ET date it touched, in one
+        store transaction (each day's row is built from its stored minutes + the batch)."""
         bars = [b for b in bars
                 if dtime(4, 0) <= datetime.fromtimestamp(b["time"] / 1000, ET).time()
                 < dtime(20, 0)]
-        n = self.store.upsert_minutes(symbol, bars)
-        days = {datetime.fromtimestamp(b["time"] / 1000, ET).date() for b in bars}
+        by_day: dict[date, list[dict]] = {}
+        for b in bars:
+            by_day.setdefault(datetime.fromtimestamp(b["time"] / 1000, ET).date(), []).append(b)
         rows: list[dict] = []
-        for day in sorted(days):
+        for day in sorted(by_day):
             lo, hi = _day_range_ms(day)
-            rows += daily_from_minutes(self.store.minutes(symbol, lo, hi))
-        self.store.upsert_daily(symbol, rows)
-        return n
+            merged = {m["time"]: m for m in self.store.minutes(symbol, lo, hi)}
+            merged.update({int(b["time"]): b for b in by_day[day]})
+            rows += daily_from_minutes([merged[t] for t in sorted(merged)])
+        return self.store.upsert_minutes_and_daily(symbol, bars, rows)
 
     async def _pull(self, symbol: str, start: datetime, end: datetime, feed: str) -> list[dict]:
         return await self._fetch(symbol, start, end, feed=feed, limiter=self._limiter)

@@ -330,3 +330,24 @@ def test_lifespan_does_not_open_the_store_synchronously():
 
     src = inspect.getsource(main.lifespan)
     assert "get_store(" not in src and "start_sync()" in src
+
+
+def test_write_chunk_is_atomic_and_merges_stored_minutes(store):
+    """F9: minutes and the rebuilt daily rows land in one transaction; the daily row of a
+    day already partly stored covers both the stored and the new minutes."""
+    import sqlite3
+
+    day = datetime(2022, 1, 4, tzinfo=UTC)
+    first, second = session_bars(day, 3, 100.0), session_bars(day, 6, 200.0)[3:]
+    sync = make_sync(store, FakeFetch(), day)
+    sync._write_chunk("SPY", first)
+    sync._write_chunk("SPY", second)
+    (d,) = store.daily("SPY", 0, ms(day) + 86_400_000)
+    assert d["open"] == first[0]["open"] and d["close"] == second[-1]["close"]
+    assert d["volume"] == 60.0
+    with sqlite3.connect(store.path) as c:
+        c.execute("DROP TABLE bars_1d")
+    later = session_bars(datetime(2022, 1, 5, tzinfo=UTC), 3)
+    with pytest.raises(sqlite3.OperationalError):
+        sync._write_chunk("SPY", later)
+    assert store.minutes("SPY", later[0]["time"], later[-1]["time"] + 1) == []
