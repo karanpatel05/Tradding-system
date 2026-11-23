@@ -2,7 +2,7 @@
 import { bollinger, donchian, ema, sma, sourceValues } from "./chartMath.js";
 const prices = { QQQ: 490, SPY: 560, IWM: 212, NVDA: 140, AAPL: 225, TSLA: 310, MSFT: 410, AMZN: 210 };
 export const symbols = Object.keys(prices);
-export const intervals = { "1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "1D": 390 };
+export const intervals = { "1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1D": 390, "1W": 390 };
 const cache = new Map();
 function minutes(symbol) {
   let seed = [...symbol].reduce((n, c) => n * 31 + c.charCodeAt(0), 7);

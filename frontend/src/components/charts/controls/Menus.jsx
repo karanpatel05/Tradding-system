@@ -1,7 +1,7 @@
 import { Popover, Switch } from "./Overlay.jsx";
 import Icon, { TYPE_ICON } from "./icons.jsx";
 
-export const INTERVAL_LABELS = {"1m":"1 minute","5m":"5 minutes","15m":"15 minutes","30m":"30 minutes","1h":"1 hour","1D":"1 day"};
+export const INTERVAL_LABELS = {"1m":"1 minute","5m":"5 minutes","15m":"15 minutes","30m":"30 minutes","1h":"1 hour","4h":"4 hours","1D":"1 day","1W":"1 week"};
 const DERIVED = new Set(["30m","1h"]);
 
 export function TimeframeMenu({open, onClose, anchorRef, value, favorites, onPick, onToggleFavorite}) {
@@ -11,7 +11,7 @@ export function TimeframeMenu({open, onClose, anchorRef, value, favorites, onPic
   </div>;
   return <Popover open={open} onClose={onClose} anchorRef={anchorRef} label="Timeframe" className="cx-menu w-220">
     <div className="cx-menu-label">Minutes</div>{["1m","5m","15m","30m"].map(row)}
-    <div className="cx-menu-label sep">Hours and days</div>{["1h","1D"].map(row)}
+    <div className="cx-menu-label sep">Hours and days</div>{["1h","4h","1D","1W"].map(row)}
   </Popover>;
 }
 

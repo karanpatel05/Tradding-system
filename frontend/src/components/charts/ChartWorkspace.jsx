@@ -5,7 +5,7 @@ import PaneResize from "./PaneResize.jsx";
 import PriceChart from "./PriceChart.jsx";
 import { applyStudy, intervals, symbols } from "./chartData.js";
 import { sessionStats } from "./chartMath.js";
-import { useBars, usePositions, useQuotes } from "./marketData.js";
+import { usePaneBars, usePositions, useQuotes } from "./marketData.js";
 import { conditionLabel, rearm, useAlertEngine, useAlerts } from "./alerts.js";
 import { SYMBOL_PATTERN, describe } from "./controls/catalog.js";
 import SymbolSearch from "./controls/SymbolSearch.jsx";
@@ -85,7 +85,7 @@ async function copyChartImage(svg, name) {
 
 function ChartPane({index, pane, selected, tool, positions, settings, onSettings, alerts, resetToken, onActivate, patch,
   drawingProps, selectedDrawing, onDrawingChange, onDrawingDelete, onDrawingCopy, onDrawingAlert, onEditStudy, onSearch, onContextMenu}) {
-  const {bars, live, stale, note} = useBars(pane.symbol, pane.interval, !selected);
+  const {bars, live, stale, note} = usePaneBars(pane.symbol, pane.interval, !selected);
   return <article className={"cx-pane "+(selected?"selected":"")} data-pane={index} tabIndex="0" aria-label={"Chart "+(index+1)+" "+pane.symbol}
     onFocus={onActivate} onPointerDown={e=>{onActivate(); if(e.target.closest("svg.cx-plot") && !e.target.closest("[data-drawing]")) drawingProps.onSelect(null);}}>
     <div className="cx-controls"><button className="cx-sym-btn" aria-label={"Change symbol for chart "+(index+1)} onClick={onSearch}>{pane.symbol} <span>▾</span></button>
@@ -209,7 +209,7 @@ export default function ChartWorkspace({account, accountError, onOpenBuilder}) {
   const active=s.panes[s.active];
   const start=Math.floor(s.active/s.count)*s.count;
   const ids=Array.from({length:s.count},(_,i)=>start+i);
-  const activeData=useBars(active.symbol, active.interval);
+  const activeData=usePaneBars(active.symbol, active.interval);
   const [alerts,setAlerts]=useAlerts();
   const quoteSymbols=[...new Set([...s.watchlist, ...alerts.filter(a=>a.active).map(a=>a.symbol)])];
   const quotes=useQuotes(quoteSymbols.length?quoteSymbols:["QQQ"]);
