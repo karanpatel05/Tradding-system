@@ -6,7 +6,7 @@ import PriceChart from "./PriceChart.jsx";
 import { applyStudy, intervals, symbols } from "./chartData.js";
 import { sessionStats } from "./chartMath.js";
 import { HISTORY_SYMBOLS } from "./historyPaging.js";
-import { foldForInterval } from "./liveCandle.js";
+import { foldForInterval, rebaseLive } from "./liveCandle.js";
 import { usePaneBars, usePositions, useQuotes } from "./marketData.js";
 import { conditionLabel, rearm, useAlertEngine, useAlerts } from "./alerts.js";
 import { SYMBOL_PATTERN, describe } from "./controls/catalog.js";
@@ -91,10 +91,20 @@ function ChartPane({index, pane, selected, tool, positions, settings, onSettings
   const {live, stale, note} = data;
   const history = HISTORY_SYMBOLS.includes(pane.symbol);
   const behind = !!data.hasMoreAfter; // history symbols only: newer bars are stored but not loaded, so the pane is not at the newest bar
-  // Live last trade folded into the newest candle, only while the pane shows the newest bars.
+  // Live trades accumulate into the newest candle (open stays the first live price, high/low widen) while the
+  // pane shows the newest bars. New stored bars rebase the live state; each tick is folded once (deduped by ts).
   const tick = chartPrices?.[pane.symbol];
-  const bars = useMemo(() => data.bars && live && tick && !behind ? foldForInterval(data.bars, tick.price, tick.ts, pane.interval) : data.bars,
-    [data.bars, live, behind, tick?.price, tick?.ts, pane.interval]); // eslint-disable-line react-hooks/exhaustive-deps
+  const liveRef = useRef({key:"", base:null, bars:null, ts:0});
+  const bars = useMemo(() => {
+    const L = liveRef.current, key = pane.symbol+"|"+pane.interval;
+    if (L.key !== key) Object.assign(L, {key, base:null, bars:null, ts:0});
+    if (!data.bars || !live || behind) { L.bars = null; L.base = null; return data.bars; }
+    let cur = L.bars && L.base === data.bars ? L.bars : rebaseLive(data.bars, L.bars);
+    L.base = data.bars;
+    if (tick && tick.ts !== L.ts) { L.ts = tick.ts; cur = foldForInterval(cur, tick.price, tick.ts, pane.interval); }
+    L.bars = cur;
+    return cur;
+  }, [data.bars, live, behind, tick?.ts, tick?.price, pane.symbol, pane.interval]); // eslint-disable-line react-hooks/exhaustive-deps
   const latest = useRef(data);
   latest.current = data;
   useEffect(() => { // the toolbar drives the selected pane's own paging state
