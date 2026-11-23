@@ -35,6 +35,7 @@ logger = logging.getLogger("trading.qqq_spread")
 SLICE = 30.0                   # max single sleep, so stop/cancel lands promptly
 ERROR_BACKOFF = 30.0
 BAR_WAIT_STEP = 5.0
+BAR_SETTLE = 15.0              # wait up to this long after 10:30 for the 10:30 bar
 HOLDING = ("entering", "open", "closing")
 
 
@@ -48,8 +49,10 @@ class RealClock:
 
 class QqqSpreadRunner:
     def __init__(self, key: str, params: QqqSpreadParams, feed, broker, clock, *,
-                 store, capital_fn, model_loader, safe_mode_fn, alert_fn, log_fn) -> None:
+                 store, capital_fn, model_loader, safe_mode_fn, alert_fn, log_fn,
+                 entry_guard_fn=None) -> None:
         self.key, self.p = key, params
+        self.entry_guard_fn = entry_guard_fn      # extra NEW-entry checks (daemon copy...)
         self.feed, self.broker, self.clock, self.store = feed, broker, clock, store
         self.capital_fn, self.model_loader = capital_fn, model_loader
         self.safe_mode_fn, self.alert_fn, self.log_fn = safe_mode_fn, alert_fn, log_fn
@@ -127,6 +130,11 @@ class QqqSpreadRunner:
             return
         sess = await self.store.get_session(self.key, plan.day)
         status = sess["status"] if sess else "pending"
+        if status == "entering":
+            # do_entry runs within one step; meeting it here means that step failed
+            # after the session row was written. Trust the broker, never re-enter.
+            await self._resolve_interrupted_entry(sess)
+            return
         if status == "pending":
             if now < plan.entry:
                 await self._sleep_until(plan.entry)
@@ -146,8 +154,8 @@ class QqqSpreadRunner:
         if now < plan.final_close:
             await self._sleep_until(plan.final_close)
             return
-        if "final_close" not in data:
-            await self.do_final_close(plan, sess)
+        if not (data.get("final_close") or {}).get("done"):
+            await self.do_final_close(plan, sess)    # retried after an error until it ran
             return
         await self._watch_after_deadline(plan, sess)
 
@@ -159,6 +167,8 @@ class QqqSpreadRunner:
         if (errs := self.p.validate()):
             return "invalid settings: " + "; ".join(errs)
         if (why := self.broker.routing_block()) is not None:
+            return why
+        if self.entry_guard_fn is not None and (why := self.entry_guard_fn()) is not None:
             return why
         try:
             check_metadata(self.p.model_dir, self.p.max_model_age_days)
@@ -231,11 +241,17 @@ class QqqSpreadRunner:
     async def _first_hour_bars(self, plan: L.SessionPlan, deadline: datetime) -> list[dict]:
         """Bars through the 10:29 minute; wait briefly for the last one to arrive."""
         last_needed = int((plan.entry - timedelta(minutes=1)).timestamp() * 1000)
+        after = int(plan.entry.timestamp() * 1000)
         bars: list[dict] = []
         while True:
-            bars = await self.feed.minute_bars(plan.open, plan.entry) or []
-            if any(int(b["time"]) >= last_needed for b in bars):
-                return bars
+            bars = await self.feed.minute_bars(plan.open, plan.entry + timedelta(minutes=1)) or []
+            have_last = any(int(b["time"]) >= last_needed for b in bars)
+            # The 10:29 close sets colour and strike: only trust it once the 10:30 bar
+            # has started (or a short settle time has passed).
+            settled = (any(int(b["time"]) >= after for b in bars)
+                       or self.clock.now() >= plan.entry + timedelta(seconds=BAR_SETTLE))
+            if have_last and settled:
+                return [b for b in bars if int(b["time"]) < after]
             if self.clock.now() + timedelta(seconds=BAR_WAIT_STEP) >= deadline:
                 return bars
             await self.clock.sleep(BAR_WAIT_STEP)
@@ -355,12 +371,12 @@ class QqqSpreadRunner:
                     return done("rejected_on_reprice", sent.get("detail", ""))
                 oid = sent["order_id"]
                 out["order_ids"].append(oid)
-        except asyncio.CancelledError:
-            # Worker stopped: never leave an untracked order resting.
+        except BaseException:
+            # Worker stopped or a step failed: never leave an untracked order resting.
             try:
                 await asyncio.shield(self.broker.cancel_confirmed(oid))
             except Exception:  # noqa: BLE001
-                logger.exception("cancel on stop failed for %s", oid)
+                logger.exception("cancel after interruption failed for %s", oid)
             raise
 
     # ------------------------------------------------------------------ checkpoint
@@ -411,11 +427,11 @@ class QqqSpreadRunner:
 
     # ------------------------------------------------------------------ closes
     async def do_final_close(self, plan: L.SessionPlan, sess: dict) -> None:
-        sess["data"]["final_close"] = {"status": "started", "at": self.clock.now().isoformat()}
-        await self.store.save(sess)
+        started = self.clock.now().isoformat()
         result = await self._close(plan, sess, checkpoint=False, deadline=plan.close_deadline,
                                    cancel_at_deadline=False)
-        sess["data"]["final_close"]["status"] = result
+        # Marked done only once the close actually ran; an exception retries it.
+        sess["data"]["final_close"] = {"done": True, "status": result, "at": started}
         await self.store.save(sess)
         if sess["status"] in HOLDING:
             await self._alert(f"QQQ spread NOT flat at {plan.close_deadline:%H:%M} ET "
@@ -506,12 +522,22 @@ class QqqSpreadRunner:
             return
         s, l = self._syms(sess)
         sq, lq = await self.broker.leg_quantities(s, l)
-        if min(sq, lq) < int(sess["data"].get("open_qty") or 0):
+        if min(sq, lq) < int(sess["data"].get("open_qty") or 0) or (sq == 0 and lq == 0):
             work = (sess["data"].get("closes") or [{}])[-1]
             oid = work.get("working_order_id")
             o = await self.broker.get_order(oid) if oid else None
             await self._settle_close(sess, {**work, "fill_price": net_fill_price(o, False),
                                             "leg_prices": leg_fill_prices(o)}, "final")
+            return
+        if (min(sq, lq) > 0 and now < plan.close - timedelta(seconds=30)
+                and not await self.broker.working_orders({s, l})):
+            # Still open and nothing working (the last attempt was rejected or failed):
+            # try again at the marketable price until the bell.
+            await self._log("QQQ spread still open after 15:55 with no working close; "
+                            "re-attempting", level="warning")
+            await self._close(plan, sess, checkpoint=False,
+                              deadline=plan.close - timedelta(seconds=20),
+                              cancel_at_deadline=False)
             return
         await self.clock.sleep(self.p.reprice_seconds)
 

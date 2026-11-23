@@ -92,7 +92,7 @@ async def _resume_active_workers() -> None:
             st = await session.get(StrategyState, strat.key)
             if (st and st.status in ("scanning", "active")
                     and strat.ready and not engine_manager.is_running(strat.key)
-                    and not strat.activation_block_reason()):
+                    and not strat.resume_block_reason()):
                 await engine_manager.start_worker(strat.key, run_strategy(strat))
                 logger.info("Resumed worker for %s (persisted status=%s)", strat.key, st.status)
 

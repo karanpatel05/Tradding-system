@@ -123,7 +123,12 @@ async def test_activate_endpoint_refuses_with_409_when_blocked(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_blocked_strategy_is_reset_and_never_resumed(monkeypatch):
+async def test_worker_that_was_on_resumes_even_when_activation_is_blocked(monkeypatch):
+    """A transient refusal at boot (routing not yet read, ps unreadable, model briefly
+    missing) must never switch off a worker that may be holding a spread: it resumes,
+    and its runner gates only NEW entries."""
+    import asyncio
+
     from app.config import get_settings
     from app.db.base import init_db, session_scope
     from app.db.models import StrategyState
@@ -131,13 +136,34 @@ async def test_blocked_strategy_is_reset_and_never_resumed(monkeypatch):
     from app.main import _resume_active_workers
 
     monkeypatch.setattr(get_settings(), "enable_live_orders", False)
+    strat = registry.get_strategy(KEY)
+    assert strat.activation_block_reason()           # blocked for a NEW activation
+    started = asyncio.Event()
+
+    async def fake_run_live():
+        started.set()
+        await asyncio.sleep(3600)
+    monkeypatch.setattr(strat, "run_live", fake_run_live)
     await init_db()
     await registry.seed_strategy_state()
     async with session_scope() as s:
         (await s.get(StrategyState, KEY)).status = "scanning"
     await registry.seed_strategy_state()
     async with session_scope() as s:
-        assert (await s.get(StrategyState, KEY)).status == "idle"
-        (await s.get(StrategyState, KEY)).status = "active"
+        assert (await s.get(StrategyState, KEY)).status == "scanning"   # not reset
     await _resume_active_workers()
-    assert not engine_manager.is_running(KEY)
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        assert engine_manager.is_running(KEY)
+    finally:
+        await engine_manager.stop_worker(KEY)
+        async with session_scope() as s:
+            (await s.get(StrategyState, KEY)).status = "idle"
+
+
+def test_resume_refused_only_for_invalid_settings(tmp_path, model_dir):
+    good = _strategy(tmp_path, model_dir)
+    assert good.resume_block_reason() is None
+    bad = QqqCreditSpreadStrategy(live_dir=tmp_path, params=QqqSpreadParams(
+        model_dir=str(model_dir), reprice_seconds=0))
+    assert "Invalid" in bad.resume_block_reason()

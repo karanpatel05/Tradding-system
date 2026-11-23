@@ -70,5 +70,5 @@ async def seed_strategy_state() -> None:
                 # A blocked strategy (e.g. one that runs outside this app) must never
                 # come back up as active from a persisted status.
                 if (state and state.status in ("scanning", "active", "paused")
-                        and strat.activation_block_reason()):
+                        and strat.resume_block_reason()):
                     state.status = "idle"

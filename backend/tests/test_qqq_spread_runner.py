@@ -79,6 +79,7 @@ class FakeBroker:
         self.submits: list[dict] = []
         self.cancels: list[str] = []
         self.on_submit = None          # test hook: called after each submit
+        self.fail_leg_q = 0            # make the next N ledger reads raise
 
     def routing_block(self):
         return self.routing
@@ -127,6 +128,9 @@ class FakeBroker:
         return dict(o)
 
     async def leg_quantities(self, s, l):
+        if self.fail_leg_q:
+            self.fail_leg_q -= 1
+            raise RuntimeError("Alpaca ledger read timed out")
         return max(0, -self.net.get(s, 0)), max(0, self.net.get(l, 0))
 
     async def working_orders(self, symbols):
@@ -367,3 +371,53 @@ async def test_stopping_the_worker_cancels_its_working_order(model_dir):
     with pytest.raises(asyncio.CancelledError):
         await task
     assert broker.orders["o1"]["status"] == "canceled"
+
+
+async def run_like_forever(r, clock, until, max_steps=600):
+    """run_forever's error handling (log, back off, retry) without the endless loop."""
+    from app.strategies.qqq_credit_spread.runner import ERROR_BACKOFF
+    await r.startup()
+    for _ in range(max_steps):
+        if clock.now() >= until:
+            return
+        try:
+            await r.step()
+        except Exception:  # noqa: BLE001
+            await clock.sleep(ERROR_BACKOFF)
+    raise AssertionError("runner did not reach the target time")
+
+
+@pytest.mark.asyncio
+async def test_ledger_errors_at_entry_settle_and_final_close_still_end_flat(model_dir):
+    clock = FakeClock(PLAN.entry + timedelta(seconds=5))
+    feed = FakeFeed(clock, day_bars())
+    broker = FakeBroker(feed)
+    r = make(clock, feed, broker, p=0.2, model_dir=model_dir)
+    broker.fail_leg_q = 1                     # the read right after the entry fill fails
+    await run_like_forever(r, clock, PLAN.entry + timedelta(minutes=12))
+    sess = await store.get_session(KEY, DAY)
+    assert sess["status"] == "open", sess     # resolved on the next step, not re-entered
+    assert len([o for o in broker.submits if o["opening"]]) == 1
+    assert [t.status for t in await trades()] == ["open", "open"]
+
+    await run_like_forever(r, clock, PLAN.final_close - timedelta(seconds=1))
+    broker.fail_leg_q = 1                     # the final close's first ledger read fails
+    await run_like_forever(r, clock, PLAN.close)
+    sess = await store.get_session(KEY, DAY)
+    assert sess["status"] == "closed", sess
+    assert broker.net == {SHORT: 0, LONG: 0}
+    assert all(t.status == "closed" for t in await trades())
+
+
+@pytest.mark.asyncio
+async def test_entry_guard_blocks_new_entries_only(model_dir):
+    clock = FakeClock(PLAN.entry + timedelta(seconds=5))
+    feed = FakeFeed(clock, day_bars())
+    broker = FakeBroker(feed)
+    r = make(clock, feed, broker, model_dir=model_dir)
+    r.entry_guard_fn = lambda: "com.karan.spreadlive still runs with --alpaca-paper"
+    await r.startup()
+    await r.step()
+    sess = await store.get_session(KEY, DAY)
+    assert sess["status"] == "skipped" and "--alpaca-paper" in sess["reason"]
+    assert broker.submits == []

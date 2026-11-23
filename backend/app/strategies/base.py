@@ -81,9 +81,16 @@ class BaseStrategy(ABC):
         return None
 
     def activation_block_reason(self) -> str | None:
-        """Why this (ready) strategy must not run in this app right now, or None.
-        Non-None refuses activation (409) and skips auto-resume at boot."""
+        """Why this (ready) strategy must not be switched ON right now, or None.
+        Non-None refuses activation (409)."""
         return None
+
+    def resume_block_reason(self) -> str | None:
+        """Why a strategy that WAS on must not be restarted at boot, or None. Defaults
+        to the activation check. A strategy that can hold positions overrides it so a
+        transient refusal never strands an open position (its runner then gates new
+        entries itself while exits keep running)."""
+        return self.activation_block_reason()
 
     # --- engine hooks (implemented by ready strategies) -------------------
     @abstractmethod

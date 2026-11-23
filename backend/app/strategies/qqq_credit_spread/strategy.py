@@ -100,6 +100,20 @@ class QqqCreditSpreadStrategy(BaseStrategy):
             check_metadata(p.model_dir, p.max_model_age_days)
         except ModelUnavailable as exc:
             return f"Checkpoint model unavailable: {exc}."
+        return self._entry_guard()
+
+    def resume_block_reason(self) -> str | None:
+        """A QQQ worker that was on always resumes (unless its settings are invalid):
+        a refusal here could strand an open spread past 15:55. The runner re-checks
+        routing, the daemon's paper copy and the model before each NEW entry, and its
+        exits always run."""
+        errs = self.params.validate()
+        return f"Invalid QQQ spread settings: {'; '.join(errs)}." if errs else None
+
+    def _entry_guard(self) -> str | None:
+        """Extra checks before each new entry (the runner calls this at 10:30)."""
+        if (why := self._daemon_paper_copy()) is not None:
+            return why
         try:
             import sklearn  # noqa: F401
         except ImportError:
@@ -121,7 +135,8 @@ class QqqCreditSpreadStrategy(BaseStrategy):
             self.key, p, TastytradeSpreadFeed(), AlpacaSpreadBroker(self.key), RealClock(),
             store=store, capital_fn=self._capital,
             model_loader=lambda: load_model(p.model_dir, p.max_model_age_days),
-            safe_mode_fn=is_safe_mode, alert_fn=send_alert, log_fn=log_event)
+            safe_mode_fn=is_safe_mode, alert_fn=send_alert, log_fn=log_event,
+            entry_guard_fn=self._entry_guard)
 
     async def run_live(self) -> None:
         """Engine entry point (dispatched first by ``engine.worker.run_strategy``)."""
