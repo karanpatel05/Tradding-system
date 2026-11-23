@@ -81,6 +81,12 @@ class Settings(BaseSettings):
     history_cache_dir: str = str(_BASE_DIR / "data_cache")
     history_cache_ttl_hours: float = 12.0
 
+    # Deep local price history for the Chart screen: 1-minute bars in a SQLite file,
+    # filled from Alpaca by a background job. Only the process with
+    # MARKET_HISTORY_SYNC=true writes the file; the API only reads it.
+    market_history_path: str = str(_BASE_DIR / "market_history.db")
+    market_history_sync: bool = False
+
     # When set (the web/hosted run mode sets FRONTEND_DIST), the API also serves the built
     # React app from this directory at "/" with SPA fallback. Empty in dev (Vite serves UI).
     frontend_dist: str = ""
