@@ -7,11 +7,15 @@ or the engine requires auth.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth.gate import require_auth
+from app.history.service import DEFAULT_LIMIT, HistoryRequestError, get_history
+from app.history.sync import history_status
 from app.services.chart_data import ChartDataError, get_bars, get_quotes
 from app.engine.execution import flatten_all
 from app.engine.manager import engine_manager
@@ -44,6 +48,25 @@ async def market_bars(symbol: str, interval: str = "5m") -> dict:
     try:
         return await get_bars(symbol, interval)
     except ChartDataError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/market/history/status")
+async def market_history_status() -> dict:
+    """Per-symbol coverage and sync state of the local price history."""
+    return await asyncio.to_thread(history_status)
+
+
+@router.get("/market/history")
+async def market_history(symbol: str, interval: str = "5m", before: int | None = None,
+                         after: int | None = None, around: date | None = None,
+                         limit: int = DEFAULT_LIMIT) -> dict:
+    """Paged deep history for the Chart screen: newest page, or one page before/after a
+    bar time, or centred on a date (snapped to the nearest available bars)."""
+    try:
+        return await get_history(symbol, interval, before=before, after=after,
+                                 around=around, limit=limit)
+    except HistoryRequestError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
