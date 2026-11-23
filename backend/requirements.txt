@@ -22,3 +22,4 @@ APScheduler==3.11.2
 
 # WebSockets (pulled in by uvicorn[standard], pinned for clarity)
 websockets==16.0
+scikit-learn==1.9.1  # QQQ spread checkpoint model (must match the training version)

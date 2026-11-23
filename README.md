@@ -161,25 +161,33 @@ the service serves your frontend changes.
 
 ## Strategies
 
-**QQQ First-Hour Credit Spread** (`qqq_credit_spread`) is the strategy that is live on
-this computer. It runs **outside this app**, from `~/live_system_maintenance/live`, under
-the `com.karan.spreadlive` LaunchAgent (real Tastytrade orders plus an Alpaca paper copy).
-The app lists its rules and a read-only status card: whether the service is running, plus
-today's entry, 15:30 check, final close and spread, read from the runner's
-`state/live_state.json`. It is **switched off here** while this app is in development:
+**QQQ First-Hour Credit Spread** (`qqq_credit_spread`) runs **in this app on the Alpaca
+paper account**; Tastytrade supplies market data only. Code:
+`backend/app/strategies/qqq_credit_spread/`. Its rules are a port of the external runner
+(`~/live_system_maintenance/live`, `com.karan.spreadlive`), checked for parity against that
+runner's own functions and model (`backend/tests/test_qqq_spread_logic.py`).
 
-- Activation always returns `409`. While the runner holds its lock, the reason says it is
-  already running. Otherwise it says in-app execution is not built yet. Allocation,
-  direction and backtest controls are refused or hidden for it.
-- It is never auto-resumed at boot, and a persisted active status is reset to idle.
-- The app never imports the runner or writes its state, lock or credentials. The app's
-  emergency stop does not stop it.
-- Set `QQQ_SPREAD_LIVE_DIR` to point at a different runner folder (default
-  `~/live_system_maintenance/live`).
-
-Running it in-app later means porting two-leg spread execution into the engine (which
-today places equity orders only) and lifting the block in
-`backend/app/strategies/qqq_credit_spread/strategy.py`.
+- **10:30 ET entry.** Reads the completed first hour (Tastytrade 1-minute candles): green
+  sells a $1 put spread, red a call spread, flat skips. The limit credit is the live option
+  mid, re-priced every 15 s (cancel-confirmed, then a fresh tagged order); unfilled at
+  10:40 it is cancelled.
+- **15:30 checkpoint.** The runner's deployed model (`models/current/QQQ`, scikit-learn,
+  reloaded each day so weekly retrains apply) predicts the chance the short strike finishes
+  ITM; strictly above its threshold (90%) it closes.
+- **15:50 sweep.** Anything left closes, walking the limit from mid to marketable, aiming to
+  be flat by 15:55 (half days: 12:30 / 12:50 / 12:55).
+- **Sizing:** one spread per $1,000 allocated (the first at $500), capped at
+  `QQQ_SPREAD_MAX_CONTRACTS` (1 while testing). No allocation, no trade.
+- **Safety:** every order goes through the app's tagged, paper-locked Alpaca path, and every
+  open/closed decision reads what the app's own tagged orders filled. The day's session row
+  is written before any order, so a restart never enters twice; a restart mid-entry cancels
+  the resting order and trusts the broker. Stopping the worker cancels its working order.
+- **Activation is refused** while `ENABLE_LIVE_ORDERS` is off (it never runs on simulated
+  fills), without Alpaca keys or a usable model, or while `com.karan.spreadlive` runs with
+  `--alpaca-paper`: that paper copy uses the same Alpaca paper account and closes by the
+  positions Alpaca reports. The daemon may keep trading real money on Tastytrade.
+- Sessions: `GET /api/strategies/qqq_credit_spread/sessions`. Settings: `QQQ_SPREAD_*` in
+  `backend/app/config.py` (model dir, grace, re-price cadence, close times, sizing).
 
 **XSP 0DTE Iron Fly** (`xsp_iron_fly`) runs **in this app on simulated fills**. It sells a
 10-point-wide XSP iron fly at 09:45 ET, gives each short leg its own 1.5x stop, and holds the
