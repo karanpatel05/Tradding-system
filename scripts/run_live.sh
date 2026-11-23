@@ -57,4 +57,6 @@ fi
 export DATABASE_URL="sqlite+aiosqlite:///$REPO/backend/trading.db"
 export HISTORY_CACHE_DIR="$REPO/backend/data_cache"
 export SESSION_STORE_PATH="$REPO/backend/.session_store.json"
+export MARKET_HISTORY_PATH="$REPO/backend/market_history.db"
+export MARKET_HISTORY_SYNC=true
 exec /bin/bash "$LIVE/scripts/run_web.sh"

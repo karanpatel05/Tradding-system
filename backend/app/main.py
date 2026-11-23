@@ -55,6 +55,10 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(refresher())
     from app.services.alpaca_status import alpaca_refresher
     asyncio.create_task(alpaca_refresher())
+    if settings.market_history_sync:
+        from app.history.store import get_store
+        from app.history.sync import HistorySync, run_forever
+        asyncio.create_task(run_forever(HistorySync(get_store())))
     yield
     logger.info("Shutting down")
 

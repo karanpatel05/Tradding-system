@@ -159,6 +159,26 @@ Logs go to `~/Library/Logs/trading-system.{out,err}.log`. The plist doesn't set
 after moving the repo. Rebuild the UI (`cd frontend && npm run build`) before restarting so
 the service serves your frontend changes.
 
+## Chart history
+
+The Chart screen reads deep price history from a local SQLite file, `backend/market_history.db`
+(git-ignored): 1-minute bars for SPY, QQQ, TSLA and NVDA from 2022-01-03 (04:00-20:00 ET,
+split-adjusted, from Alpaca market data) plus daily bars built from the regular session.
+Two env vars control it:
+
+- `MARKET_HISTORY_PATH` - location of the history file (default `backend/market_history.db`).
+- `MARKET_HISTORY_SYNC` - `true` makes this process download and keep the file current
+  (only the background service sets it; a lock file next to the database keeps a second
+  process from syncing). Defaults to `false`.
+
+The first sync backfills in the background and resumes where it left off after a restart.
+`scripts/run_live.sh` sets both vars, and the LaunchAgent runs an installed copy of it, so after
+deploying re-run the installer once (use `RUN_WEB_HOST=0.0.0.0` if you serve the LAN):
+
+```bash
+RUN_WEB_HOST=0.0.0.0 ./scripts/install_autostart.sh
+```
+
 ## Strategies
 
 **QQQ First-Hour Credit Spread** (`qqq_credit_spread`) is the strategy that is live on
