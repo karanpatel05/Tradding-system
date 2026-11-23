@@ -313,6 +313,12 @@ code {
 .operator-metrics .stat:last-child {
   border-right: 0;
 }
+.operator-metrics.has-feature {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+.stat-pct {
+  font-weight: 600;
+}
 .operator-grid {
   display: grid;
   grid-template-columns: minmax(0, 2.25fr) minmax(270px, 1fr);
@@ -1020,8 +1026,7 @@ tr.leg-selected td {
   }
   .operator-metrics .stat:nth-last-child(-n + 2) {
     border-bottom: 0;
-  }
-  .operator-secondary {
+  }  .operator-secondary {
     display: block;
   }
   .card {
@@ -1109,5 +1114,42 @@ tr.leg-selected td {
     animation: none !important;
     transition: none !important;
     scroll-behavior: auto !important;
+  }
+}
+
+/* Overview metrics with a featured tile (Portfolio YTD return). Five tiles
+   fit side by side only on wide screens; below that the featured tile takes
+   the first row and the other four sit under it. */
+@media (max-width: 1250px) {
+  .operator-metrics.has-feature {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .operator-metrics.has-feature .stat-feature {
+    grid-column: 1 / -1;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 16px;
+    margin-bottom: 16px;
+  }
+}
+@media (max-width: 760px) {
+  /* Featured row, then a 2x2 grid whose right-hand column is the odd children. */
+  .operator-metrics.has-feature {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: 0;
+  }
+  .operator-metrics.has-feature .stat {
+    padding: 16px;
+    margin-bottom: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .operator-metrics.has-feature .stat:nth-child(even) {
+    border-right: 1px solid var(--border);
+  }
+  .operator-metrics.has-feature .stat:nth-child(odd) {
+    border-right: 0;
+  }
+  .operator-metrics.has-feature .stat:nth-last-child(-n + 2) {
+    border-bottom: 0;
   }
 }

@@ -5,10 +5,16 @@ const money = (n) =>
   n == null
     ? "—"
     : Number(n).toLocaleString("en-US", { style: "currency", currency: "USD" });
-const tone = (n) => (n == null ? "" : n >= 0 ? "pos" : "neg");
-function Stat({ label, value, sub, color = "" }) {
+const tone = (n) => (n > 0 ? "pos" : n < 0 ? "neg" : "");
+const signed = (n, text) => (n > 0 ? `+${text}` : text);
+
+// Equity the account started the year with. YTD return is measured against it,
+// so deposits or withdrawals would show up as return.
+const STARTING_EQUITY = 100000;
+
+function Stat({ label, value, sub, color = "", className = "" }) {
   return (
-    <div className="stat">
+    <div className={`stat ${className}`.trim()}>
       <div className="stat-label">{label}</div>
       <div className={`stat-value ${color}`}>{value}</div>
       <div className="stat-sub muted">{sub}</div>
@@ -34,6 +40,9 @@ export default function Dashboard({
   );
   const acct = snapshot?.account || account;
   const hasSnapshot = snapshot != null;
+  const netLiq = acct?.net_liquidation;
+  const ytdReturn = netLiq == null ? null : Number(netLiq) - STARTING_EQUITY;
+  const ytdPct = ytdReturn == null ? null : (ytdReturn / STARTING_EQUITY) * 100;
   return (
     <div className="dashboard">
       <header className="page-head">
@@ -61,7 +70,24 @@ export default function Dashboard({
         </div>
       )}
       <MarketOverview snapshot={feedConnected ? snapshot : null} />
-      <div className="stat-strip operator-metrics">
+      <div className="stat-strip operator-metrics has-feature">
+        <Stat
+          className="stat-feature"
+          label="Portfolio YTD return"
+          value={ytdReturn == null ? "—" : signed(ytdReturn, money(ytdReturn))}
+          sub={
+            <>
+              {ytdPct != null && (
+                <b className={`stat-pct ${tone(ytdPct)}`}>
+                  {signed(ytdPct, `${ytdPct.toFixed(2)}%`)}
+                </b>
+              )}
+              {ytdPct != null && " · "}
+              from ${STARTING_EQUITY.toLocaleString("en-US")} start
+            </>
+          }
+          color={tone(ytdReturn)}
+        />
         <Stat
           label="Net liquidation"
           value={money(acct?.net_liquidation)}
