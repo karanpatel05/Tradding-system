@@ -95,6 +95,7 @@ export function useHistoryBars(symbol, interval) {
     return api.marketHistory({ symbol, interval, limit: PAGE, ...params }).then(r => {
       if (g !== gen.current) return;
       if (!params.around && !historyUsable(r, Date.now())) {
+        atLive.current = true; // fallback is the newest view: keep the poll retrying the newest page
         setState({ ...NO_HISTORY, fallback: true, note: r.note || "Local history is not current yet." });
         return;
       }
