@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../../api.js";
 import { aggregate, normalizeBars, weekly } from "./chartMath.js";
 import { getBars } from "./chartData.js";
-import { HISTORY_SYMBOLS, cursorMatches, historyUsable, mergePage } from "./historyPaging.js";
+import { HISTORY_SYMBOLS, cursorMatches, historyUsable, mergePage, reachedNewest } from "./historyPaging.js";
 
 // Chart intervals mapped to the candle interval the feed serves and how many of
 // those make one chart bar. The feed has 1m/5m/15m/1d; 30m and 1h are built from 15m.
@@ -99,7 +99,7 @@ export function useHistoryBars(symbol, interval) {
         return;
       }
       if (!(r.bars || []).length) throw new Error(r.note || "No history bars returned.");
-      atLive.current = !params.around;
+      atLive.current = !params.around || !r.has_more_after; // a date page that already ends at the newest bar is live
       setState({ bars: normalizeBars(r.bars || []), live: true, stale: false, note: r.note || null,
         earliest: r.earliest ?? null, hasMoreBefore: !!r.has_more_before, hasMoreAfter: !!r.has_more_after,
         appended: 0, focusTime });
@@ -141,6 +141,7 @@ export function useHistoryBars(symbol, interval) {
       const page = normalizeBars(r.bars || []);
       setState(p => {
         if (!cursorMatches(p.bars, side, cursor)) return p;
+        if (reachedNewest(side, r)) atLive.current = true; // back at the newest bars: resume the re-poll
         const bars = mergePage(p.bars, page, side);
         return side === "before"
           ? { ...p, bars, hasMoreBefore: !!r.has_more_before, earliest: r.earliest ?? p.earliest, stale: false, note: r.note || null, appended: 0 }

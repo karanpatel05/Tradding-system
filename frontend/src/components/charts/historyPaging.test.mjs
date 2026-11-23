@@ -1,5 +1,5 @@
 // Plain-node test (no runner configured). Run: node frontend/src/components/charts/historyPaging.test.mjs
-import { HISTORY_SYMBOLS, cursorMatches, historyUsable, mergePage, offsetAfterAppend, shouldLoad } from "./historyPaging.js";
+import { HISTORY_SYMBOLS, cursorMatches, historyUsable, mergePage, offsetAfterAppend, reachedNewest, shouldLoad } from "./historyPaging.js";
 
 const eq = (a, b, msg) => {
   if (a !== b) { console.error(`FAIL: ${msg} — got ${a}, want ${b}`); process.exit(1); }
@@ -59,4 +59,9 @@ eq(cursorMatches([], "after", 12), false, "no bars rejects");
   eq(historyUsable(resp("1W", now - 21 * D), now), false, "1W three weeks old is stale");
   eq(historyUsable(resp("1D", now - 6 * D), now), false, "1D six days old is stale");
 }
+// reachedNewest (F8): paging right after go-to-date until the store has no newer bars resumes the live re-poll.
+eq(reachedNewest("after", { has_more_after: false }), true, "last after-page reaches the newest bars");
+eq(reachedNewest("after", { has_more_after: true }), false, "more newer bars stored");
+eq(reachedNewest("before", { has_more_after: false }), false, "a before-page never resumes live");
+eq(reachedNewest("after", null), false, "no response");
 console.log("historyPaging tests passed");

@@ -49,3 +49,9 @@ export function historyUsable(resp, nowMs) {
   if (!resp || !(resp.bars || []).length || !Number.isFinite(resp.latest)) return false;
   return nowMs - (resp.latest + (BAR_SPAN_MS[resp.interval] || 0)) <= HISTORY_STALE_MS;
 }
+
+// Did a loadMore page bring the chart up to the newest stored bar? Then the newest-page re-poll may resume
+// (after go-to-date, paging right to the present must not leave the chart frozen).
+export function reachedNewest(side, resp) {
+  return side === "after" && !!resp && !resp.has_more_after;
+}
