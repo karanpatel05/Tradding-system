@@ -89,7 +89,7 @@ function ChartPane({index, pane, selected, tool, positions, settings, onSettings
   drawingProps, selectedDrawing, onDrawingChange, onDrawingDelete, onDrawingCopy, onDrawingAlert, onEditStudy, onSearch, onContextMenu}) {
   const data = usePaneBars(pane.symbol, pane.interval, !selected);
   const {live, stale, note} = data;
-  const history = HISTORY_SYMBOLS.includes(pane.symbol);
+  const history = HISTORY_SYMBOLS.includes(pane.symbol) && !!data.goToDate; // false while a stored symbol falls back to the feed
   const behind = !!data.hasMoreAfter; // history symbols only: newer bars are stored but not loaded, so the pane is not at the newest bar
   // Live trades accumulate into the newest candle (open stays the first live price, high/low widen) while the
   // pane shows the newest bars. New stored bars rebase the live state; each tick is folded once (deduped by ts).

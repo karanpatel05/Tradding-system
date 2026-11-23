@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../../api.js";
 import { aggregate, normalizeBars, weekly } from "./chartMath.js";
 import { getBars } from "./chartData.js";
-import { HISTORY_SYMBOLS, cursorMatches, mergePage } from "./historyPaging.js";
+import { HISTORY_SYMBOLS, cursorMatches, historyUsable, mergePage } from "./historyPaging.js";
 
 // Chart intervals mapped to the candle interval the feed serves and how many of
 // those make one chart bar. The feed has 1m/5m/15m/1d; 30m and 1h are built from 15m.
@@ -69,6 +69,8 @@ const NO_HISTORY = { bars: null, live: false, stale: false, note: null, earliest
 // newest bars it re-polls so stored minutes from the background sync appear. `appended` is
 // the count added on the right by the last loadMore("after"); `focusTime` is the ms of the
 // last goToDate. A response that lands after symbol/interval/view changed is discarded.
+// `fallback` is set while the store has nothing recent to show (empty, stale or unreachable): the
+// pane then uses the live feed loader, and this hook keeps retrying the newest page until it is usable.
 export function useHistoryBars(symbol, interval) {
   const [state, setState] = useState(NO_HISTORY);
   const cur = useRef(state);
@@ -83,7 +85,7 @@ export function useHistoryBars(symbol, interval) {
     const note = e.status === 401 ? "Market data needs the app access token (Connections)."
       : e.message || "History request failed.";
     setState(s => s.bars && s.live ? { ...s, stale: true, note, appended: 0 }
-      : { ...NO_HISTORY, bars: getBars(symbol, interval), note });
+      : { ...NO_HISTORY, fallback: true, note });
   };
   // Replace the loaded bars with a fresh page (newest, or around a date).
   const load = (params, focusTime) => {
@@ -92,6 +94,10 @@ export function useHistoryBars(symbol, interval) {
     replacing.current = true;
     return api.marketHistory({ symbol, interval, limit: PAGE, ...params }).then(r => {
       if (g !== gen.current) return;
+      if (!params.around && !historyUsable(r, Date.now())) {
+        setState({ ...NO_HISTORY, fallback: true, note: r.note || "Local history is not current yet." });
+        return;
+      }
       if (!(r.bars || []).length) throw new Error(r.note || "No history bars returned.");
       atLive.current = !params.around;
       setState({ bars: normalizeBars(r.bars || []), live: true, stale: false, note: r.note || null,
@@ -150,12 +156,15 @@ export function useHistoryBars(symbol, interval) {
   return { ...state, loadMore, goToDate, backToLive };
 }
 
-// Six stored symbols page through the history API; others keep the live feed polling.
+// Six stored symbols page through the history API; others keep the live feed polling. Until the store has
+// recent bars (first backfill, sync off, Alpaca keys rejected) the six use the live feed loader too, without
+// scroll-back or go-to-date (the feed state has no paging fields).
 export function usePaneBars(symbol, interval, background = false) {
   const history = HISTORY_SYMBOLS.includes(symbol);
-  const feed = useBars(history ? null : symbol, interval, background);
   const paged = useHistoryBars(history ? symbol : null, interval);
-  return history ? paged : feed;
+  const useFeed = !history || !!paged.fallback;
+  const feed = useBars(useFeed ? symbol : null, interval, background);
+  return useFeed ? feed : paged;
 }
 
 // Watchlist quotes. Keeps the last live quotes (marked stale) when a refresh fails;

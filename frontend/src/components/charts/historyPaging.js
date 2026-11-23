@@ -35,3 +35,17 @@ export function cursorMatches(bars, side, cursor) {
   if (!bars || !bars.length) return false;
   return (side === "before" ? bars[0].time : bars.at(-1).time) === cursor;
 }
+
+const DAY_MS = 24 * 3600e3;
+// The response's `latest` is a bar START for 1D/1W (the last session's 09:30 / the week's first day), so those
+// bars stay current for a day / a week past it. Intraday `latest` is the last stored minute.
+const BAR_SPAN_MS = { "1D": DAY_MS, "1W": 7 * DAY_MS };
+// Longer than the longest normal market closure (Fri 20:00 ET to Tue 04:00 ET after a Monday holiday).
+export const HISTORY_STALE_MS = 4 * DAY_MS;
+
+// Is a newest-page history response worth showing? Not when the store has no bars yet (first backfill, sync off,
+// Alpaca keys rejected) or its newest bar is days old: the pane then uses the live feed loader instead.
+export function historyUsable(resp, nowMs) {
+  if (!resp || !(resp.bars || []).length || !Number.isFinite(resp.latest)) return false;
+  return nowMs - (resp.latest + (BAR_SPAN_MS[resp.interval] || 0)) <= HISTORY_STALE_MS;
+}
