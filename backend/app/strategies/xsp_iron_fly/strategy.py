@@ -1,6 +1,6 @@
 """XSP 0DTE iron fly: the registry-facing strategy. The trading logic lives in
 ``runner.IronFlyRunner``; this class wires it to the live feed, the simulated executor
-and the app's capital allocation, safe mode and alerts."""
+the strategy's own equity (starting equity + realized P&L), safe mode and alerts."""
 from __future__ import annotations
 
 from app.strategies.base import BaseStrategy, Candidate
@@ -34,8 +34,9 @@ class XspIronFlyStrategy(BaseStrategy):
         "never stopped; no profit target, no adjustment.",
         "Everything else is held to the 4:00 pm cash settlement at intrinsic (no assignment "
         "risk). Optional: flatten at 15:58 instead.",
-        "Size: 1 fly per $5,000 allocated, capped by max loss vs allocation, by "
-        "max_daily_loss and by max_contracts (default 1).",
+        "Size: 1 fly per $5,000 of equity (starting equity $5,000 plus the strategy's "
+        "realized P&L), never below 1 while equity covers one fly's max loss. No "
+        "contract cap; the daily-loss limit is $1,000 per fly sized that day.",
         "Skip entry on a stale XSP quote, a leg spread over max_leg_spread, too little "
         "time to an early close, holidays, SAFE_MODE or a daily-loss halt.",
     ]
@@ -102,19 +103,18 @@ class XspIronFlyStrategy(BaseStrategy):
         clock = RealClock()
         executor = SimExecutor(feed, clock) if p.mode == "sim" else LiveExecutorUnavailable()
         return IronFlyRunner(self.key, p, feed, executor, clock,
-                             capital_fn=self._capital, safe_mode_fn=is_safe_mode,
+                             equity_fn=self._equity, safe_mode_fn=is_safe_mode,
                              alert_fn=send_alert)
 
     async def run_live(self) -> None:
         """Engine entry point (dispatched first by ``engine.worker.run_strategy``)."""
         await self.build_runner().run_forever()
 
-    async def _capital(self) -> float:
-        from app.db.base import session_scope
-        from app.db.models import StrategyState
-        async with session_scope() as s:
-            st = await s.get(StrategyState, self.key)
-            return float(st.capital_allocation or 0.0) if st else 0.0
+    async def _equity(self) -> float:
+        """Sizing equity: starting equity + every finished session's realized P&L
+        (net of fees). Sessions with an unknown result (kill switch) count as 0."""
+        from app.strategies.xsp_iron_fly import store
+        return self.params.starting_equity + await store.realized_total(self.key)
 
     async def status_view(self) -> dict:
         from app.strategies.xsp_iron_fly import store
@@ -142,4 +142,6 @@ class XspIronFlyStrategy(BaseStrategy):
             return out
 
         return {"mode": self.params.mode, "halt": await store.halt_reason(),
+                "equity": round(await self._equity(), 2),
+                "starting_equity": self.params.starting_equity,
                 "sessions": [view(s) for s in recent]}

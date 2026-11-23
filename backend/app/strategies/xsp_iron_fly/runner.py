@@ -44,13 +44,13 @@ def _iso(dt: datetime | None) -> str | None:
 
 class IronFlyRunner:
     def __init__(self, key: str, params: IronFlyParams, feed, executor, clock, *,
-                 capital_fn, safe_mode_fn, alert_fn=None) -> None:
+                 equity_fn, safe_mode_fn, alert_fn=None) -> None:
         self.key = key
         self.p = params
         self.feed = feed
         self.ex = executor
         self.clock = clock
-        self.capital_fn = capital_fn
+        self.equity_fn = equity_fn          # starting equity + realized P&L
         self.safe_mode_fn = safe_mode_fn
         self.alert_fn = alert_fn
         self._contracts: dict[date, list] = {}
@@ -348,15 +348,15 @@ class IronFlyRunner:
         if mid_c <= 0 or mid_c >= max(cw, pw):
             return None, f"implausible mid credit {mid_c:.2f} for {cw:g}/{pw:g} wings", False
         max_loss_est = L.max_loss_per_fly(cw, pw, nat_c, p.multiplier)
-        capital = float(await self.capital_fn() or 0.0)
-        sz = L.size_flies(capital, capital, max_loss_est, capital_per_fly=p.capital_per_fly,
-                          max_contracts=p.max_contracts, max_daily_loss=p.max_daily_loss)
+        equity = float(await self.equity_fn() or 0.0)
+        sz = L.size_flies(equity, max_loss_est, capital_per_fly=p.capital_per_fly,
+                          max_daily_loss_per_contract=p.max_daily_loss_per_contract)
         if sz.quantity == 0:
             return None, f"sizing: {sz.reason}", True
         return {"spot": spot.price, "spot_age": age, "body": body, "wings": wings,
                 "widths": (cw, pw), "legs": legs, "quotes": quotes, "mid_credit": mid_c,
                 "natural_credit": nat_c, "max_loss_est": max_loss_est,
-                "qty": sz.quantity, "sizing": sz.__dict__, "capital": capital,
+                "qty": sz.quantity, "sizing": sz.__dict__, "equity": equity,
                 "close": close_eff}, "", False
 
     async def _enter(self, d: date, close_dt: datetime) -> dict | None:
@@ -679,10 +679,15 @@ class IronFlyRunner:
         await store.save(s)
         await self._log(f"flattened remaining legs ({reason})", category="trade")
 
+    def _daily_loss_limit(self, s: dict) -> float:
+        """$ limit for the day: per-contract limit x the flies sized at entry."""
+        return self.p.max_daily_loss_per_contract * max(1, int(s.get("contracts") or 1))
+
     async def _breach(self, s: dict, net: float) -> None:
         s["daily_loss_breached"] = True
         msg = (f"max_daily_loss breached on {s['session_date']}: P&L {net:.2f} <= "
-               f"-{self.p.max_daily_loss:.2f}; new entries halted until cleared")
+               f"-{self._daily_loss_limit(s):.2f} (${self.p.max_daily_loss_per_contract:.0f} "
+               f"x {s['contracts']} fly); new entries halted until cleared")
         await store.set_halt(msg)
         await store.save(s)
         await self._log(msg, level="error")
@@ -735,7 +740,7 @@ class IronFlyRunner:
                 mtm = L.mark_to_market(s["legs"], marks, p.multiplier)
                 if mtm is not None:
                     net = mtm + float(s["extra_pnl"]) - float(s["fees"])
-                    if net <= -p.max_daily_loss:
+                    if net <= -self._daily_loss_limit(s):
                         await self._breach(s, net)
                         if p.flatten_on_daily_loss:
                             await self._flatten(s, "daily_loss")

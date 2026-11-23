@@ -196,10 +196,15 @@ rest to the 4:00 pm cash settlement. Code: `backend/app/strategies/xsp_iron_fly/
   to any broker. `XSP_FLY_MODE=live` refuses activation, because there's no live XSP order
   route (Alpaca has no verified index-option support, and this app never sends orders to
   Tastytrade). `ENABLE_LIVE_ORDERS` doesn't affect this strategy.
+- **Sizing.** 1 fly per $5,000 of the strategy's own equity: `starting_equity` ($5,000)
+  plus the realized P&L of all its finished sessions, net of fees. It never sizes below 1
+  fly while equity still covers one fly's max loss. There is no contract cap. The
+  Strategies-page capital allocation doesn't affect this strategy's size.
 - **Settings** are `XSP_FLY_*` in `backend/.env` (see `config.py`). Defaults:
-  `max_contracts=1`, `max_daily_loss=$1000` (this also caps sizing),
-  `max_leg_spread=0.15`, `max_quote_age=5s` and `min_minutes_to_close=240`, which skips
-  13:00 half days. Size comes from the strategy's capital allocation, at 1 fly per $5,000.
+  `starting_equity=5000`, `capital_per_fly=5000`, `max_daily_loss_per_contract=1000`
+  (the day's limit is this times the flies sized that day, and a fly whose max loss
+  exceeds it isn't traded), `max_leg_spread=0.15`, `max_quote_age=5s` and
+  `min_minutes_to_close=240`, which skips 13:00 half days.
 - **State.** Each trading day gets one `xsp_fly_sessions` row, unique per day and written
   before any order, plus one `TradeRecord` per leg. A restart never enters the same day
   twice, and it picks up open legs with their stop levels. The emergency stop closes the

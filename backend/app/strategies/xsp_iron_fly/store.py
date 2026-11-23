@@ -86,6 +86,16 @@ async def unfinished_before(key: str, d: date) -> list[dict]:
         return [_to_dict(r) for r in rows]
 
 
+async def realized_total(key: str) -> float:
+    """Sum of realized P&L ($, net of fees) over this strategy's finished sessions."""
+    from sqlalchemy import func
+    async with session_scope() as s:
+        v = (await s.execute(select(func.sum(XspFlySession.realized_pnl)).where(
+            XspFlySession.strategy_key == key,
+            XspFlySession.realized_pnl.is_not(None)))).scalar()
+        return float(v or 0.0)
+
+
 async def recent_sessions(key: str, limit: int = 10) -> list[dict]:
     async with session_scope() as s:
         rows = (await s.execute(select(XspFlySession).where(

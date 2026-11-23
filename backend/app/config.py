@@ -135,8 +135,10 @@ class Settings(BaseSettings):
     xsp_fly_stop_mult: float = 1.5               # per short leg
     xsp_fly_capital_per_fly: float = 5000.0
     xsp_fly_close_before_settlement: bool = False
-    xsp_fly_max_contracts: int = 1               # keep small until live results validate
-    xsp_fly_max_daily_loss: float = 1000.0       # $; halts entries and caps sizing
+    # Sizing: 1 fly per capital_per_fly of equity (min 1 while equity covers one fly's
+    # max loss), equity = starting equity + the strategy's cumulative realized P&L.
+    xsp_fly_starting_equity: float = 5000.0
+    xsp_fly_max_daily_loss_per_contract: float = 1000.0  # $ x flies that day; halts entries
     xsp_fly_flatten_on_daily_loss: bool = False
     xsp_fly_max_leg_spread: float = 0.15         # index points
     xsp_fly_max_quote_age: float = 5.0           # seconds

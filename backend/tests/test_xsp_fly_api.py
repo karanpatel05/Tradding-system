@@ -163,3 +163,25 @@ def test_feed_lookups_time_out_instead_of_stalling(monkeypatch):
     assert asyncio.run(f.contracts("XSP", d)) is None       # a miss, not cached
     assert ("XSP", d) not in f._contracts
     assert _time.monotonic() - t0 < 2.0
+
+
+def test_sizing_equity_is_starting_equity_plus_realized_pnl():
+    from datetime import date as _date
+
+    from app.db.base import init_db, session_scope
+    from app.db.models import XspFlySession
+    from app.strategies.xsp_iron_fly import XspIronFlyStrategy, store
+    from app.strategies.xsp_iron_fly.params import IronFlyParams
+    from sqlalchemy import delete
+
+    async def go():
+        await init_db()
+        async with session_scope() as s:
+            await s.execute(delete(XspFlySession).where(XspFlySession.strategy_key == KEY))
+        await store.create_session(KEY, _date(2026, 11, 23), status="settled", realized_pnl=1442.0)
+        await store.create_session(KEY, _date(2026, 11, 24), status="settled", realized_pnl=-339.5)
+        await store.create_session(KEY, _date(2026, 11, 25), status="killed")   # unknown: 0
+        strat = XspIronFlyStrategy(IronFlyParams(starting_equity=5000))
+        return await strat._equity(), (await strat.status_view())["equity"]
+    eq, shown = asyncio.run(go())
+    assert eq == pytest.approx(5000 + 1442 - 339.5) and shown == pytest.approx(6102.5)
