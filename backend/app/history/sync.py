@@ -27,6 +27,7 @@ _CHUNK = timedelta(days=30)              # one store write (and crash-resume poi
 _SIP_DELAY = timedelta(minutes=16)       # free plans may not query the latest 15 min of SIP
 _SPLIT_TOLERANCE = 0.0001
 _SPLIT_MIN_OVERLAP = 10
+_SPLIT_LOOKBACK_DAYS = 5                 # reference day for the daily split check, in trading days
 _MAX_BACKOFF = 900.0
 
 
@@ -114,15 +115,20 @@ class HistorySync:
         await self._store(self.store.set_state, symbol, status="ok", note="")
         return written
 
-    def _previous_trading_day(self, now: datetime) -> date:
-        d = now.astimezone(ET).date() - timedelta(days=1)
-        while not _is_trading_day(d):
+    def _reference_trading_day(self, now: datetime) -> date:
+        """The trading day _SPLIT_LOOKBACK_DAYS trading days before today (ET)."""
+        d = now.astimezone(ET).date()
+        for _ in range(_SPLIT_LOOKBACK_DAYS):
             d -= timedelta(days=1)
+            while not _is_trading_day(d):
+                d -= timedelta(days=1)
         return d
 
     async def check_splits(self, symbol: str) -> bool:
-        """Re-fetch the previous trading day; a changed stored close means a split."""
-        day = self._previous_trading_day(self._now())
+        """Re-fetch a trading day ~5 trading days back; changed stored closes mean a split.
+        Looking back several days (not just yesterday) means an adjustment Alpaca applies
+        a day or more after the ex-date is still caught on a later morning's check."""
+        day = self._reference_trading_day(self._now())
         open_ms = et_session_start_ms(day)
         close_ms = open_ms + 390 * _MINUTE_MS
         stored = {b["time"]: b["close"]

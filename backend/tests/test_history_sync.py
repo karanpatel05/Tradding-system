@@ -154,7 +154,7 @@ async def test_first_sync_after_restart_rechecks_last_20_minutes(store):
 @pytest.mark.asyncio
 async def test_split_triggers_full_redownload(store):
     now = datetime(2024, 3, 12, 15, 0, tzinfo=UTC)
-    t = et_session_start_ms(date(2024, 3, 11))
+    t = et_session_start_ms(date(2024, 3, 5))   # reference day: 5 trading days back
     old = [bar(t + i * MIN, 298.41 + i) for i in range(12)]
     store.upsert_minutes("TSLA", old)
     f = FakeFetch({"TSLA": [bar(b["time"], b["close"] / 10) for b in old]})
@@ -168,9 +168,28 @@ async def test_split_triggers_full_redownload(store):
 
 
 @pytest.mark.asyncio
+async def test_late_split_adjustment_is_caught_on_following_mornings(store):
+    """F5: ex-date Mon 2024-03-11. On the first morning Alpaca has not adjusted the older
+    days yet; the next morning it has. Comparing a day ~5 trading days back catches it
+    (the previous trading day, the ex-date itself, is post-split on both sides)."""
+    pre_days = [date(2024, 3, d) for d in (4, 5, 6, 7, 8)]
+    pre = [bar(et_session_start_ms(d) + i * MIN, 300.0 + i) for d in pre_days for i in range(12)]
+    post = [bar(et_session_start_ms(date(2024, 3, 11)) + i * MIN, 30.0 + i) for i in range(12)]
+    store.upsert_minutes("TSLA", pre + post)
+    ex_morning = datetime(2024, 3, 11, 13, 0, tzinfo=UTC)          # 09:00 ET on the ex-date
+    unadjusted = FakeFetch({"TSLA": pre + post})
+    assert await make_sync(store, unadjusted, ex_morning).check_splits("TSLA") is False
+    assert store.bounds("TSLA")[0] == pre[0]["time"]
+    next_morning = datetime(2024, 3, 12, 13, 0, tzinfo=UTC)
+    adjusted = FakeFetch({"TSLA": [bar(b["time"], b["close"] / 10) for b in pre] + post})
+    assert await make_sync(store, adjusted, next_morning).check_splits("TSLA") is True
+    assert store.bounds("TSLA") == (None, None)
+
+
+@pytest.mark.asyncio
 async def test_stale_iex_tail_is_not_a_split(store):
     now = datetime(2024, 3, 12, 15, 0, tzinfo=UTC)
-    t = et_session_start_ms(date(2024, 3, 11))
+    t = et_session_start_ms(date(2024, 3, 5))   # reference day: 5 trading days back
     stored = [bar(t + i * MIN, 100.0) for i in range(390)]
     fetched = [bar(b["time"], b["close"] * (1.0005 if i >= 374 else 1.0))
                for i, b in enumerate(stored)]
