@@ -134,4 +134,18 @@ eq(applyStudy(pane2, { id: "zz", type: "RSI", period: 21 })[1].id, "r", "replace
   eq(weekly(days.filter(b => sessionOf(b.time) !== "2026-11-04")).length, 2, "missing day (holiday) keeps the week one bar");
   eq(weekly(days.slice(4, 6)).length, 2, "Friday and next Monday are different weeks");
 }
+// F1: daily bars from /api/market/bars are stamped 09:30 ET of their session (across the
+// 2026-11-01 DST change: 13:30 UTC in EDT, 14:30 UTC in EST). Mon-Fri is one week, the next
+// Monday starts another. The old 00:00 UTC stamps read as the previous ET day (Sun-Thu).
+{
+  const et0930 = (m, d) => Date.UTC(2026, m, d, m === 9 ? 13 : 14, 30);
+  const mk = t => ({ time: t, open: 1, high: 2, low: 0.5, close: 1.5, volume: 1 });
+  const stamped = normalizeBars([[9, 26], [9, 27], [9, 28], [9, 29], [9, 30], [10, 2]].map(([m, d]) => mk(et0930(m, d))));
+  eq(stamped[0].session, "2026-10-26", "09:30 ET stamp keeps its own session date");
+  eq(weekly(stamped).length, 2, "Mon-Fri + next Monday = two weeks");
+  eq(weekly(stamped)[0].time, stamped[0].time, "week starts at Monday's bar");
+  const midnightUtc = normalizeBars([[9, 26], [9, 27], [9, 28], [9, 29], [9, 30]].map(([m, d]) => mk(Date.UTC(2026, m, d))));
+  eq(midnightUtc[0].session, "2026-10-25", "00:00 UTC stamp reads as the previous ET day");
+  eq(weekly(midnightUtc).length, 2, "00:00 UTC stamps split one Mon-Fri week in two (the defect F1 removes)");
+}
 console.log("chartMath: all tests passed");

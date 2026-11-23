@@ -68,4 +68,14 @@ eq(foldForInterval(bars, 10.5, T0 + 5 * M, "5m").length, 3, "5m opens a bar");
 eq(foldForInterval(bars, 12, T0 + 60 * M, "4h")[1].close, 12, "4h updates inside the bar");
 eq(foldForInterval(bars, 12, T0 + 5 * 3600e3, "4h"), bars, "4h leaves a new bar to the refresh");
 
+// F1: a 1D bar stamped 09:30 ET moves with a same-day tick; the old 00:00 UTC stamp (previous ET
+// day) never did, because foldForInterval saw the tick as another session.
+{
+  const open0930 = Date.UTC(2026, 10, 20, 14, 30), tick = Date.UTC(2026, 10, 20, 20, 0); // Fri 15:00 ET
+  const d1 = [{ ...bar(open0930, 10, 11, 9, 10), session: "2026-11-20" }];
+  eq(foldForInterval(d1, 12.5, tick, "1D")[0].close, 12.5, "09:30 ET daily bar moves with a same-day tick");
+  const old = [{ ...bar(Date.UTC(2026, 10, 20), 10, 11, 9, 10), session: "2026-11-19" }];
+  eq(foldForInterval(old, 12.5, tick, "1D"), old, "00:00 UTC stamp is another ET session (the defect F1 removes)");
+}
+
 console.log("liveCandle tests passed");

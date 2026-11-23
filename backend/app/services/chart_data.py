@@ -15,6 +15,7 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 
+from app.history.aggregate import et_session_start_ms
 from app.marketdata.facade import bars as facade_bars, stock_quotes as facade_stock_quotes
 
 logger = logging.getLogger("trading.chart_data")
@@ -85,6 +86,12 @@ async def get_bars(symbol: str, interval: str, now: float | None = None) -> dict
             result["note"] = "Market data feed temporarily unavailable."
             return result  # failures are not cached, so the next poll retries
         bars = [b for b in (_clean_bar(x) for x in raw or []) if b]
+        if interval == "1d":
+            # Tastytrade stamps daily candles 00:00 UTC, the previous evening in New York.
+            # Re-stamp to 09:30 ET of that date so the ET session/week of each bar is right.
+            for b in bars:
+                day = datetime.fromtimestamp(b["time"] / 1000, timezone.utc).date()
+                b["time"] = et_session_start_ms(day)
         bars.sort(key=lambda b: b["time"])
         result["bars"] = bars
         if not bars:
