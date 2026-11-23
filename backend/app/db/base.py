@@ -74,6 +74,13 @@ def _ensure_added_columns(conn) -> None:
         if "transmitted" not in existing:
             false = "0" if conn.dialect.name == "sqlite" else "FALSE"  # PG: no int->bool
             conn.execute(text(f"ALTER TABLE trades ADD COLUMN transmitted BOOLEAN DEFAULT {false}"))
+        # OCC option symbols need more than the original VARCHAR(16). SQLite does not
+        # enforce VARCHAR lengths; Postgres does, so widen it there (idempotent).
+        if conn.dialect.name == "postgresql":
+            sym = next((c for c in insp.get_columns("trades") if c["name"] == "symbol"), None)
+            if sym is not None and getattr(sym["type"], "length", None) not in (None,) \
+                    and sym["type"].length < 32:
+                conn.execute(text("ALTER TABLE trades ALTER COLUMN symbol TYPE VARCHAR(32)"))
     if "strategy_state" in tables:
         cols = {c["name"] for c in insp.get_columns("strategy_state")}
         if "direction" not in cols:

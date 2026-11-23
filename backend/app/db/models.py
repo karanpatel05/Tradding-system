@@ -57,7 +57,9 @@ class TradeRecord(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     strategy_key: Mapped[str] = mapped_column(String(32), index=True)
     account_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    # 32: OCC option symbols are 18+ chars (QQQ261123C00660000); a truncated symbol
+    # would never match the Alpaca ledger in reconciliation.
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
     side: Mapped[str] = mapped_column(String(8))  # buy | sell
     quantity: Mapped[float] = mapped_column(Float, default=0.0)
     entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -240,6 +242,30 @@ class XspFlySession(Base):
     reconciliation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     entry_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     closed_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
+class QqqSpreadSession(Base):
+    """One QQQ first-hour credit-spread trading day (in-app, Alpaca PAPER). The unique
+    (strategy_key, session_date) row is the idempotency key: written BEFORE any order,
+    so a day is never entered twice; ``data`` carries the signal, orders, checkpoint
+    decision and closes, and the leg TradeRecord ids."""
+
+    __tablename__ = "qqq_spread_sessions"
+    __table_args__ = (UniqueConstraint("strategy_key", "session_date",
+                                       name="uq_qqq_spread_day"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    strategy_key: Mapped[str] = mapped_column(String(32), index=True)
+    session_date: Mapped[date] = mapped_column(Date, index=True)
+    # pending | entering | open | closing | closed | skipped | missed | failed | error
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    reason: Mapped[str] = mapped_column(Text, default="")
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)  # $ total
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow

@@ -24,6 +24,7 @@ from app.routers.strategies import router as strategies_router
 from app.routers.system import router as system_router
 from app.routers.ws import router as ws_router
 from app.routers.xsp_fly import router as xsp_fly_router
+from app.routers.qqq_spread import router as qqq_spread_router
 from app.strategies.registry import seed_strategy_state
 
 logging.basicConfig(level=logging.INFO)
@@ -91,7 +92,7 @@ async def _resume_active_workers() -> None:
             st = await session.get(StrategyState, strat.key)
             if (st and st.status in ("scanning", "active")
                     and strat.ready and not engine_manager.is_running(strat.key)
-                    and not strat.activation_block_reason()):
+                    and not strat.resume_block_reason()):
                 await engine_manager.start_worker(strat.key, run_strategy(strat))
                 logger.info("Resumed worker for %s (persisted status=%s)", strat.key, st.status)
 
@@ -116,6 +117,7 @@ app.include_router(strategies_router)
 app.include_router(system_router)
 app.include_router(ws_router)
 app.include_router(xsp_fly_router)
+app.include_router(qqq_spread_router)
 
 
 @app.get("/health", tags=["system"])

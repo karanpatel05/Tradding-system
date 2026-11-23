@@ -92,15 +92,18 @@ def test_list_exposes_category_universe_execution_and_session_pnl(client, monkey
     assert xsp["category"].startswith("Options") and xsp["universe"] == ["XSP"]
     assert xsp["execution"] == "Simulated fills"
     assert xsp["session_pnl"] == 50.0
-    # External runner: its trades are not the app's, so no P&L is claimed.
-    assert qqq["session_pnl"] is None and qqq["execution"] == "External runner"
+    # In-app on Alpaca paper: today's P&L comes from its own session row (none yet),
+    # falling back to its closed ledger trades.
+    assert qqq["execution"].startswith("Alpaca paper") and not qqq["external_runner"]
+    assert qqq["session_pnl"] == 500.0
     assert qqq["universe"] == ["QQQ"]
     placeholder = next(s for s in body["strategies"] if not s["ready"])
     assert placeholder["category"] is None and placeholder["session_pnl"] is None
 
 
 def test_record_endpoint_sources(client, monkeypatch):
-    assert client.get("/api/strategies/qqq_credit_spread/record").json()["source"] == "external"
+    assert client.get("/api/strategies/qqq_credit_spread/record").json()["source"] in (
+        "none", "sessions", "paper")
     assert client.get("/api/strategies/strategy_2/record").status_code == 409
     assert client.get("/api/strategies/nope/record").status_code == 404
     xsp = client.get("/api/strategies/xsp_iron_fly/record").json()

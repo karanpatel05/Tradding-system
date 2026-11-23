@@ -113,6 +113,19 @@ class Settings(BaseSettings):
     # Folder of the external live runner (com.karan.spreadlive). Read-only: the app
     # reads its lock + live_state.json to show status and to refuse activation.
     qqq_spread_live_dir: str = str(Path.home() / "live_system_maintenance" / "live")
+    # In-app run (orders to Alpaca PAPER only, Tastytrade for data). Mirrors the
+    # external runner's defaults (live_strategy.py parse_args).
+    qqq_spread_model_dir: str = str(
+        Path.home() / "live_system_maintenance" / "live" / "models" / "current")
+    qqq_spread_max_model_age_days: int = 120
+    qqq_spread_max_contracts: int = 1            # TESTING PHASE pin, as in the runner
+    qqq_spread_capital_per_spread: float = 1000.0
+    qqq_spread_first_spread_capital: float = 500.0
+    qqq_spread_min_credit: float = 0.02          # per share; below this, stand down
+    qqq_spread_reprice_seconds: float = 15.0
+    qqq_spread_grace_minutes: int = 10
+    qqq_spread_final_close_seconds: int = 600    # 15:50 ET sweep
+    qqq_spread_close_deadline_seconds: int = 300  # aim flat by 15:55 ET
 
     # --- XSP 0DTE iron fly (xsp_iron_fly) ---
     # Fills are SIMULATED against live Tastytrade NBBO ("sim"); "live" is refused
