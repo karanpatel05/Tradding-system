@@ -155,15 +155,40 @@ async def test_first_sync_after_restart_rechecks_last_20_minutes(store):
 async def test_split_triggers_full_redownload(store):
     now = datetime(2024, 3, 12, 15, 0, tzinfo=UTC)
     t = et_session_start_ms(date(2024, 3, 11))
-    store.upsert_minutes("TSLA", [bar(t, 298.41)])
-    f = FakeFetch({"TSLA": [bar(t, 29.84)]})
+    old = [bar(t + i * MIN, 298.41 + i) for i in range(12)]
+    store.upsert_minutes("TSLA", old)
+    f = FakeFetch({"TSLA": [bar(b["time"], b["close"] / 10) for b in old]})
     assert await make_sync(store, f, now).check_splits("TSLA") is True
     assert store.bounds("TSLA") == (None, None)
     # unchanged prices -> no wipe
-    store.upsert_minutes("TSLA", [bar(t, 298.41)])
-    f2 = FakeFetch({"TSLA": [bar(t, 298.41)]})
+    store.upsert_minutes("TSLA", old)
+    f2 = FakeFetch({"TSLA": old})
     assert await make_sync(store, f2, now).check_splits("TSLA") is False
     assert store.bounds("TSLA")[0] == t
+
+
+@pytest.mark.asyncio
+async def test_stale_iex_tail_is_not_a_split(store):
+    now = datetime(2024, 3, 12, 15, 0, tzinfo=UTC)
+    t = et_session_start_ms(date(2024, 3, 11))
+    stored = [bar(t + i * MIN, 100.0) for i in range(390)]
+    fetched = [bar(b["time"], b["close"] * (1.0005 if i >= 374 else 1.0))
+               for i, b in enumerate(stored)]
+    store.upsert_minutes("SPY", stored)
+    f = FakeFetch({"SPY": fetched})
+    assert await make_sync(store, f, now).check_splits("SPY") is False
+    assert len(store.minutes("SPY", 0, t + 400 * MIN)) == 390
+
+
+@pytest.mark.asyncio
+async def test_bars_outside_extended_hours_are_not_stored(store):
+    now = datetime(2022, 1, 5, 22, 0, tzinfo=UTC)
+    et = S.ET
+    times = [ms(datetime(2022, 1, 4, h, m, tzinfo=et)) for h, m in
+             ((3, 59), (4, 0), (19, 59), (20, 0))]
+    f = FakeFetch({"SPY": [bar(t) for t in times]})
+    await make_sync(store, f, now).sync_symbol("SPY")
+    assert [b["time"] for b in store.minutes("SPY", 0, ms(now))] == [times[1], times[2]]
 
 
 @pytest.mark.asyncio

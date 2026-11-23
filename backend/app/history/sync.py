@@ -26,6 +26,7 @@ _MINUTE_MS = 60_000
 _CHUNK = timedelta(days=30)              # one store write (and crash-resume point) per chunk
 _SIP_DELAY = timedelta(minutes=16)       # free plans may not query the latest 15 min of SIP
 _SPLIT_TOLERANCE = 0.0001
+_SPLIT_MIN_OVERLAP = 10
 _MAX_BACKOFF = 900.0
 
 
@@ -62,6 +63,9 @@ class HistorySync:
 
     def _write_chunk(self, symbol: str, bars: list[dict]) -> int:
         """Upsert a batch and rebuild the daily rows of every ET date it touched."""
+        bars = [b for b in bars
+                if dtime(4, 0) <= datetime.fromtimestamp(b["time"] / 1000, ET).time()
+                < dtime(20, 0)]
         n = self.store.upsert_minutes(symbol, bars)
         days = {datetime.fromtimestamp(b["time"] / 1000, ET).date() for b in bars}
         rows: list[dict] = []
@@ -126,12 +130,18 @@ class HistorySync:
         if not stored:
             return False
         fetched = await self._pull(symbol, _from_ms(open_ms), _from_ms(close_ms), "sip")
+        overlap = moved = 0
         for b in fetched:
             old = stored.get(b["time"])
-            if old and abs(b["close"] - old) / abs(old) > _SPLIT_TOLERANCE:
-                logger.warning("history: %s prices changed for %s; re-downloading", symbol, day)
-                await self._store(self.store.delete_symbol, symbol)
-                return True
+            if old:
+                overlap += 1
+                if abs(b["close"] - old) / abs(old) > _SPLIT_TOLERANCE:
+                    moved += 1
+        # A real split moves (nearly) every bar; a stale IEX tail moves only a few.
+        if overlap >= _SPLIT_MIN_OVERLAP and moved / overlap > 0.5:
+            logger.warning("history: %s prices changed for %s; re-downloading", symbol, day)
+            await self._store(self.store.delete_symbol, symbol)
+            return True
         return False
 
     async def run_once(self) -> None:
