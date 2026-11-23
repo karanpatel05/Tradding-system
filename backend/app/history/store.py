@@ -4,6 +4,7 @@ Synchronous and thread-safe: every call opens its own short-lived connection
 (callers use ``asyncio.to_thread``). WAL lets the API read while the sync job
 writes. Bar shape everywhere: {"time": epoch ms UTC, open, high, low, close, volume}.
 """
+import os
 import sqlite3
 import threading
 from contextlib import closing
@@ -31,6 +32,9 @@ def _row(r) -> dict:
 class HistoryStore:
     def __init__(self, path: str):
         self.path = path
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         with closing(self._connect()) as c:
             c.execute("PRAGMA journal_mode=WAL")
             c.executescript(_SCHEMA)

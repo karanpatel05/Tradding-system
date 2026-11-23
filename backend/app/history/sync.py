@@ -182,8 +182,23 @@ def next_delay(now: datetime) -> float:
     return (target.astimezone(UTC) - now.astimezone(UTC)).total_seconds()
 
 
+async def start_sync() -> None:
+    """Background entry point (lifespan task): open the store off the event loop, then run
+    forever. A store that cannot be opened is logged and the task ends; never raises."""
+    try:
+        store = await asyncio.to_thread(get_store)
+    except Exception:  # noqa: BLE001 - a bad history path must not affect the app
+        logger.exception("history sync: could not open the history store; sync not started")
+        return
+    await run_forever(HistorySync(store))
+
+
 async def run_forever(sync: HistorySync) -> None:
-    lock = open(f"{sync.store.path}.lock", "a+")
+    try:
+        lock = open(f"{sync.store.path}.lock", "a+")
+    except OSError:
+        logger.exception("history sync: cannot open %s.lock; sync not started", sync.store.path)
+        return
     try:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

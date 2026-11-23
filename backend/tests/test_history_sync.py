@@ -242,3 +242,48 @@ def test_history_status(store, monkeypatch):
     assert set(st) == {"SPY", "QQQ", "TSLA", "NVDA"}
     assert st["SPY"] == {"earliest": 1_000 * MIN, "latest": 1_000 * MIN, "status": "ok", "note": ""}
     assert st["QQQ"]["earliest"] is None and st["QQQ"]["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_start_sync_with_unusable_path_logs_and_returns(tmp_path, monkeypatch, caplog):
+    """Opening the store happens in the background task, off the loop; a bad path is
+    logged and the task ends instead of failing app startup (F4)."""
+    import threading
+
+    blocker = tmp_path / "not_a_dir"
+    blocker.write_text("x")
+    threads = []
+
+    def bad_store():
+        threads.append(threading.current_thread() is threading.main_thread())
+        return HistoryStore(str(blocker / "h.db"))   # parent is a regular file
+
+    monkeypatch.setattr(S, "get_store", bad_store)
+    with caplog.at_level("ERROR"):
+        await asyncio.wait_for(S.start_sync(), 5)
+    assert threads == [False]
+    assert "history" in caplog.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_run_forever_with_unopenable_lock_logs_and_returns(tmp_path, caplog):
+    blocker = tmp_path / "not_a_dir"
+    blocker.write_text("x")
+
+    class FakeStore:
+        path = str(blocker / "h.db")
+
+    f = FakeFetch()
+    sync = S.HistorySync(FakeStore(), fetch=f, now=lambda: datetime(2022, 1, 5, tzinfo=UTC))
+    with caplog.at_level("ERROR"):
+        await asyncio.wait_for(S.run_forever(sync), 5)
+    assert f.calls == [] and "lock" in caplog.text.lower()
+
+
+def test_lifespan_does_not_open_the_store_synchronously():
+    import inspect
+
+    from app import main
+
+    src = inspect.getsource(main.lifespan)
+    assert "get_store(" not in src and "start_sync()" in src

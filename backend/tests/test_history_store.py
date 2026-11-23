@@ -63,3 +63,9 @@ def test_path_attribute(tmp_path):
 def test_tests_never_use_real_history_file():
     assert not get_settings().market_history_path.replace("\\", "/").endswith(
         "backend/market_history.db")
+
+
+def test_store_creates_missing_parent_directory(tmp_path):
+    path = tmp_path / "nested" / "dir" / "h.db"
+    s = HistoryStore(str(path))
+    assert path.exists() and s.bounds("SPY") == (None, None)
