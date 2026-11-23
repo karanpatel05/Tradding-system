@@ -21,6 +21,7 @@ from app.auth.gate import APP_SESSION_COOKIE, is_authenticated
 from app.config import get_settings
 from app.engine.manager import engine_manager
 from app.services.alpaca_status import alpaca_ready_cached
+from app.services.chart_live import chart_live
 from app.services.market import get_market_status
 from app.services.market_stream import market_stream
 from app.strategies.registry import list_strategies
@@ -93,6 +94,21 @@ async def _account_snapshot() -> dict:
         return {}
 
 
+async def _receive_loop(websocket: WebSocket, conn_id: str) -> None:
+    """Read client frames; only ``chart_symbols`` is understood, the rest is ignored."""
+    while True:
+        try:
+            msg = await websocket.receive_json()
+        except WebSocketDisconnect:
+            return
+        except (ValueError, KeyError):  # malformed frame — keep listening
+            continue
+        except Exception:  # noqa: BLE001 — socket gone; the send loop handles teardown
+            return
+        if isinstance(msg, dict) and msg.get("type") == "chart_symbols":
+            await chart_live.set_symbols(conn_id, msg.get("symbols"))
+
+
 @router.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket) -> None:
     cookie = websocket.cookies.get(APP_SESSION_COOKIE)
@@ -105,6 +121,8 @@ async def ws_endpoint(websocket: WebSocket) -> None:
     # reflects continuously-updating prices, not a per-tick one-shot fetch.
     market_stream.ensure_started()
 
+    conn_id = str(id(websocket))
+    receiver = asyncio.create_task(_receive_loop(websocket, conn_id))
     tick = 0
     broker_positions: list[dict] = []
     broker_account: dict = {}
@@ -130,6 +148,7 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                 "strategies": await _strategies_snapshot(),
                 "positions": positions,
                 "account": broker_account,
+                "chart_prices": chart_live.prices(conn_id),
             })
             tick += 1
             await asyncio.sleep(PUSH_INTERVAL)
@@ -138,3 +157,6 @@ async def ws_endpoint(websocket: WebSocket) -> None:
     except Exception:  # noqa: BLE001
         logger.exception("WS push loop error")
         await websocket.close(code=1011)
+    finally:
+        receiver.cancel()
+        chart_live.forget(conn_id)
