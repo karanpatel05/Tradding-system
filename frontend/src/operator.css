@@ -1026,7 +1026,8 @@ tr.leg-selected td {
   }
   .operator-metrics .stat:nth-last-child(-n + 2) {
     border-bottom: 0;
-  }  .operator-secondary {
+  }
+  .operator-secondary {
     display: block;
   }
   .card {
