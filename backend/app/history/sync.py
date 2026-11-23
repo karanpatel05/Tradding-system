@@ -53,6 +53,8 @@ class HistorySync:
         self._fetch = fetch
         self._now = now
         self._limiter = RateLimiter(per_minute=180)   # one cap shared by every request
+        self._seen: set[str] = set()                  # symbols synced by this instance
+        self._iex_since: dict[str, int] = {}          # symbol -> start ms of stored IEX tail
         self.errors = 0                               # symbols that failed in the last run_once
 
     async def _store(self, fn, *args, **kw):
@@ -75,7 +77,16 @@ class HistorySync:
     async def sync_symbol(self, symbol: str) -> int:
         now = self._now()
         _, latest = await self._store(self.store.bounds, symbol)
-        cursor = _from_ms(latest + _MINUTE_MS) if latest is not None else HISTORY_START
+        first = symbol not in self._seen
+        self._seen.add(symbol)
+        if latest is None:
+            cursor = HISTORY_START
+        elif first:   # the IEX-tail map is lost on restart: re-check the last 20 minutes
+            cursor = max(HISTORY_START, _from_ms(latest) - timedelta(minutes=20))
+        else:
+            cursor = _from_ms(latest + _MINUTE_MS)
+            if symbol in self._iex_since:
+                cursor = min(cursor, _from_ms(self._iex_since[symbol]))
         sip_end = now
         written = 0
         while cursor < sip_end:
@@ -89,9 +100,12 @@ class HistorySync:
                 continue
             written += await self._store(self._write_chunk, symbol, bars)
             cursor = end
-        if sip_end < now:
+        if sip_end == now:
+            self._iex_since.pop(symbol, None)         # SIP now covers any earlier IEX tail
+        else:
             tail_start = max(cursor, sip_end)
             bars = await self._pull(symbol, tail_start, now, "iex")
+            self._iex_since[symbol] = int(tail_start.timestamp() * 1000)
             written += await self._store(self._write_chunk, symbol, bars)
         await self._store(self.store.set_state, symbol, status="ok", note="")
         return written

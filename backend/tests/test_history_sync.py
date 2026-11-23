@@ -1,6 +1,5 @@
 import asyncio
 import fcntl
-import functools
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -30,7 +29,8 @@ def session_bars(day: datetime, n: int = 5, close: float = 100.0) -> list[dict]:
 
 
 class FakeFetch:
-    def __init__(self, bars=None, raises=None):
+    def __init__(self, bars=None, raises=None, iex=None):
+        self.iex = iex
         self.bars = bars or {}          # symbol -> list[bar]
         self.raises = raises or {}      # symbol -> exception | callable(call_no, kw)
         self.calls = []
@@ -44,14 +44,8 @@ class FakeFetch:
         elif r is not None:
             raise r
         lo, hi = ms(start), ms(end)
-        return [b for b in self.bars.get(symbol, []) if lo <= b["time"] <= hi]
-
-
-def arun(fn):
-    @functools.wraps(fn)
-    def wrapper(*a, **k):
-        return asyncio.run(fn(*a, **k))
-    return wrapper
+        src = self.iex if (feed == "iex" and self.iex is not None) else self.bars
+        return [b for b in src.get(symbol, []) if lo <= b["time"] <= hi]
 
 
 @pytest.fixture
@@ -63,7 +57,7 @@ def make_sync(store, fetch, now):
     return S.HistorySync(store, fetch=fetch, now=lambda: now)
 
 
-@arun
+@pytest.mark.asyncio
 async def test_first_sync_starts_at_2022_and_builds_daily(store):
     now = datetime(2022, 1, 5, 22, 0, tzinfo=UTC)
     bars = session_bars(datetime(2022, 1, 3, tzinfo=UTC)) + \
@@ -79,7 +73,7 @@ async def test_first_sync_starts_at_2022_and_builds_daily(store):
     assert store.get_state("SPY")["status"] == "ok"
 
 
-@arun
+@pytest.mark.asyncio
 async def test_backfill_resumes_after_crash(store):
     now = datetime(2022, 3, 15, 22, 0, tzinfo=UTC)
     bars = (session_bars(datetime(2022, 1, 5, tzinfo=UTC))
@@ -104,7 +98,7 @@ async def test_backfill_resumes_after_crash(store):
     assert [b["time"] for b in stored] == [b["time"] for b in bars]
 
 
-@arun
+@pytest.mark.asyncio
 async def test_recent_sip_denied_uses_iex_tail(store):
     now = datetime(2026, 11, 20, 20, 0, tzinfo=UTC)
     store.upsert_minutes("SPY", [bar(ms(now - timedelta(hours=3)))])
@@ -124,7 +118,40 @@ async def test_recent_sip_denied_uses_iex_tail(store):
     assert store.bounds("SPY")[1] == tail["time"]
 
 
-@arun
+@pytest.mark.asyncio
+async def test_iex_tail_is_replaced_by_sip_next_sync(store):
+    now1 = datetime(2026, 11, 20, 20, 0, tzinfo=UTC)
+    box = [now1]
+    store.upsert_minutes("SPY", [bar(ms(now1 - timedelta(hours=3)))])
+    cutoff1 = now1 - timedelta(minutes=16)
+    t = ms(now1 - timedelta(minutes=5))
+
+    def deny(call, n):
+        if call["feed"] == "sip" and call["end"] > box[0] - timedelta(minutes=16):
+            raise AlpacaDataError(403, "subscription does not permit querying recent SIP data")
+
+    f = FakeFetch({"SPY": [bar(t, 78.0)]}, {"SPY": deny}, iex={"SPY": [bar(t, 77.0)]})
+    sync = S.HistorySync(store, fetch=f, now=lambda: box[0])
+    await sync.sync_symbol("SPY")
+    assert store.minutes("SPY", t, t + 1)[0]["close"] == 77.0
+    box[0] = now1 + timedelta(minutes=30)
+    f.calls.clear()
+    await sync.sync_symbol("SPY")
+    assert any(c["feed"] == "sip" and c["start"] == cutoff1 for c in f.calls)
+    assert store.minutes("SPY", t, t + 1)[0]["close"] == 78.0
+
+
+@pytest.mark.asyncio
+async def test_first_sync_after_restart_rechecks_last_20_minutes(store):
+    latest = ms(datetime(2022, 1, 5, 15, 0, tzinfo=UTC))
+    store.upsert_minutes("SPY", [bar(latest)])
+    now = datetime(2022, 1, 5, 22, 0, tzinfo=UTC)
+    f = FakeFetch()
+    await make_sync(store, f, now).sync_symbol("SPY")
+    assert f.calls[0]["start"] == datetime.fromtimestamp(latest / 1000, UTC) - timedelta(minutes=20)
+
+
+@pytest.mark.asyncio
 async def test_split_triggers_full_redownload(store):
     now = datetime(2024, 3, 12, 15, 0, tzinfo=UTC)
     t = et_session_start_ms(date(2024, 3, 11))
@@ -139,7 +166,7 @@ async def test_split_triggers_full_redownload(store):
     assert store.bounds("TSLA")[0] == t
 
 
-@arun
+@pytest.mark.asyncio
 async def test_auth_and_rate_errors_are_contained(store):
     now = datetime(2022, 1, 5, 22, 0, tzinfo=UTC)
     day = session_bars(datetime(2022, 1, 3, tzinfo=UTC))
@@ -169,7 +196,7 @@ def test_next_delay():
     assert S.next_delay(early) == 2 * 3600
 
 
-@arun
+@pytest.mark.asyncio
 async def test_second_process_stands_down(store):
     f = FakeFetch()
     fd = open(f"{store.path}.lock", "a+")
