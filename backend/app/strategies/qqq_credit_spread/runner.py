@@ -1,12 +1,11 @@
 """The in-app QQQ first-hour credit spread, one session at a time, on Alpaca PAPER.
 
-Timeline (XNYS hours; half days shift the afternoon to 12:30 / 12:50 / 12:55):
+Timeline (XNYS hours; half days shift the close to 12:50 / 12:55):
   10:30  entry      read the completed first hour, sell the $1 vertical at the mid,
                     re-price every 15 s, cancel if unfilled 10 min after 10:30
-  15:30  checkpoint the model predicts P(short strike finishes ITM); strictly above its
-                    threshold -> close now, otherwise hold for the sweep
-  15:50  final      close whatever is left, walking the limit from mid to marketable,
+  15:50  flat exit  close the whole spread, walking the limit from mid to marketable,
                     aiming to be flat by 15:55 (the order is left working after that)
+There is no model or intraday exit: every open spread is held to the 15:50 close.
 
 Safety rules:
 * the day's session row is written BEFORE any order (idempotent entry across restarts);
@@ -27,7 +26,6 @@ from app.strategies.qqq_credit_spread import logic as L
 from app.strategies.qqq_credit_spread.broker import (TERMINAL_UNFILLED, filled_qty,
                                                      leg_fill_prices, net_fill_price,
                                                      order_status)
-from app.strategies.qqq_credit_spread.model import ModelUnavailable, check_metadata, decide_close
 from app.strategies.qqq_credit_spread.params import QqqSpreadParams
 
 logger = logging.getLogger("trading.qqq_spread")
@@ -49,12 +47,12 @@ class RealClock:
 
 class QqqSpreadRunner:
     def __init__(self, key: str, params: QqqSpreadParams, feed, broker, clock, *,
-                 store, capital_fn, model_loader, safe_mode_fn, alert_fn, log_fn,
+                 store, capital_fn, safe_mode_fn, alert_fn, log_fn,
                  entry_guard_fn=None) -> None:
         self.key, self.p = key, params
         self.entry_guard_fn = entry_guard_fn      # extra NEW-entry checks (daemon copy...)
         self.feed, self.broker, self.clock, self.store = feed, broker, clock, store
-        self.capital_fn, self.model_loader = capital_fn, model_loader
+        self.capital_fn = capital_fn
         self.safe_mode_fn, self.alert_fn, self.log_fn = safe_mode_fn, alert_fn, log_fn
 
     # ------------------------------------------------------------------ helpers
@@ -145,13 +143,7 @@ class QqqSpreadRunner:
             await self._sleep_until(plan.close + timedelta(minutes=5))   # day done
             return
         data = sess["data"]
-        if now < plan.checkpoint:
-            await self._sleep_until(plan.checkpoint)
-            return
-        if "checkpoint" not in data and now < plan.final_close:
-            await self.do_checkpoint(plan, sess)
-            return
-        if now < plan.final_close:
+        if now < plan.final_close:                   # hold to the 15:50 flat exit
             await self._sleep_until(plan.final_close)
             return
         if not (data.get("final_close") or {}).get("done"):
@@ -170,10 +162,6 @@ class QqqSpreadRunner:
             return why
         if self.entry_guard_fn is not None and (why := self.entry_guard_fn()) is not None:
             return why
-        try:
-            check_metadata(self.p.model_dir, self.p.max_model_age_days)
-        except ModelUnavailable as exc:
-            return f"checkpoint model unavailable: {exc}"
         return None
 
     async def do_entry(self, plan: L.SessionPlan, sess: dict | None) -> None:
@@ -379,56 +367,10 @@ class QqqSpreadRunner:
                 logger.exception("cancel after interruption failed for %s", oid)
             raise
 
-    # ------------------------------------------------------------------ checkpoint
-    async def do_checkpoint(self, plan: L.SessionPlan, sess: dict) -> None:
-        data = sess["data"]
-        now = self.clock.now()
-        if not L.within_grace(plan.checkpoint, now, self.p.grace_minutes):
-            data["checkpoint"] = {"status": "missed", "at": now.isoformat()}
-            await self.store.save(sess)
-            await self._log("QQQ checkpoint missed (outside its window); the 15:50 sweep "
-                            "will close", level="warning")
-            return
-        s, l = self._syms(sess)
-        sq, lq = await self.broker.leg_quantities(s, l)
-        if sq == 0 and lq == 0:
-            data["checkpoint"] = {"status": "nothing_open"}
-            await self._mark_flat(sess, "flat at the checkpoint (closed outside the strategy)")
-            return
-        signal = L.Signal.from_dict(data["signal"])
-        bars = await self.feed.minute_bars(plan.checkpoint - timedelta(minutes=66),
-                                           plan.checkpoint)
-        feat, reason = L.checkpoint_features(bars or [], signal, plan.checkpoint,
-                                             float(data.get("filled_credit") or 0.0))
-        if feat is None:
-            data["checkpoint"] = {"status": f"hold:{reason}", "at": now.isoformat()}
-            await self.store.save(sess)
-            await self._log(f"QQQ checkpoint: no decision ({reason}); holding for the sweep",
-                            level="warning")
-            return
-        try:
-            pipeline, meta = self.model_loader()
-            close, p, thr = decide_close(pipeline, meta, feat)
-        except ModelUnavailable as exc:
-            data["checkpoint"] = {"status": "hold:model_unavailable", "detail": str(exc)}
-            await self.store.save(sess)
-            await self._alert(f"QQQ checkpoint model unavailable ({exc}); holding for the sweep")
-            return
-        data["checkpoint"] = {"status": "close" if close else "hold", "p": round(p, 6),
-                              "threshold": thr, "features": feat, "at": now.isoformat()}
-        await self.store.save(sess)
-        await self._log(f"QQQ checkpoint: P(short ITM)={p:.3f} vs {thr:.2f} -> "
-                        f"{'CLOSE' if close else 'hold'}", category="decision",
-                        data=data["checkpoint"])
-        if close:
-            await self._close(plan, sess, checkpoint=True,
-                              deadline=L.checkpoint_stage_deadline(now, plan),
-                              cancel_at_deadline=True)
-
     # ------------------------------------------------------------------ closes
     async def do_final_close(self, plan: L.SessionPlan, sess: dict) -> None:
         started = self.clock.now().isoformat()
-        result = await self._close(plan, sess, checkpoint=False, deadline=plan.close_deadline,
+        result = await self._close(plan, sess, deadline=plan.close_deadline,
                                    cancel_at_deadline=False)
         # Marked done only once the close actually ran; an exception retries it.
         sess["data"]["final_close"] = {"done": True, "status": result, "at": started}
@@ -438,7 +380,7 @@ class QqqSpreadRunner:
                               f"(Alpaca paper): the close order is left working - check "
                               f"the account")
 
-    async def _close(self, plan: L.SessionPlan, sess: dict, *, checkpoint: bool,
+    async def _close(self, plan: L.SessionPlan, sess: dict, *,
                      deadline: datetime, cancel_at_deadline: bool) -> str:
         data = sess["data"]
         s, l = self._syms(sess)
@@ -457,14 +399,14 @@ class QqqSpreadRunner:
 
         async def limit():
             q = await self.feed.option_quotes([s, l], plan.day)
-            prog = L.close_progress(self.clock.now(), plan, checkpoint,
+            prog = L.close_progress(self.clock.now(), plan,
                                     self.p.final_close_seconds, self.p.close_deadline_seconds)
             return L.closing_limit_debit(q, s, l, width, prog)
 
         price = await limit()
         sess["status"] = "closing"
         await self.store.save(sess)
-        label = "checkpoint" if checkpoint else "final"
+        label = "final"
         await self._log(f"QQQ {label} close: buy back {qty} x {s}/{l} @ {price:.2f} debit "
                         f"(Alpaca paper)", category="trade")
         work = await self._work_order(s, l, qty, price, False, deadline, limit,
@@ -535,7 +477,7 @@ class QqqSpreadRunner:
             # try again at the marketable price until the bell.
             await self._log("QQQ spread still open after 15:55 with no working close; "
                             "re-attempting", level="warning")
-            await self._close(plan, sess, checkpoint=False,
+            await self._close(plan, sess,
                               deadline=plan.close - timedelta(seconds=20),
                               cancel_at_deadline=False)
             return

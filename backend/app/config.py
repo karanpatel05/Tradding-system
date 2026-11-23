@@ -114,10 +114,8 @@ class Settings(BaseSettings):
     # reads its lock + live_state.json to show status and to refuse activation.
     qqq_spread_live_dir: str = str(Path.home() / "live_system_maintenance" / "live")
     # In-app run (orders to Alpaca PAPER only, Tastytrade for data). Mirrors the
-    # external runner's defaults (live_strategy.py parse_args).
-    qqq_spread_model_dir: str = str(
-        Path.home() / "live_system_maintenance" / "live" / "models" / "current")
-    qqq_spread_max_model_age_days: int = 120
+    # external runner's defaults (live_strategy.py parse_args), minus its model exit:
+    # the in-app strategy always holds to the 15:50 flat close.
     qqq_spread_max_contracts: int = 1            # TESTING PHASE pin, as in the runner
     qqq_spread_capital_per_spread: float = 1000.0
     qqq_spread_first_spread_capital: float = 500.0

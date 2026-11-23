@@ -3,7 +3,8 @@
 The trading logic is a port of the external runner (``~/live_system_maintenance/live``,
 ``com.karan.spreadlive``) checked for parity against its own functions; orders go only
 to Alpaca paper through the app's tagged, paper-locked path, and Tastytrade supplies
-market data only. See ``runner.QqqSpreadRunner`` for the day's timeline.
+market data only. Unlike the runner, there is no 15:30 model exit: every spread is
+held to the 15:50 flat close. See ``runner.QqqSpreadRunner`` for the day's timeline.
 
 The external daemon may keep trading real money on Tastytrade, but its own Alpaca paper
 copy (``--alpaca-paper``) shares this account and closes by the positions Alpaca reports,
@@ -29,8 +30,8 @@ class QqqCreditSpreadStrategy(BaseStrategy):
     universe = ("QQQ",)
 
     description = (
-        "0DTE QQQ $1-wide ATM credit spread sold on the direction of the first hour, "
-        "with a 15:30 ML exit check and a 15:50 close. Orders go to the Alpaca PAPER "
+        "0DTE QQQ $1-wide ATM credit spread sold on the direction of the first hour and "
+        "closed flat at 15:50 (no model, no intraday exit). Orders go to the Alpaca PAPER "
         "account only; Tastytrade is used for market data."
     )
     rules = [
@@ -44,13 +45,13 @@ class QqqCreditSpreadStrategy(BaseStrategy):
         "records it as missed.",
         "Size: one spread per $1,000 allocated (the first at $500), capped at "
         "max_contracts (1 while testing).",
+        "Hold to the 15:50 close: no stop, no profit target, no model exit.",
     ]
     entry_logic = "10:30 ET: read the completed first hour and sell the spread against it."
     exit_logic = (
-        "15:30 ET (12:30 half days): the deployed model predicts the chance the short strike "
-        "finishes ITM; strictly above its threshold (currently 90%) it closes. Anything left "
-        "starts closing at 15:50 ET, walking the limit from mid to marketable, aiming to be "
-        "flat by 15:55 ET (12:50/12:55 half days)."
+        "Flat exit only: at 15:50 ET (12:50 half days) the whole spread is closed, walking "
+        "the limit from mid to marketable, aiming to be flat by 15:55 ET (12:55 half days). "
+        "No model and no earlier exit."
     )
     selection_criteria = "Fixed underlying: QQQ."
     backtest_note = ("No in-app backtest: the app's backtester is equity-only. The strategy "
@@ -85,7 +86,6 @@ class QqqCreditSpreadStrategy(BaseStrategy):
     def activation_block_reason(self) -> str | None:
         from app.broker import alpaca_client as ac
         from app.config import get_settings
-        from app.strategies.qqq_credit_spread.model import ModelUnavailable, check_metadata
         p = self.params
         if (errs := p.validate()):
             return f"Invalid QQQ spread settings: {'; '.join(errs)}."
@@ -96,29 +96,19 @@ class QqqCreditSpreadStrategy(BaseStrategy):
                     "(ENABLE_LIVE_ORDERS) first - this strategy never runs on simulated fills.")
         if not ac.configured():
             return "Alpaca paper keys are not configured (APCA_* in backend/.env)."
-        try:
-            check_metadata(p.model_dir, p.max_model_age_days)
-        except ModelUnavailable as exc:
-            return f"Checkpoint model unavailable: {exc}."
         return self._entry_guard()
 
     def resume_block_reason(self) -> str | None:
         """A QQQ worker that was on always resumes (unless its settings are invalid):
         a refusal here could strand an open spread past 15:55. The runner re-checks
-        routing, the daemon's paper copy and the model before each NEW entry, and its
-        exits always run."""
+        routing and the daemon's paper copy before each NEW entry, and its exits always
+        run."""
         errs = self.params.validate()
         return f"Invalid QQQ spread settings: {'; '.join(errs)}." if errs else None
 
     def _entry_guard(self) -> str | None:
         """Extra checks before each new entry (the runner calls this at 10:30)."""
-        if (why := self._daemon_paper_copy()) is not None:
-            return why
-        try:
-            import sklearn  # noqa: F401
-        except ImportError:
-            return "scikit-learn is not installed in the app venv (needed for the 15:30 model)."
-        return None
+        return self._daemon_paper_copy()
 
     def build_runner(self):
         from app.engine.safe_mode import is_safe_mode
@@ -127,15 +117,12 @@ class QqqCreditSpreadStrategy(BaseStrategy):
         from app.strategies.qqq_credit_spread import store
         from app.strategies.qqq_credit_spread.broker import AlpacaSpreadBroker
         from app.strategies.qqq_credit_spread.feed import TastytradeSpreadFeed
-        from app.strategies.qqq_credit_spread.model import load_model
         from app.strategies.qqq_credit_spread.runner import QqqSpreadRunner, RealClock
 
         p = self.params
         return QqqSpreadRunner(
             self.key, p, TastytradeSpreadFeed(), AlpacaSpreadBroker(self.key), RealClock(),
-            store=store, capital_fn=self._capital,
-            model_loader=lambda: load_model(p.model_dir, p.max_model_age_days),
-            safe_mode_fn=is_safe_mode, alert_fn=send_alert, log_fn=log_event,
+            store=store, capital_fn=self._capital, safe_mode_fn=is_safe_mode, alert_fn=send_alert, log_fn=log_event,
             entry_guard_fn=self._entry_guard)
 
     async def run_live(self) -> None:
@@ -179,8 +166,6 @@ class QqqCreditSpreadStrategy(BaseStrategy):
                 "quantity": d.get("open_qty", d.get("quantity")),
                 "filled_credit": d.get("filled_credit"),
                 "exit_debit": d.get("exit_debit"),
-                "checkpoint": {k: v for k, v in (d.get("checkpoint") or {}).items()
-                               if k != "features"} or None,
             })
         return {"execution": self.execution_label(), "daemon": self.daemon_status(),
                 "sessions": sessions}

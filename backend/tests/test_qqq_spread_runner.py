@@ -138,17 +138,8 @@ class FakeBroker:
                 if o["status"] == "new" and {o["s"], o["l"]} & symbols]
 
 
-class FakePipeline:
-    def __init__(self, p):
-        self.p = p
-
-    def predict_proba(self, x):
-        import numpy as np
-        return np.array([[1 - self.p, self.p]])
-
-
-def make(clock, feed, broker, p=0.2, capital=1500.0, model_dir=None, tmp_path=None):
-    params = QqqSpreadParams(model_dir=str(model_dir))
+def make(clock, feed, broker, capital=1500.0):
+    params = QqqSpreadParams()
     journal: list[str] = []
     alerts: list[str] = []
 
@@ -165,22 +156,9 @@ def make(clock, feed, broker, p=0.2, capital=1500.0, model_dir=None, tmp_path=No
         return False
 
     r = QqqSpreadRunner(KEY, params, feed, broker, clock, store=store, capital_fn=capital_fn,
-                        model_loader=lambda: (FakePipeline(p), {"threshold": 0.9}),
                         safe_mode_fn=safe, alert_fn=alert_fn, log_fn=log_fn)
     r.journal, r.alerts = journal, alerts
     return r
-
-
-@pytest.fixture
-def model_dir(tmp_path):
-    import json
-    d = tmp_path / "QQQ"
-    d.mkdir()
-    (d / "model.joblib").write_bytes(b"x")
-    (d / "model_metadata.json").write_text(json.dumps({
-        "ticker": "QQQ", "features": L.FEATURES, "threshold": 0.9,
-        "trained_at_utc": datetime.now().astimezone().isoformat()}))
-    return tmp_path
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -212,11 +190,11 @@ async def trades():
 
 
 @pytest.mark.asyncio
-async def test_full_day_hold_then_final_close(model_dir):
+async def test_full_day_hold_then_final_close():
     clock = FakeClock(PLAN.open + timedelta(minutes=5))
     feed = FakeFeed(clock, day_bars())
     broker = FakeBroker(feed)
-    r = make(clock, feed, broker, p=0.2, model_dir=model_dir)
+    r = make(clock, feed, broker)
 
     await run_until(r, clock, PLAN.entry + timedelta(minutes=11))
     sess = await store.get_session(KEY, DAY)
@@ -229,13 +207,16 @@ async def test_full_day_hold_then_final_close(model_dir):
     assert [(t.symbol, t.side, t.status, t.transmitted) for t in tr] == [
         (SHORT, "sell", "open", True), (LONG, "buy", "open", True)]
 
-    # afternoon: spread decays; the model says hold at 15:30
-    feed.quotes = {SHORT: {"bid": .05, "ask": .07, "mid": .06},
-                   LONG: {"bid": .01, "ask": .03, "mid": .02}}
+    # afternoon: the short strike comes under pressure. With no model exit nothing
+    # closes before 15:50, however the spread trades.
+    feed.quotes = {SHORT: {"bid": .85, "ask": .90, "mid": .875},
+                   LONG: {"bid": .30, "ask": .34, "mid": .32}}
     await run_until(r, clock, PLAN.final_close - timedelta(seconds=1))
     sess = await store.get_session(KEY, DAY)
-    assert sess["data"]["checkpoint"]["status"] == "hold"
-    assert sess["status"] == "open"
+    assert sess["status"] == "open" and "checkpoint" not in sess["data"]
+    assert [o for o in broker.submits if not o["opening"]] == []
+    feed.quotes = {SHORT: {"bid": .05, "ask": .07, "mid": .06},
+                   LONG: {"bid": .01, "ask": .03, "mid": .02}}
 
     await run_until(r, clock, PLAN.close)
     sess = await store.get_session(KEY, DAY)
@@ -252,25 +233,11 @@ async def test_full_day_hold_then_final_close(model_dir):
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_closes_when_model_says_so(model_dir):
-    clock = FakeClock(PLAN.entry - timedelta(seconds=30))
-    feed = FakeFeed(clock, day_bars())
-    broker = FakeBroker(feed)
-    r = make(clock, feed, broker, p=0.95, model_dir=model_dir)
-    await run_until(r, clock, PLAN.checkpoint + timedelta(minutes=4))
-    sess = await store.get_session(KEY, DAY)
-    assert sess["data"]["checkpoint"]["status"] == "close"
-    assert sess["data"]["checkpoint"]["p"] == 0.95
-    assert sess["status"] == "closed"
-    assert sess["data"]["closes"][0]["stage"] == "checkpoint"
-
-
-@pytest.mark.asyncio
-async def test_late_start_records_missed_and_sends_nothing(model_dir):
+async def test_late_start_records_missed_and_sends_nothing():
     clock = FakeClock(PLAN.entry + timedelta(minutes=15))
     feed = FakeFeed(clock, day_bars())
     broker = FakeBroker(feed)
-    r = make(clock, feed, broker, model_dir=model_dir)
+    r = make(clock, feed, broker)
     await r.startup()
     await r.step()
     sess = await store.get_session(KEY, DAY)
@@ -278,11 +245,11 @@ async def test_late_start_records_missed_and_sends_nothing(model_dir):
 
 
 @pytest.mark.asyncio
-async def test_routing_off_skips_without_orders(model_dir):
+async def test_routing_off_skips_without_orders():
     clock = FakeClock(PLAN.entry + timedelta(seconds=5))
     feed = FakeFeed(clock, day_bars())
     broker = FakeBroker(feed, routing="order routing is off (ENABLE_LIVE_ORDERS)")
-    r = make(clock, feed, broker, model_dir=model_dir)
+    r = make(clock, feed, broker)
     await r.startup()
     await r.step()
     sess = await store.get_session(KEY, DAY)
@@ -291,11 +258,11 @@ async def test_routing_off_skips_without_orders(model_dir):
 
 
 @pytest.mark.asyncio
-async def test_no_allocation_skips(model_dir):
+async def test_no_allocation_skips():
     clock = FakeClock(PLAN.entry + timedelta(seconds=5))
     feed = FakeFeed(clock, day_bars())
     broker = FakeBroker(feed)
-    r = make(clock, feed, broker, capital=0.0, model_dir=model_dir)
+    r = make(clock, feed, broker, capital=0.0)
     await r.startup()
     await r.step()
     sess = await store.get_session(KEY, DAY)
@@ -304,11 +271,11 @@ async def test_no_allocation_skips(model_dir):
 
 
 @pytest.mark.asyncio
-async def test_unfilled_entry_is_cancelled_at_the_deadline(model_dir):
+async def test_unfilled_entry_is_cancelled_at_the_deadline():
     clock = FakeClock(PLAN.entry + timedelta(seconds=5))
     feed = FakeFeed(clock, day_bars())
     broker = FakeBroker(feed, fill_open=False)
-    r = make(clock, feed, broker, model_dir=model_dir)
+    r = make(clock, feed, broker)
     await run_until(r, clock, PLAN.entry + timedelta(minutes=11))
     sess = await store.get_session(KEY, DAY)
     assert sess["status"] == "skipped" and "entry_unfilled" in sess["reason"]
@@ -317,11 +284,11 @@ async def test_unfilled_entry_is_cancelled_at_the_deadline(model_dir):
 
 
 @pytest.mark.asyncio
-async def test_reprice_is_cancel_then_resubmit(model_dir):
+async def test_reprice_is_cancel_then_resubmit():
     clock = FakeClock(PLAN.entry + timedelta(seconds=5))
     feed = FakeFeed(clock, day_bars())
     broker = FakeBroker(feed, fill_open=False)
-    r = make(clock, feed, broker, model_dir=model_dir)
+    r = make(clock, feed, broker)
 
     def market_moves(n):
         if n == 1:          # right after the first order: mid credit drops to 0.21
@@ -336,14 +303,14 @@ async def test_reprice_is_cancel_then_resubmit(model_dir):
 
 
 @pytest.mark.asyncio
-async def test_restart_mid_entry_cancels_and_trusts_the_broker(model_dir):
+async def test_restart_mid_entry_cancels_and_trusts_the_broker():
     clock = FakeClock(PLAN.entry + timedelta(minutes=2))
     feed = FakeFeed(clock, day_bars())
     broker = FakeBroker(feed, fill_open=False)
     sess = await store.create_session(KEY, DAY, status="entering", data={
         "signal": {"short_symbol": SHORT, "long_symbol": LONG}, "limit_credit": 0.25})
     await broker.submit_spread(SHORT, LONG, 1, 0.25, True)          # resting at Alpaca
-    r = make(clock, feed, broker, model_dir=model_dir)
+    r = make(clock, feed, broker)
     await r.startup()
     sess = await store.get_session(KEY, DAY)
     assert broker.cancels == ["o1"]
@@ -351,11 +318,11 @@ async def test_restart_mid_entry_cancels_and_trusts_the_broker(model_dir):
 
 
 @pytest.mark.asyncio
-async def test_stopping_the_worker_cancels_its_working_order(model_dir):
+async def test_stopping_the_worker_cancels_its_working_order():
     clock = FakeClock(PLAN.entry + timedelta(seconds=5))
     feed = FakeFeed(clock, day_bars())
     broker = FakeBroker(feed, fill_open=False)
-    r = make(clock, feed, broker, model_dir=model_dir)
+    r = make(clock, feed, broker)
     submitted = asyncio.Event()
     broker.on_submit = lambda n: submitted.set()
     real_sleep = clock.sleep
@@ -388,11 +355,11 @@ async def run_like_forever(r, clock, until, max_steps=600):
 
 
 @pytest.mark.asyncio
-async def test_ledger_errors_at_entry_settle_and_final_close_still_end_flat(model_dir):
+async def test_ledger_errors_at_entry_settle_and_final_close_still_end_flat():
     clock = FakeClock(PLAN.entry + timedelta(seconds=5))
     feed = FakeFeed(clock, day_bars())
     broker = FakeBroker(feed)
-    r = make(clock, feed, broker, p=0.2, model_dir=model_dir)
+    r = make(clock, feed, broker)
     broker.fail_leg_q = 1                     # the read right after the entry fill fails
     await run_like_forever(r, clock, PLAN.entry + timedelta(minutes=12))
     sess = await store.get_session(KEY, DAY)
@@ -410,11 +377,11 @@ async def test_ledger_errors_at_entry_settle_and_final_close_still_end_flat(mode
 
 
 @pytest.mark.asyncio
-async def test_entry_guard_blocks_new_entries_only(model_dir):
+async def test_entry_guard_blocks_new_entries_only():
     clock = FakeClock(PLAN.entry + timedelta(seconds=5))
     feed = FakeFeed(clock, day_bars())
     broker = FakeBroker(feed)
-    r = make(clock, feed, broker, model_dir=model_dir)
+    r = make(clock, feed, broker)
     r.entry_guard_fn = lambda: "com.karan.spreadlive still runs with --alpaca-paper"
     await r.startup()
     await r.step()
