@@ -196,3 +196,40 @@ async def test_far_cursors_are_clamped_and_cheap(store, feeds, query_count):
     assert far_past["bars"][0]["time"] == lo and after0["bars"][0]["time"] == lo
     assert huge_before["bars"][-1]["time"] == hi and huge_after["bars"][0]["time"] == lo
     assert len(query_count) <= 20
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cursor", [{}, {"before": 10**16}, {"after": 0},
+                                    {"around": date(2026, 11, 27)}])
+async def test_bucketing_runs_off_the_event_loop(store, feeds, monkeypatch, cursor):
+    """Intraday read+bucket walks run in a worker thread, never on the event loop (F2).
+    Single-row calls (the latest-bucket-time helper) are trivial and excluded."""
+    import threading
+
+    seen = []
+    real = service.bucket
+
+    def recording(minutes, interval):
+        seen.append((threading.current_thread() is threading.main_thread(), len(minutes)))
+        return real(minutes, interval)
+
+    monkeypatch.setattr(service, "bucket", recording)
+    out = await service.get_history("SPY", "1h", limit=50, **cursor)
+    assert out["bars"]
+    big = [on_loop for on_loop, n in seen if n > 1]
+    assert big and not any(big), seen
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interval", ["1h", "4h"])
+async def test_coarse_intraday_limit_is_clamped_to_600(tmp_path, monkeypatch, feeds, interval):
+    s = HistoryStore(str(tmp_path / "wide.db"))
+    days = [date(2025, 1, 2) + timedelta(days=i) for i in range(400)]
+    # One minute at the start of every 4h bucket (04/08/12/16 ET) of 400 calendar days.
+    s.upsert_minutes("SPY", [_minute(int(datetime(d.year, d.month, d.day, h, tzinfo=ET)
+                                         .timestamp() * 1000)) for d in days for h in (4, 8, 12, 16)])
+    monkeypatch.setattr(service, "get_store", lambda: s)
+    out = await service.get_history("SPY", interval, limit=2000)
+    assert len(out["bars"]) == 600 and out["has_more_before"]
+    small = await service.get_history("SPY", "15m", limit=1000)
+    assert len(small["bars"]) == 1000  # finer intervals keep the full limit

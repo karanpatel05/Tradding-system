@@ -107,9 +107,10 @@ function ChartPane({index, pane, selected, tool, positions, settings, onSettings
   }, [data.bars, live, behind, tick?.ts, tick?.price, pane.symbol, pane.interval]); // eslint-disable-line react-hooks/exhaustive-deps
   const latest = useRef(data);
   latest.current = data;
-  useEffect(() => { // the toolbar drives the selected pane's own paging state
-    if (selected) onActiveData({history, behind, goToDate:d=>latest.current.goToDate?.(d), backToLive:()=>latest.current.backToLive?.()});
-  }, [selected, history, behind, pane.symbol, pane.interval]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { // the toolbar and side panel read the selected pane's own data and paging state (no second fetch)
+    if (selected) onActiveData({history, behind, bars:data.bars, live, stale, note,
+      goToDate:d=>latest.current.goToDate?.(d), backToLive:()=>latest.current.backToLive?.()});
+  }, [selected, history, behind, data.bars, live, stale, note, pane.symbol, pane.interval]); // eslint-disable-line react-hooks/exhaustive-deps
   // Near-edge check keyed on view/bars changes in PriceChart; loadMore guards in-flight requests itself.
   const onNearEdge = side => data.loadMore?.(side);
   return <article className={"cx-pane "+(selected?"selected":"")} data-pane={index} tabIndex="0" aria-label={"Chart "+(index+1)+" "+pane.symbol}
@@ -231,14 +232,14 @@ export default function ChartWorkspace({account, accountError, onOpenBuilder, ch
   const [alertDraft,setAlertDraft]=useState(null); // {symbol, price}
   const [ctx,setCtx]=useState(null); // context menu
   const [resets,setResets]=useState({});
-  const [activeCtl,setActiveCtl]=useState(null); // selected pane: {history, behind, goToDate, backToLive}
+  const [activeCtl,setActiveCtl]=useState(null); // selected pane: {history, behind, bars, live, stale, note, goToDate, backToLive}
   const [toasts,setToasts]=useState([]);
   const refs={symbol:useRef(null), timeframe:useRef(null), type:useRef(null), layout:useRef(null), draw:useRef(null)};
   useEffect(()=>{try{localStorage.setItem(key,JSON.stringify(s));}catch{/* Private browsing. */}},[s]);
   const active=s.panes[s.active];
   const start=Math.floor(s.active/s.count)*s.count;
   const ids=Array.from({length:s.count},(_,i)=>start+i);
-  const activeData=usePaneBars(active.symbol, active.interval);
+  const activeData=activeCtl || {}; // the selected pane reports its bars (see ChartPane), so they are fetched once
   // Tell the server which symbols the visible panes show so it can push their live prices.
   const symbolsKey=[...new Set(ids.map(i=>s.panes[i].symbol))].sort().join(",");
   useEffect(()=>{ onChartSymbols?.(symbolsKey.split(",")); return ()=>onChartSymbols?.([]); },[symbolsKey]); // eslint-disable-line react-hooks/exhaustive-deps

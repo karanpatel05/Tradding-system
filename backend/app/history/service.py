@@ -21,6 +21,7 @@ INDEX_SYMBOLS = ("SPX", "NDX")
 HISTORY_INTERVALS = ("1m", "5m", "15m", "30m", "1h", "4h", "1D", "1W")
 DEFAULT_LIMIT = 600
 MAX_LIMIT = 2000
+COARSE_MAX_LIMIT = 600  # 1h/4h pages read ~60-240 minutes per bar: cap the walk
 
 INDEX_LOOKBACK_DAYS = 14
 INDEX_TTL_SECONDS = 600.0
@@ -69,49 +70,48 @@ def _chunk_days(interval: str, limit: int) -> int:
     return max(2, math.ceil(trading_days * 7 / 5) + 1)
 
 
-async def _minutes(symbol: str, start_ms: int, end_ms: int) -> list[dict]:
-    return await asyncio.to_thread(get_store().minutes, symbol, start_ms, end_ms)
-
-
-async def _back(symbol, interval, end_ms, limit, earliest, latest) -> list[dict]:
+def _back(store, symbol, interval, end_ms, limit, earliest, latest) -> list[dict]:
     """Up to `limit` buckets of minutes before `end_ms` (a bucket boundary), ascending.
     Chunks start at ET midnight, so no bucket is split between two reads. `end_ms` is
-    clamped to the stored range so empty time is never walked chunk by chunk."""
+    clamped to the stored range so empty time is never walked chunk by chunk.
+    Synchronous (reads + bucketing): run the whole walk in one worker thread."""
     step = _chunk_days(interval, limit)
     end_ms = min(end_ms, latest + 1)
     out: list[dict] = []
     while len(out) < limit and end_ms > earliest:
         start = _midnight_ms(_et_date(end_ms - 1) - timedelta(days=step - 1))
-        out = bucket(await _minutes(symbol, start, end_ms), interval) + out
+        out = bucket(store.minutes(symbol, start, end_ms), interval) + out
         end_ms = start
     return out[-limit:]
 
 
-async def _forward(symbol, interval, start_ms, limit, earliest, latest) -> list[dict]:
-    """Up to `limit` buckets starting at/after `start_ms` (a bucket boundary)."""
+def _forward(store, symbol, interval, start_ms, limit, earliest, latest) -> list[dict]:
+    """Up to `limit` buckets starting at/after `start_ms` (a bucket boundary). Synchronous."""
     step = _chunk_days(interval, limit)
     start_ms = max(start_ms, _midnight_ms(_et_date(earliest)))
     out: list[dict] = []
     while len(out) < limit and start_ms <= latest:
         end = _midnight_ms(_et_date(start_ms) + timedelta(days=step))
-        out += bucket(await _minutes(symbol, start_ms, end), interval)
+        out += bucket(store.minutes(symbol, start_ms, end), interval)
         start_ms = end
     return out[:limit]
 
 
 async def _stock_intraday(symbol, interval, before, after, around, limit, lo, hi):
+    store = get_store()
+    walk = asyncio.to_thread  # each read+bucket walk runs off the event loop in one call
     n_ms = INTRADAY_MINUTES[interval] * _MINUTE_MS
     if before is not None:
-        return await _back(symbol, interval, before, limit, lo, hi)
+        return await walk(_back, store, symbol, interval, before, limit, lo, hi)
     if after is not None:
-        return await _forward(symbol, interval, after + n_ms, limit, lo, hi)
+        return await walk(_forward, store, symbol, interval, after + n_ms, limit, lo, hi)
     if around is not None:
         target = et_session_start_ms(around)
         t0 = _latest_bucket_time(target, interval)  # bucket start: 09:30 is mid-bucket at 1h/4h
-        left = await _back(symbol, interval, t0, limit, lo, hi)
-        right = await _forward(symbol, interval, t0, limit, lo, hi)
+        left = await walk(_back, store, symbol, interval, t0, limit, lo, hi)
+        right = await walk(_forward, store, symbol, interval, t0, limit, lo, hi)
         return _around_slice(left + right, target, limit)
-    return await _back(symbol, interval, hi + 1, limit, lo, hi)
+    return await walk(_back, store, symbol, interval, hi + 1, limit, lo, hi)
 
 
 # --- index sources ------------------------------------------------------------------
@@ -171,6 +171,8 @@ async def get_history(symbol: str, interval: str, *, before: int | None = None,
                       after: int | None = None, around: date | None = None,
                       limit: int = DEFAULT_LIMIT) -> dict:
     symbol = _validate(symbol, interval, before, after, around, limit)
+    if interval in ("1h", "4h"):
+        limit = min(limit, COARSE_MAX_LIMIT)
     intraday = interval in INTRADAY_MINUTES
     is_index = symbol in INDEX_SYMBOLS
 
