@@ -161,3 +161,38 @@ def test_history_routes_are_open():
     for path in ("/api/market/history", "/api/market/history/status"):
         route = next(r for r in router.routes if getattr(r, "path", None) == path)
         assert not any(d.call is require_auth for d in route.dependant.dependencies), path
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interval", ["5m", "1h", "4h"])
+async def test_around_trading_day_has_no_duplicate_buckets(store, feeds, interval):
+    out = await service.get_history("SPY", interval, around=date(2026, 11, 27), limit=20)
+    times = [b["time"] for b in out["bars"]]
+    assert times == sorted(set(times)) and len(times) > 1
+
+
+@pytest.fixture
+def query_count(store, monkeypatch):
+    calls = []
+    real = store.minutes
+
+    def counting(*a):
+        calls.append(a)
+        return real(*a)
+
+    monkeypatch.setattr(store, "minutes", counting)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_far_cursors_are_clamped_and_cheap(store, feeds, query_count):
+    lo, hi = store.bounds("SPY")
+    far_future = await service.get_history("SPY", "1m", around=date(2100, 1, 4), limit=600)
+    far_past = await service.get_history("SPY", "1m", around=date(1990, 1, 2), limit=600)
+    after0 = await service.get_history("SPY", "1m", after=0, limit=600)
+    huge_before = await service.get_history("SPY", "1m", before=10**16, limit=600)
+    huge_after = await service.get_history("SPY", "1m", after=-10**16, limit=600)
+    assert far_future["bars"][-1]["time"] == hi
+    assert far_past["bars"][0]["time"] == lo and after0["bars"][0]["time"] == lo
+    assert huge_before["bars"][-1]["time"] == hi and huge_after["bars"][0]["time"] == lo
+    assert len(query_count) <= 20
