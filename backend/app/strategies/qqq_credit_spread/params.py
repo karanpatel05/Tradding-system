@@ -6,8 +6,6 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class QqqSpreadParams:
-    model_dir: str
-    max_model_age_days: int = 120
     max_contracts: int = 1
     capital_per_spread: float = 1000.0
     first_spread_capital: float = 500.0
@@ -21,9 +19,7 @@ class QqqSpreadParams:
     def from_settings(cls) -> "QqqSpreadParams":
         from app.config import get_settings
         s = get_settings()
-        return cls(model_dir=s.qqq_spread_model_dir,
-                   max_model_age_days=s.qqq_spread_max_model_age_days,
-                   max_contracts=s.qqq_spread_max_contracts,
+        return cls(max_contracts=s.qqq_spread_max_contracts,
                    capital_per_spread=s.qqq_spread_capital_per_spread,
                    first_spread_capital=s.qqq_spread_first_spread_capital,
                    min_credit=s.qqq_spread_min_credit,
@@ -42,6 +38,6 @@ class QqqSpreadParams:
             errs.append("reprice_seconds must be >= 1")
         if not 0 < self.close_deadline_seconds < self.final_close_seconds:
             errs.append("need 0 < close_deadline_seconds < final_close_seconds")
-        if self.final_close_seconds >= 1800:
-            errs.append("final_close_seconds must be < 1800 (after the 30-min checkpoint)")
+        if self.final_close_seconds >= 3600:
+            errs.append("final_close_seconds must be < 3600")
         return errs
