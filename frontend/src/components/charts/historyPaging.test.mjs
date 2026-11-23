@@ -1,5 +1,5 @@
 // Plain-node test (no runner configured). Run: node frontend/src/components/charts/historyPaging.test.mjs
-import { HISTORY_SYMBOLS, mergePage, offsetAfterAppend, shouldLoad } from "./historyPaging.js";
+import { HISTORY_SYMBOLS, cursorMatches, mergePage, offsetAfterAppend, shouldLoad } from "./historyPaging.js";
 
 const eq = (a, b, msg) => {
   if (a !== b) { console.error(`FAIL: ${msg} — got ${a}, want ${b}`); process.exit(1); }
@@ -32,4 +32,12 @@ eq(shouldLoad({ length: 100, offset: 450 }, 0, idle, "before"), false, "no load 
 
 // appendShiftsOffset
 eq(offsetAfterAppend(20, 600), 620, "append shifts offset from newest");
+
+// staleCursorRejected: a page requested from an old region must not merge into new bars
+const region = [10, 11, 12].map(bar);
+eq(cursorMatches(region, "after", 12), true, "after cursor equals last bar");
+eq(cursorMatches(region, "before", 10), true, "before cursor equals first bar");
+eq(cursorMatches(region, "after", 5), false, "after cursor from an old region is rejected");
+eq(cursorMatches(region, "before", 12), false, "before cursor from an old region is rejected");
+eq(cursorMatches([], "after", 12), false, "no bars rejects");
 console.log("historyPaging tests passed");

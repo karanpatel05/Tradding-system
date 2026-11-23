@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../api.js";
-import { aggregate, normalizeBars } from "./chartMath.js";
+import { aggregate, normalizeBars, weekly } from "./chartMath.js";
 import { getBars } from "./chartData.js";
-import { HISTORY_SYMBOLS, mergePage } from "./historyPaging.js";
+import { HISTORY_SYMBOLS, cursorMatches, mergePage } from "./historyPaging.js";
 
 // Chart intervals mapped to the candle interval the feed serves and how many of
 // those make one chart bar. The feed has 1m/5m/15m/1d; 30m and 1h are built from 15m.
 export const FEED_INTERVAL = {
   "1m": ["1m", 1], "5m": ["5m", 1], "15m": ["15m", 1],
-  "30m": ["15m", 2], "1h": ["15m", 4], "4h": ["15m", 16], "1D": ["1d", 1], "1W": ["1d", 5],
+  "30m": ["15m", 2], "1h": ["15m", 4], "4h": ["15m", 16], "1D": ["1d", 1], "1W": ["1d", 1],
 };
 // Candle history shares a one-at-a-time collector with the live strategies' bar
 // fetches, so refresh sparingly: the selected pane at these rates, others every 5 min.
@@ -45,7 +45,7 @@ export function useBars(symbol, interval, background = false) {
     const run = () => loadFeed(symbol, feed).then(({ bars, note }) => {
       if (!alive) return;
       if (bars.length) {
-        lastLive.current = aggregate(bars, factor);
+        lastLive.current = interval === "1W" ? weekly(bars) : aggregate(bars, factor);
         setState({ bars: lastLive.current, live: true, stale: false, note: null });
       } else if (lastLive.current) {
         setState({ bars: lastLive.current, live: true, stale: true, note });
@@ -76,6 +76,7 @@ export function useHistoryBars(symbol, interval) {
   const gen = useRef(0);
   const inFlight = useRef({ before: false, after: false });
   const atLive = useRef(true);
+  const replacing = useRef(false);
 
   const fail = (e, g) => {
     if (g !== gen.current) return;
@@ -88,29 +89,34 @@ export function useHistoryBars(symbol, interval) {
   const load = (params, focusTime) => {
     const g = ++gen.current;
     inFlight.current = { before: false, after: false };
+    replacing.current = true;
     return api.marketHistory({ symbol, interval, limit: PAGE, ...params }).then(r => {
       if (g !== gen.current) return;
+      if (!(r.bars || []).length) throw new Error(r.note || "No history bars returned.");
       atLive.current = !params.around;
       setState({ bars: normalizeBars(r.bars || []), live: true, stale: false, note: r.note || null,
         earliest: r.earliest ?? null, hasMoreBefore: !!r.has_more_before, hasMoreAfter: !!r.has_more_after,
         appended: 0, focusTime });
-    }).catch(e => fail(e, g));
+    }).catch(e => fail(e, g)).finally(() => { if (g === gen.current) replacing.current = false; });
   };
 
   useEffect(() => {
     if (!symbol) return;
     atLive.current = true;
+    replacing.current = false;
     setState(NO_HISTORY);
     load({}, null);
     const feed = (FEED_INTERVAL[interval] || FEED_INTERVAL["5m"])[0];
     const id = setInterval(() => {
       const s = cur.current;
-      if (!atLive.current || !s.live || s.hasMoreAfter || inFlight.current.after || inFlight.current.before) return;
+      if (replacing.current || !atLive.current) return;
+      if (!s.live) { load({}, null); return; } // nothing real loaded yet: retry the first page
+      if (s.hasMoreAfter || inFlight.current.after || inFlight.current.before) return;
       const g = gen.current;
       api.marketHistory({ symbol, interval, limit: PAGE }).then(r => {
         if (g !== gen.current) return;
         const page = normalizeBars(r.bars || []);
-        setState(p => !page.length ? { ...p, stale: false, note: null }
+        setState(p => !page.length || !p.bars?.length ? { ...p, stale: false, note: null }
           : { ...p, bars: page[0].time > p.bars.at(-1).time ? page : mergePage(p.bars, page, "after"),
               stale: false, note: r.note || null, appended: 0 });
       }).catch(e => fail(e, g));
@@ -120,7 +126,7 @@ export function useHistoryBars(symbol, interval) {
 
   const loadMore = side => {
     const s = cur.current;
-    if (!s.bars?.length || inFlight.current[side] || !(side === "before" ? s.hasMoreBefore : s.hasMoreAfter)) return;
+    if (replacing.current || !s.live || !s.bars?.length || inFlight.current[side] || !(side === "before" ? s.hasMoreBefore : s.hasMoreAfter)) return;
     const g = gen.current;
     inFlight.current[side] = true;
     const cursor = side === "before" ? s.bars[0].time : s.bars.at(-1).time;
@@ -128,6 +134,7 @@ export function useHistoryBars(symbol, interval) {
       if (g !== gen.current) return;
       const page = normalizeBars(r.bars || []);
       setState(p => {
+        if (!cursorMatches(p.bars, side, cursor)) return p;
         const bars = mergePage(p.bars, page, side);
         return side === "before"
           ? { ...p, bars, hasMoreBefore: !!r.has_more_before, earliest: r.earliest ?? p.earliest, stale: false, note: r.note || null, appended: 0 }

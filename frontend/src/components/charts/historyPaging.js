@@ -28,3 +28,10 @@ export function shouldLoad(view, total, loaded, side, threshold = 100) {
 export function offsetAfterAppend(offset, appendedCount) {
   return offset + appendedCount;
 }
+
+// A loadMore page is only valid if the bars it was requested from still end where its
+// cursor was taken (a replacing load or a refresh may have moved the edge since).
+export function cursorMatches(bars, side, cursor) {
+  if (!bars || !bars.length) return false;
+  return (side === "before" ? bars[0].time : bars.at(-1).time) === cursor;
+}
