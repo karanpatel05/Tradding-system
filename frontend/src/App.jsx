@@ -240,6 +240,7 @@ export default function App() {
                 account={acct}
                 accountError={accountError}
                 chartPrices={snapshot?.chart_prices}
+                chartBars={snapshot?.chart_bars}
                 onChartSymbols={setChartSymbols}
                 onOpenBuilder={(symbol) => {
                   setBuilderSymbol(symbol);

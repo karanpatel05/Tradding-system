@@ -6,7 +6,7 @@ import PriceChart from "./PriceChart.jsx";
 import { applyStudy, intervals, symbols } from "./chartData.js";
 import { sessionStats } from "./chartMath.js";
 import { HISTORY_SYMBOLS } from "./historyPaging.js";
-import { foldForInterval, rebaseLive } from "./liveCandle.js";
+import { applyLiveBars, foldForInterval, rebaseLive } from "./liveCandle.js";
 import { usePaneBars, usePositions, useQuotes } from "./marketData.js";
 import { conditionLabel, rearm, useAlertEngine, useAlerts } from "./alerts.js";
 import { SYMBOL_PATTERN, describe } from "./controls/catalog.js";
@@ -85,7 +85,7 @@ async function copyChartImage(svg, name) {
   return "Clipboard unavailable here, so the chart image was downloaded";
 }
 
-function ChartPane({index, pane, selected, tool, positions, settings, onSettings, alerts, resetToken, onActivate, patch, chartPrices, onActiveData,
+function ChartPane({index, pane, selected, tool, positions, settings, onSettings, alerts, resetToken, onActivate, patch, chartPrices, chartBars, onActiveData,
   drawingProps, selectedDrawing, onDrawingChange, onDrawingDelete, onDrawingCopy, onDrawingAlert, onEditStudy, onSearch, onContextMenu}) {
   const data = usePaneBars(pane.symbol, pane.interval, !selected);
   const {live, stale, note} = data;
@@ -94,17 +94,24 @@ function ChartPane({index, pane, selected, tool, positions, settings, onSettings
   // Live trades accumulate into the newest candle (open stays the first live price, high/low widen) while the
   // pane shows the newest bars. New stored bars rebase the live state; each tick is folded once (deduped by ts).
   const tick = chartPrices?.[pane.symbol];
-  const liveRef = useRef({key:"", base:null, bars:null, ts:0});
+  const liveBars = chartBars?.[pane.symbol]; // server-built 1m bars (regular session only); preferred over the price fold
+  const lastLive = liveBars?.at(-1);
+  const liveSig = lastLive ? lastLive.time+"|"+lastLive.close+"|"+lastLive.volume : "";
+  const liveRef = useRef({key:"", base:null, bars:null, ts:0, sig:""});
   const bars = useMemo(() => {
     const L = liveRef.current, key = pane.symbol+"|"+pane.interval;
-    if (L.key !== key) Object.assign(L, {key, base:null, bars:null, ts:0});
+    if (L.key !== key) Object.assign(L, {key, base:null, bars:null, ts:0, sig:""});
     if (!data.bars || !live || behind) { L.bars = null; L.base = null; return data.bars; }
-    let cur = L.bars && L.base === data.bars ? L.bars : rebaseLive(data.bars, L.bars);
+    const rebased = !(L.bars && L.base === data.bars);
+    let cur = rebased ? rebaseLive(data.bars, L.bars) : L.bars;
     L.base = data.bars;
-    if (tick && tick.ts !== L.ts) { L.ts = tick.ts; cur = foldForInterval(cur, tick.price, tick.ts, pane.interval); }
+    if (liveBars?.length) {
+      if (rebased || liveSig !== L.sig) { L.sig = liveSig; cur = applyLiveBars(cur, liveBars, pane.interval); }
+      if (tick) L.ts = tick.ts; // the price fold is skipped while server bars drive the candle
+    } else if (tick && tick.ts !== L.ts) { L.ts = tick.ts; cur = foldForInterval(cur, tick.price, tick.ts, pane.interval); }
     L.bars = cur;
     return cur;
-  }, [data.bars, live, behind, tick?.ts, tick?.price, pane.symbol, pane.interval]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [data.bars, live, behind, tick?.ts, tick?.price, liveSig, pane.symbol, pane.interval]); // eslint-disable-line react-hooks/exhaustive-deps
   const latest = useRef(data);
   latest.current = data;
   useEffect(() => { // the toolbar and side panel read the selected pane's own data and paging state (no second fetch)
@@ -218,7 +225,7 @@ function BottomPanel({positions, positionsNote, quotes, account, accountError, a
   </section>;
 }
 
-export default function ChartWorkspace({account, accountError, onOpenBuilder, chartPrices, onChartSymbols}) {
+export default function ChartWorkspace({account, accountError, onOpenBuilder, chartPrices, chartBars, onChartSymbols}) {
   const [s,set]=useState(load);
   const [tool,setTool]=useState("Crosshair");
   const [selected,setSelected]=useState(null);
@@ -324,7 +331,7 @@ export default function ChartWorkspace({account, accountError, onOpenBuilder, ch
         const updateSel = changes => saveDrawings(i, drawingsOf(p).map(d=>d.id===selected?{...d,...changes}:d));
         return <ChartPane key={i} index={i} pane={p} selected={s.active===i} tool={tool} positions={positions} settings={s.settings} onSettings={setSettings}
           alerts={alerts.filter(a=>a.symbol===p.symbol && (a.active || a.status==="Triggered"))} resetToken={resets[i]}
-          chartPrices={chartPrices} onActiveData={setActiveCtl}
+          chartPrices={chartPrices} chartBars={chartBars} onActiveData={setActiveCtl}
           onActivate={()=>set(old=>old.active===i?old:{...old,active:i})} patch={changes=>patch(i,changes)}
           onSearch={()=>setSearch({target:i, query:""})} onEditStudy={id=>setEditStudy({pane:i,id})}
           onContextMenu={info=>setCtx({...info, pane:i})}

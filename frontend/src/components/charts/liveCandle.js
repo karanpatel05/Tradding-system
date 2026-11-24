@@ -43,3 +43,32 @@ export function rebaseLive(stored, folded) {
   const keep = folded.filter(b => b.time > last.time);
   return keep.length ? [...stored, ...keep] : stored;
 }
+
+const LIVE_FIELDS = ["open", "high", "low", "close", "volume"];
+
+// Apply the server's live 1-minute bars (ascending, 0-2 per symbol) to loaded bars. Pure: returns `bars` itself
+// when nothing changes. 1m: a live bar replaces the bar at the same time (extra fields such as session are kept)
+// or is appended when newer than the last bar; older unmatched ones are ignored. Other intervals fold only the
+// newest live close (volume for those comes from the history re-poll).
+export function applyLiveBars(bars, liveBars, interval) {
+  if (!bars?.length || !liveBars?.length) return bars;
+  const sorted = [...liveBars].sort((a, b) => a.time - b.time);
+  if (interval !== "1m") {
+    const newest = sorted.at(-1);
+    return foldForInterval(bars, newest.close, newest.time + 59_999, interval);
+  }
+  let out = bars;
+  for (const lv of sorted) {
+    const last = out.at(-1);
+    if (lv.time > last.time) {
+      out = [...out, { time: lv.time, session: sessionOf(lv.time), open: lv.open, high: lv.high, low: lv.low, close: lv.close, volume: lv.volume, value: 0 }];
+      continue;
+    }
+    const i = out.findIndex(b => b.time === lv.time);
+    if (i < 0 || LIVE_FIELDS.every(f => out[i][f] === lv[f])) continue;
+    const next = { ...out[i] };
+    for (const f of LIVE_FIELDS) next[f] = lv[f];
+    out = [...out.slice(0, i), next, ...out.slice(i + 1)];
+  }
+  return out;
+}

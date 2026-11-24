@@ -1,5 +1,5 @@
 // Plain-node test (no runner configured). Run: node frontend/src/components/charts/liveCandle.test.mjs
-import { foldForInterval, foldLivePrice, rebaseLive } from "./liveCandle.js";
+import { applyLiveBars, foldForInterval, foldLivePrice, rebaseLive } from "./liveCandle.js";
 
 const eq = (a, b, msg) => {
   if (a !== b) { console.error(`FAIL: ${msg} — got ${a}, want ${b}`); process.exit(1); }
@@ -79,3 +79,20 @@ eq(foldForInterval(bars, 12, T0 + 5 * 3600e3, "4h"), bars, "4h leaves a new bar 
 }
 
 console.log("liveCandle tests passed");
+
+// applyLiveBars: server-built 1m bars
+const lb = (t, c, v = 7) => ({ time: t, open: c, high: c + 1, low: c - 1, close: c, volume: v });
+const base1 = [bar(0, 1, 1, 1, 1), bar(60e3, 2, 2, 2, 2)];
+let ab = applyLiveBars(base1, [lb(60e3, 3), lb(120e3, 4)], "1m");
+eq(ab.map(x => x.time + ":" + x.close).join(","), "0:1,60000:3,120000:4", "1m: replace same minute, append newer");
+eq(ab[1].session, "2026-11-20", "1m: replaced bar keeps extra fields"); eq(ab[1].volume, 7, "1m: replaced volume from live");
+eq(typeof ab[2].session, "string", "1m: appended bar has session");
+eq(base1[1].close, 2, "applyLiveBars does not mutate input");
+eq(applyLiveBars(base1, [lb(-60e3, 9)], "1m"), base1, "1m: older bar with no match ignored");
+eq(applyLiveBars(base1, [], "1m"), base1, "empty live bars returns bars");
+eq(applyLiveBars(base1, undefined, "1m"), base1, "missing live bars returns bars");
+eq(applyLiveBars(base1, [lb(60e3, 2, 5)], "1m")[1].volume, 7 - 2, "1m: volume updated");
+const same = [bar(60e3, 2, 3, 1, 2)]; same[0].volume = 7;
+eq(applyLiveBars(same, [{ time: 60e3, open: 2, high: 3, low: 1, close: 2, volume: 7 }], "1m"), same, "1m: identical live bar returns same reference");
+ab = applyLiveBars([bar(0, 1, 1, 1, 1)], [lb(120e3, 5)], "5m");
+eq(ab.at(-1).close, 5, "5m: newest live close folds into last bucket"); eq(ab.length, 1, "5m: no new bar");
