@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "../api.js";
+import Icon from "./charts/controls/icons.jsx";
 
 // App-level halt banner. Shown while the engine is in SAFE_MODE (an unreconcilable
 // broker state). Resume clears safe mode and re-runs recovery server-side.
@@ -22,7 +23,7 @@ export default function SafeModeBanner({ auth, onResume }) {
   return (
     <div className="safemode-banner">
       <span className="safemode-text">
-        ⚠ SAFE MODE — trading halted: {auth.safe_mode_reason || "unreconcilable broker state"}
+        <Icon name="alert" size={16} /> SAFE MODE — trading halted: {auth.safe_mode_reason || "unreconcilable broker state"}
       </span>
       {!confirming ? (
         <button className="btn danger" disabled={busy} onClick={() => setConfirming(true)}>

@@ -49,7 +49,7 @@ export default function Dashboard({
         <div>
           <h1>Portfolio overview</h1>
           <p className="page-description">
-            Your positions, strategies and execution health in one view.
+            Your positions, strategies and execution health in one view
           </p>
         </div>
         <MarketStatus status={snapshot?.market_status} />

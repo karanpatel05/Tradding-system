@@ -51,8 +51,8 @@ export default function KillSwitch() {
       {report && !report.error && (
         <div className={`banner ${report.fully_flat ? "ok" : "warn"}`}>
           {report.fully_flat
-            ? "✓ Zero exposure — fully flat."
-            : "⚠ Partial: not fully flat."}{" "}
+            ? "Zero exposure, fully flat."
+            : "Partial: not fully flat."}{" "}
           Cancelled {report.tasks_cancelled.length} worker(s).
           {report.flatten?.attempted && (
             <> Flatten: {report.flatten.detail || report.flatten.error}.</>

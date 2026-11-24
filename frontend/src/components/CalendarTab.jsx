@@ -94,7 +94,7 @@ export default function CalendarTab() {
         <div>
           <h1>Journal</h1>
           <p className="page-description">
-            Review the session behind the numbers.
+            Review the session behind the numbers
           </p>
         </div>
         <div className="row gap center">

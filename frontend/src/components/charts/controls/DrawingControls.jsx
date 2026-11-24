@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { Popover, Swatches } from "./Overlay.jsx";
 import { drawingTools } from "../Drawings.jsx";
+import Icon from "./icons.jsx";
 
 const icon = Object.fromEntries(drawingTools);
 export const DRAWING_GROUPS = [
@@ -42,10 +43,10 @@ export function DrawingToolbar({drawing, onChange, onDelete, onCopy, onAlert}) {
     <button ref={refs.dash} aria-label="Line style" aria-expanded={menu==="dash"} onClick={()=>setMenu(menu==="dash"?null:"dash")}>{dash[0].toUpperCase()+dash.slice(1)} ▾</button>
     <span className="cx-nav-sep"/>
     <button aria-label="Add text label" title={drawing.label?"Edit label":"Add label"} onClick={()=>{const t=window.prompt("Label for this drawing", drawing.label||""); if(t!==null) onChange({label:t.trim()||undefined});}}>T</button>
-    <button aria-label="Alert at this level" title={onAlert?"Create alert at this level":"Alerts work from horizontal lines"} disabled={!onAlert} onClick={onAlert}>⏰</button>
-    <button aria-label="Duplicate drawing" title="Duplicate" onClick={onCopy}>⧉</button>
-    <button aria-label={drawing.locked?"Unlock drawing":"Lock drawing"} aria-pressed={!!drawing.locked} title={drawing.locked?"Unlock":"Lock"} onClick={()=>onChange({locked:!drawing.locked})}>{drawing.locked?"🔒":"🔓"}</button>
-    <button className="danger" aria-label="Delete drawing" title="Delete" onClick={onDelete}>🗑</button>
+    <button aria-label="Alert at this level" title={onAlert?"Create alert at this level":"Alerts work from horizontal lines"} disabled={!onAlert} onClick={onAlert}><Icon name="bell" size={14}/></button>
+    <button aria-label="Duplicate drawing" title="Duplicate" onClick={onCopy}><Icon name="copy" size={14}/></button>
+    <button aria-label={drawing.locked?"Unlock drawing":"Lock drawing"} aria-pressed={!!drawing.locked} title={drawing.locked?"Unlock":"Lock"} onClick={()=>onChange({locked:!drawing.locked})}><Icon name={drawing.locked?"lock":"unlock"} size={14}/></button>
+    <button className="danger" aria-label="Delete drawing" title="Delete" onClick={onDelete}><Icon name="trash" size={14}/></button>
     <Popover open={menu==="color"} onClose={close} anchorRef={refs.color} label="Line color" className="cx-menu cx-pad-s"><Swatches label="Line color" value={color} onChange={c=>{onChange({color:c});close();}}/></Popover>
     <Popover open={menu==="width"} onClose={close} anchorRef={refs.width} label="Line width" className="cx-menu w-120">{[1,2,3,4].map(w=><button key={w} role="menuitemcheckbox" aria-checked={Math.round(width)===w} className="cx-menu-item" onClick={()=>{onChange({width:w});close();}}><span className="cx-width-sample" style={{height:w}}/>{w}px</button>)}</Popover>
     <Popover open={menu==="dash"} onClose={close} anchorRef={refs.dash} label="Line style" className="cx-menu w-120">{["solid","dashed","dotted"].map(d=><button key={d} role="menuitemcheckbox" aria-checked={dash===d} className="cx-menu-item" onClick={()=>{onChange({dash:d});close();}}>{d[0].toUpperCase()+d.slice(1)}</button>)}</Popover>

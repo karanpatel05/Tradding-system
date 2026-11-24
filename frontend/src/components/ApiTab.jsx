@@ -144,7 +144,7 @@ export default function ApiTab({ onChange }) {
         <div>
           <h1>Connections</h1>
           <p className="page-description">
-            Your broker, market data and execution services in one place.
+            Your broker, market data and execution services in one place
           </p>
         </div>
       </header>
@@ -201,7 +201,7 @@ export default function ApiTab({ onChange }) {
               }`}
             >
               {tt?.probe === "ok"
-                ? "Connected ✓"
+                ? "Connected"
                 : tt?.probe
                   ? "Rejected"
                   : tt?.configured
@@ -251,7 +251,7 @@ export default function ApiTab({ onChange }) {
               }`}
             >
               {alpaca?.status === "ok"
-                ? "Connected ✓"
+                ? "Connected"
                 : alpaca?.status === "rejected"
                   ? "Rejected"
                   : alpaca?.status === "error"
@@ -268,7 +268,12 @@ export default function ApiTab({ onChange }) {
             </div>
             <div>
               <div className="stat-label">Status</div>
-              <div className="stat-value">{alpaca?.account_status || "—"}</div>
+              <div className="stat-value">
+                {alpaca?.account_status
+                  ? alpaca.account_status.charAt(0) +
+                    alpaca.account_status.slice(1).toLowerCase().replace(/_/g, " ")
+                  : "—"}
+              </div>
             </div>
             <div>
               <div className="stat-label">Equity</div>
@@ -300,7 +305,7 @@ export default function ApiTab({ onChange }) {
 
         <section className="card">
           <div className="card-head">
-            <h2>App Access Token</h2>
+            <h2>App access token</h2>
             <span className={`mode-badge ${hasToken ? "live" : "warn"}`}>
               {hasToken ? "Set" : "Not set"}
             </span>
@@ -333,9 +338,9 @@ export default function ApiTab({ onChange }) {
 
         <section className="card">
           <div className="card-head">
-            <h2>Order Routing</h2>
+            <h2>Order routing</h2>
             <span className={`mode-badge ${liveOn ? "danger" : "disabled"}`}>
-              {liveOn ? "ALPACA PAPER" : "SIMULATED"}
+              {liveOn ? "Alpaca paper" : "Simulated"}
             </span>
           </div>
           <p className="muted small">

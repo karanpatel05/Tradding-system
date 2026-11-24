@@ -552,7 +552,7 @@ export default function BuilderTab({ initialUnderlying } = {}) {
             {chain.expirations.length ? (
               <>
                 <div className="olabel" style={{ marginTop: 10 }}>
-                  EXPIRATION:{" "}
+                  Expiration{" "}
                   <b>{sel?.expiry ? `${dteOf(sel.expiry)}d` : "—"}</b>
                 </div>
                 <ExpiryTabs
@@ -560,7 +560,7 @@ export default function BuilderTab({ initialUnderlying } = {}) {
                   value={sel?.expiry || null}
                   onChange={pickExpiry}
                 />
-                <div className="olabel">STRIKE:</div>
+                <div className="olabel">Strike</div>
                 <StrikeRuler
                   strikes={strikesFor(sel?.expiry)}
                   value={sel?.strike ?? null}
@@ -640,7 +640,7 @@ export default function BuilderTab({ initialUnderlying } = {}) {
             {maxDays > 0 && (
               <div className="row gap center date-row">
                 <label className="olabel">
-                  DATE: <b>{dateLabel}</b>
+                  Date <b>{dateLabel}</b>
                 </label>
                 <input
                   type="range"
@@ -661,7 +661,7 @@ export default function BuilderTab({ initialUnderlying } = {}) {
 
             <div className="row gap center sliders-row">
               <label className="olabel">
-                RANGE: <b>±{rangePct}%</b>
+                Range <b>±{rangePct}%</b>
               </label>
               <input
                 type="range"
@@ -672,7 +672,7 @@ export default function BuilderTab({ initialUnderlying } = {}) {
                 onChange={(e) => setRangePct(Number(e.target.value))}
               />
               <label className="olabel">
-                🌡 IMPLIED VOLATILITY: <b>{(Number(iv) * 100).toFixed(1)}%</b>
+                Implied volatility <b>{(Number(iv) * 100).toFixed(1)}%</b>
               </label>
               <input
                 type="range"
@@ -701,7 +701,7 @@ export default function BuilderTab({ initialUnderlying } = {}) {
             </div>
 
             <div className="legs-toolbar">
-              <h4 style={{ margin: 0 }}>LEGS</h4>
+              <h4 style={{ margin: 0 }}>Legs</h4>
               <div className="row gap center">
                 <button
                   className="btn ghost"

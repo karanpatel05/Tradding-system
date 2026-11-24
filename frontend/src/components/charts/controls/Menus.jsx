@@ -38,18 +38,18 @@ export function LayoutMenu({open, onClose, anchorRef, count, panes, start, onCou
 
 export function ContextMenu({at, onClose, symbol, price, onAlert, onLine, onBuilder, onReset, onCopy, drawingsHidden, onToggleDrawings, hasDrawings, onRemoveDrawings, onSettings}) {
   const item = (label, fn, opts={}) => <button role="menuitem" className={"cx-menu-item"+(opts.danger?" danger":"")} disabled={opts.disabled} onClick={()=>{onClose();fn();}}>
-    <span className="cx-menu-icon" aria-hidden="true">{opts.icon}</span><span className="grow">{label}</span>{opts.key && <kbd>{opts.key}</kbd>}</button>;
+    <span className="cx-menu-icon" aria-hidden="true">{opts.icon && <Icon name={opts.icon} size={14}/>}</span><span className="grow">{label}</span>{opts.key && <kbd>{opts.key}</kbd>}</button>;
   return <Popover open={!!at} onClose={onClose} at={at} label="Chart menu" className="cx-menu w-260">
     <div className="cx-menu-label">{symbol} at {price?.toFixed(2)}</div>
-    {item(`Add alert at ${price?.toFixed(2)}`, onAlert, {icon:"⏰", key:"Alt A"})}
-    {item("Draw horizontal line here", onLine, {icon:"━"})}
-    {item("Open in options builder", onBuilder, {icon:"⧉", disabled:!onBuilder})}
+    {item(`Add alert at ${price?.toFixed(2)}`, onAlert, {icon:"bell", key:"Alt A"})}
+    {item("Draw horizontal line here", onLine, {icon:"hline"})}
+    {item("Open in options builder", onBuilder, {icon:"external", disabled:!onBuilder})}
     <div className="cx-menu-sep"/>
-    {item("Reset view", onReset, {icon:"↺", key:"Alt R"})}
-    {item("Copy chart image", onCopy, {icon:"⎘"})}
-    {item(drawingsHidden?"Show all drawings":"Hide all drawings", onToggleDrawings, {icon:"◉"})}
+    {item("Reset view", onReset, {icon:"reset", key:"Alt R"})}
+    {item("Copy chart image", onCopy, {icon:"image"})}
+    {item(drawingsHidden?"Show all drawings":"Hide all drawings", onToggleDrawings, {icon:"eye"})}
     <div className="cx-menu-sep"/>
-    {item("Remove all drawings", onRemoveDrawings, {icon:"🗑", danger:true, disabled:!hasDrawings})}
-    {item("Chart settings", onSettings, {icon:"⚙"})}
+    {item("Remove all drawings", onRemoveDrawings, {icon:"trash", danger:true, disabled:!hasDrawings})}
+    {item("Chart settings", onSettings, {icon:"gear"})}
   </Popover>;
 }
