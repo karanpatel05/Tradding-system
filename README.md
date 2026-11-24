@@ -162,9 +162,13 @@ the service serves your frontend changes.
 ## Chart history
 
 The Chart screen reads deep price history from a local SQLite file, `backend/market_history.db`
-(git-ignored): 1-minute bars for SPY, QQQ, TSLA and NVDA from 2022-01-03 (04:00-20:00 ET,
-split-adjusted, from Alpaca market data) plus daily bars built from the regular session.
-Two env vars control it:
+(git-ignored): 1-minute bars from 2022-01-03 (04:00-20:00 ET, split-adjusted, from Alpaca
+market data) plus daily bars built from the regular session, for the stocks in
+`LIVE_BAR_SYMBOLS` (default `SPY,QQQ,TSLA,NVDA`). Adding a symbol there starts a backfill for
+it from 2022-01-03 on the next sync. The chart's own paging list (`HISTORY_SYMBOLS` in
+`frontend/src/components/charts/historyPaging.js`) is still fixed to SPY, QQQ, TSLA and NVDA
+(plus SPX/NDX), so a newly added stock is stored and served by the API but the Chart screen
+does not page its history yet. Two env vars control the file:
 
 - `MARKET_HISTORY_PATH` - location of the history file (default `backend/market_history.db`).
 - `MARKET_HISTORY_SYNC` - `true` makes this process download and keep the file current
@@ -182,18 +186,25 @@ RUN_WEB_HOST=0.0.0.0 ./scripts/install_autostart.sh
 ### Live trade recorder
 
 During US regular trading hours (09:30-16:00 ET) the process with `MARKET_HISTORY_SYNC=true`
-(and only that one, since it holds the lock file) also records every DXLink trade
-(TimeAndSale) for the symbols in `LIVE_BAR_SYMBOLS` (default `SPY,QQQ,TSLA,NVDA`). Trades go
+(and only that one, since it holds the lock file) also records DXLink trades (TimeAndSale)
+for the symbols in `LIVE_BAR_SYMBOLS`. Only `NEW` and `CORRECTION` trades are kept. They go
 into the `ticks` table and are rolled into trade-built 1-minute bars (`live_1m`) in the same
 database file. `GET /api/market/history?symbol=&interval=` serves those minutes after the newest
-official Alpaca bar and reports where they start in `live_from`; `/ws` snapshots carry
-`chart_bars` so the Chart screen updates between syncs.
+consolidated (SIP) Alpaca bar and reports where they start in `live_from`; `/ws` snapshots
+carry `chart_bars` so the Chart screen updates between syncs.
 
-- Odd-lot trades count toward volume but never set open, high, low or close.
-- Official Alpaca bars always win: once one exists for a minute it replaces the trade-built one.
+- Prices follow the trade's `valid_tick` flag: trades with `valid_tick` false (odd lots, for
+  example) count toward volume, but set a minute's open, high, low and close only while that
+  minute has no valid trade yet.
+- Consolidated SIP bars always win: once one exists for a minute it replaces the trade-built
+  one. Trade-built minutes in turn win over the provisional IEX bars the sync stores for the
+  newest ~16 minutes when Alpaca withholds recent SIP data; an IEX minute is shown only where
+  no trade-built minute exists.
 - After 20:15 ET the day is finalized: official minutes still missing are re-fetched once, then
-  that day's `ticks` and `live_1m` rows are deleted. This replaces the earlier rule that raw
-  ticks are never saved; trades are now kept only until the end of the day.
+  that day's `ticks` and `live_1m` rows are deleted. If the re-fetch fails, the day's `ticks`
+  are still deleted but its `live_1m` rows stay, and the day is retried at most every 30
+  minutes until it succeeds. This replaces the earlier rule that raw ticks are never saved;
+  trades are now kept only until the end of the day.
 
 ## Strategies
 

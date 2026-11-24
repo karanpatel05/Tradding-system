@@ -1,8 +1,8 @@
 """History read service behind GET /api/market/history.
 
-Stocks (SPY/QQQ/TSLA/NVDA) read the local SQLite store only; SPX/NDX intraday come from
-a 14-day in-memory slice of the Tastytrade 1m candles, SPX/NDX 1D/1W from the existing
-chart-data daily path. Pages are cursor based: newest, `before` a bar time, `after` a
+Stocks (LIVE_BAR_SYMBOLS, default SPY/QQQ/TSLA/NVDA) read the local SQLite store only;
+SPX/NDX intraday come from a 14-day in-memory slice of the Tastytrade 1m candles, SPX/NDX
+1D/1W from the existing chart-data daily path. Pages are cursor based: newest, `before` a bar time, `after` a
 bar time, or `around` a date (snapped to the nearest available bars).
 """
 import asyncio
