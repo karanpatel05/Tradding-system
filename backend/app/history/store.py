@@ -28,7 +28,13 @@ CREATE TABLE IF NOT EXISTS ticks(
 CREATE TABLE IF NOT EXISTS live_1m(
     symbol TEXT, ts INTEGER, open REAL, high REAL, low REAL, close REAL, volume REAL,
     trades INTEGER, PRIMARY KEY(symbol, ts)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS sip_state(symbol TEXT PRIMARY KEY, sip_latest INTEGER);
 """
+# Newest consolidated (SIP) minute per symbol; only ever moves forward.
+_SET_SIP_LATEST = (
+    "INSERT INTO sip_state(symbol, sip_latest) VALUES (?, ?) ON CONFLICT(symbol) "
+    "DO UPDATE SET sip_latest = MAX(COALESCE(sip_latest, excluded.sip_latest), "
+    "excluded.sip_latest)")
 # Recompute live_1m rows from ticks. OHLC come from a minute's valid=1 trades when it has
 # any, else from all its trades (first/last by ts_ms, seq); volume/trades cover ALL trades.
 # {where} filters ticks; it must only reference symbol/minute.
@@ -111,9 +117,10 @@ class HistoryStore:
             c.executemany("INSERT OR REPLACE INTO bars_1d VALUES (?,?,?,?,?,?,?,?)", data)
 
     def upsert_minutes_and_daily(self, symbol: str, bars: list[dict],
-                                 daily_rows: list[dict]) -> int:
+                                 daily_rows: list[dict], sip_latest: int | None = None) -> int:
         """Upsert minutes and their rebuilt daily rows in ONE transaction: a crash or error
-        between the two can never leave minutes stored without their daily rows."""
+        between the two can never leave minutes stored without their daily rows.
+        `sip_latest` (the newest SIP minute in `bars`) is recorded in the same transaction."""
         minutes = [(symbol, int(b["time"]), b["open"], b["high"], b["low"], b["close"],
                     b["volume"]) for b in bars]
         days = [(symbol, r["session"], int(r["time"]), r["open"], r["high"], r["low"],
@@ -123,7 +130,20 @@ class HistoryStore:
                 c.executemany("INSERT OR REPLACE INTO bars_1m VALUES (?,?,?,?,?,?,?)", minutes)
             if days:
                 c.executemany("INSERT OR REPLACE INTO bars_1d VALUES (?,?,?,?,?,?,?,?)", days)
+            if sip_latest is not None:
+                c.execute(_SET_SIP_LATEST, (symbol, int(sip_latest)))
         return len(minutes)
+
+    def set_sip_latest(self, symbol: str, ts: int) -> None:
+        with closing(self._connect()) as c, c:
+            c.execute(_SET_SIP_LATEST, (symbol, int(ts)))
+
+    def sip_latest(self, symbol: str) -> int | None:
+        """Time of the newest consolidated (SIP) minute stored for `symbol`, if known."""
+        with closing(self._connect()) as c:
+            r = c.execute("SELECT sip_latest FROM sip_state WHERE symbol=?",
+                          (symbol,)).fetchone()
+        return r[0] if r else None
 
     def daily(self, symbol: str, start_ms: int, end_ms: int) -> list[dict]:
         with closing(self._connect()) as c:
@@ -141,7 +161,7 @@ class HistoryStore:
 
     def delete_symbol(self, symbol: str) -> None:
         with closing(self._connect()) as c, c:
-            for t in ("bars_1m", "bars_1d", "sync_state", "ticks", "live_1m"):
+            for t in ("bars_1m", "bars_1d", "sync_state", "ticks", "live_1m", "sip_state"):
                 c.execute(f"DELETE FROM {t} WHERE symbol=?", (symbol,))
 
     def insert_trades(self, trades: list[Trade]) -> set[tuple[str, int]]:

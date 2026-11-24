@@ -75,6 +75,14 @@ def _today_start_ms() -> int:
     return _midnight_ms(datetime.now(ET).date())
 
 
+def _official_latest(store, symbol: str, stored_latest: int) -> int:
+    """The "official" boundary for live merging: the newest consolidated (SIP) minute.
+    The provisional IEX tail after it is not official. Falls back to the newest stored
+    minute when no SIP minute has been recorded yet."""
+    sip = store.sip_latest(symbol)
+    return stored_latest if sip is None else sip
+
+
 def _live_after(store, symbol: str, official_latest: int) -> list[dict]:
     """Trade-built minutes of today newer than the newest official minute (ascending).
     Official bars always win: a live minute at or before `official_latest` is never used."""
@@ -82,12 +90,18 @@ def _live_after(store, symbol: str, official_latest: int) -> list[dict]:
 
 
 def _minutes(store, symbol, start_ms, end_ms, official_latest: int) -> list[dict]:
-    """Official 1m bars in [start_ms, end_ms) plus today's trade-built minutes newer than
-    `official_latest`, ascending. Synchronous."""
+    """Stored 1m bars in [start_ms, end_ms) with today's trade-built minutes newer than
+    `official_latest` laid over them, ascending, one bar per minute. After the boundary a
+    live minute replaces the stored (provisional IEX) one and a stored minute with no live
+    counterpart is kept; at or before it the stored bar always wins. Synchronous."""
     out = store.minutes(symbol, start_ms, end_ms)
     live_start = max(start_ms, official_latest + 1, _today_start_ms())
     if live_start < end_ms:
-        out = out + store.live_minutes(symbol, live_start, end_ms)
+        live = store.live_minutes(symbol, live_start, end_ms)
+        if live:
+            merged = {b["time"]: b for b in out}
+            merged.update((m["time"], m) for m in live)
+            out = [merged[t] for t in sorted(merged)]
     return out
 
 
@@ -183,10 +197,10 @@ def _result(symbol, interval, bars, earliest, latest, latest_bar_time, source, n
 
 
 def _with_live_day(store, symbol, series: list[dict], live: list[dict], official_hi: int):
-    """Replace/append today's daily bar with one built from today's official + live minutes
-    (09:30-15:59 ET). Returns (series, time of the first live minute that fed it | None)."""
-    today = _today_start_ms()
-    merged = store.minutes(symbol, today, official_hi + 1) + live
+    """Replace/append today's daily bar with one built from today's merged minutes (stored
+    bars with live minutes after `official_hi` laid over them, 09:30-15:59 ET). Returns
+    (series, time of the first live minute that fed it | None)."""
+    merged = _minutes(store, symbol, _today_start_ms(), 2**62, official_hi)
     built = daily_from_minutes(merged)
     if not built:
         return series, None
@@ -235,8 +249,8 @@ async def get_history(symbol: str, interval: str, *, before: int | None = None,
         if lo is None:
             return _result(symbol, interval, [], None, None, None, source,
                            "No local history for this symbol yet.")
-        live = await asyncio.to_thread(_live_after, store, symbol, hi)
-        official_hi = hi
+        official_hi = await asyncio.to_thread(_official_latest, store, symbol, hi)
+        live = await asyncio.to_thread(_live_after, store, symbol, official_hi)
         if live:
             hi = max(hi, live[-1]["time"])
         if intraday:

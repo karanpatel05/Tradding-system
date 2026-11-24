@@ -504,3 +504,38 @@ async def test_today_finalized_after_2015(store):
     store.insert_trades([_trade(_et(10, 0, 1, day=D2))])
     await _eod_sync(store, FakeFetch(), datetime(2026, 11, 20, 1, 16, tzinfo=UTC)).run_once()  # 20:16 ET
     assert store.live_days() == []
+
+
+# ---- newest consolidated (SIP) minute ----------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_sync_records_sip_latest_from_sip_bars_only(store):
+    now1 = datetime(2026, 11, 20, 20, 0, tzinfo=UTC)
+    box = [now1]
+    store.upsert_minutes("SPY", [bar(ms(now1 - timedelta(hours=3)))])
+    sip_t = ms(now1 - timedelta(minutes=30))
+    tail_t = ms(now1 - timedelta(minutes=5))
+
+    def deny(call, n):
+        if call["feed"] == "sip" and call["end"] > box[0] - timedelta(minutes=16):
+            raise AlpacaDataError(403, "subscription does not permit querying recent SIP data")
+
+    f = FakeFetch({"SPY": [bar(sip_t, 78.0), bar(tail_t, 79.0)]}, {"SPY": deny},
+                  iex={"SPY": [bar(tail_t, 77.0)]})
+    sync = S.HistorySync(store, fetch=f, now=lambda: box[0])
+    await sync.sync_symbol("SPY")
+    assert store.bounds("SPY")[1] == tail_t           # the IEX tail is stored ...
+    assert store.sip_latest("SPY") == sip_t           # ... but does not move sip_latest
+    box[0] = now1 + timedelta(minutes=30)
+    await sync.sync_symbol("SPY")
+    assert store.sip_latest("SPY") == tail_t          # SIP now covers the old tail
+
+
+@pytest.mark.asyncio
+async def test_finalize_sip_refetch_records_sip_latest(store, monkeypatch):
+    monkeypatch.setattr(S, "stock_symbols", lambda: ("SPY",))
+    gap = _et(11, 0)
+    f = FakeFetch({"SPY": [bar(gap, 55.0)]})
+    _fill_rth_minutes(store, "SPY", D1, skip={gap})
+    await _eod_sync(store, f, datetime(2026, 11, 19, 15, tzinfo=UTC)).finalize_day(D1)
+    assert store.sip_latest("SPY") == gap

@@ -64,9 +64,11 @@ class HistorySync:
     async def _store(self, fn, *args, **kw):
         return await asyncio.to_thread(fn, *args, **kw)
 
-    def _write_chunk(self, symbol: str, bars: list[dict]) -> int:
+    def _write_chunk(self, symbol: str, bars: list[dict], sip: bool = False) -> int:
         """Upsert a batch and rebuild the daily rows of every ET date it touched, in one
-        store transaction (each day's row is built from its stored minutes + the batch)."""
+        store transaction (each day's row is built from its stored minutes + the batch).
+        `sip=True` (consolidated bars, never the IEX tail) also records the newest one as
+        the symbol's sip_latest in that transaction."""
         bars = [b for b in bars
                 if dtime(4, 0) <= datetime.fromtimestamp(b["time"] / 1000, ET).time()
                 < dtime(20, 0)]
@@ -79,7 +81,8 @@ class HistorySync:
             merged = {m["time"]: m for m in self.store.minutes(symbol, lo, hi)}
             merged.update({int(b["time"]): b for b in by_day[day]})
             rows += daily_from_minutes([merged[t] for t in sorted(merged)])
-        return self.store.upsert_minutes_and_daily(symbol, bars, rows)
+        sip_latest = max((int(b["time"]) for b in bars), default=None) if sip else None
+        return self.store.upsert_minutes_and_daily(symbol, bars, rows, sip_latest=sip_latest)
 
     async def _pull(self, symbol: str, start: datetime, end: datetime, feed: str) -> list[dict]:
         return await self._fetch(symbol, start, end, feed=feed, limiter=self._limiter)
@@ -108,7 +111,7 @@ class HistorySync:
                     raise
                 sip_end = now - _SIP_DELAY            # redo this chunk up to the allowed edge
                 continue
-            written += await self._store(self._write_chunk, symbol, bars)
+            written += await self._store(self._write_chunk, symbol, bars, sip=True)
             cursor = end
         if sip_end == now:
             self._iex_since.pop(symbol, None)         # SIP now covers any earlier IEX tail
@@ -174,7 +177,7 @@ class HistorySync:
                 continue
             try:
                 bars = await self._pull(symbol, start, end, "sip")
-                await self._store(self._write_chunk, symbol, bars)
+                await self._store(self._write_chunk, symbol, bars, sip=True)
                 missing = await self._missing_rth(symbol, day)
                 note = (f"{len(missing)} minutes missing on {day.isoformat()}"
                         if missing else None)

@@ -223,3 +223,14 @@ def test_old_ticks_table_is_recreated_and_live_1m_kept(tmp_path):
     assert len(HistoryStore(path).live_minutes("SPY", 0, 2**62)) == 2
     with closing(s2._connect()) as c:
         assert c.execute("SELECT COUNT(*) FROM ticks").fetchone()[0] == 1
+
+
+def test_sip_latest_round_trip_is_monotonic_and_cleared_with_symbol(store):
+    assert store.sip_latest("SPY") is None
+    store.set_sip_latest("SPY", 2_000)
+    store.set_sip_latest("SPY", 1_000)       # an older SIP write never moves it back
+    assert store.sip_latest("SPY") == 2_000 and store.sip_latest("QQQ") is None
+    store.upsert_minutes_and_daily("SPY", [_bar(3_000)], [], sip_latest=3_000)
+    assert store.sip_latest("SPY") == 3_000
+    store.delete_symbol("SPY")
+    assert store.sip_latest("SPY") is None

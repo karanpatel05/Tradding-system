@@ -363,3 +363,79 @@ async def test_live_from_none_when_daily_page_excludes_today(live_store):
         assert out["bars"][-1]["time"] == old and out["live_from"] is None
         newest = await service.get_history("SPY", interval)
         assert newest["live_from"] == _today_et(10, 1)
+
+
+# --- the provisional IEX tail is not official: live minutes win over it ---------------
+IEX_CLOSE = 150.0
+IEX_VOL = 1.0
+
+
+def _put_iex(s, symbol, times):
+    s.upsert_minutes(symbol, [{**_bar(t, IEX_CLOSE), "volume": IEX_VOL} for t in times])
+
+
+def _closes(out, n):
+    return [(b["time"], b["close"]) for b in out["bars"][-n:]]
+
+
+@pytest.mark.asyncio
+async def test_live_wins_over_iex_tail_after_newest_sip(live_store):
+    t = lambda m: _today_et(10, m)  # noqa: E731
+    _put_official(live_store, "SPY", [_today_et(9, 59), t(0)])
+    live_store.set_sip_latest("SPY", t(0))
+    _put_iex(live_store, "SPY", [t(m) for m in range(1, 6)])
+    _put_live(live_store, "SPY", [t(m) for m in range(2, 7)])
+    out = await service.get_history("SPY", "1m")
+    assert _closes(out, 7) == [(t(0), OFFICIAL_CLOSE), (t(1), IEX_CLOSE)] + [
+        (t(m), LIVE_CLOSE) for m in range(2, 7)]
+    assert len({b["time"] for b in out["bars"]}) == len(out["bars"])
+    assert out["live_from"] == t(2) and out["latest"] == t(6)
+    assert out["has_more_after"] is False
+    older = await service.get_history("SPY", "1m", before=t(2))
+    assert _closes(older, 2) == [(t(0), OFFICIAL_CLOSE), (t(1), IEX_CLOSE)]
+    assert older["live_from"] is None
+    newer = await service.get_history("SPY", "1m", after=t(1))
+    assert _closes(newer, 5) == [(t(m), LIVE_CLOSE) for m in range(2, 7)]
+    assert newer["live_from"] == t(2)
+
+
+@pytest.mark.asyncio
+async def test_iex_tail_served_when_no_live_minutes(live_store):
+    t = lambda m: _today_et(10, m)  # noqa: E731
+    _put_official(live_store, "SPY", [t(0)])
+    live_store.set_sip_latest("SPY", t(0))
+    _put_iex(live_store, "SPY", [t(m) for m in range(1, 6)])
+    out = await service.get_history("SPY", "1m")
+    assert _closes(out, 6) == [(t(0), OFFICIAL_CLOSE)] + [(t(m), IEX_CLOSE) for m in range(1, 6)]
+    assert out["live_from"] is None and out["latest"] == t(5)
+
+
+@pytest.mark.asyncio
+async def test_5m_bucket_across_sip_boundary_uses_merged_minutes(live_store):
+    t = lambda m: _today_et(10, m)  # noqa: E731
+    _put_official(live_store, "SPY", [t(0), t(1)])
+    live_store.set_sip_latest("SPY", t(1))
+    _put_iex(live_store, "SPY", [t(2), t(3), t(4)])
+    _put_live(live_store, "SPY", [t(3), t(4)])
+    out = await service.get_history("SPY", "5m")
+    b = out["bars"][-1]
+    assert b["time"] == t(0) and b["volume"] == 4 * VOL + IEX_VOL
+    assert b["close"] == LIVE_CLOSE and b["high"] == LIVE_CLOSE + 1
+    assert out["live_from"] == t(3)
+
+
+@pytest.mark.asyncio
+async def test_1d_today_rebuild_keeps_iex_minutes_without_live(live_store):
+    t = lambda m: _today_et(10, m)  # noqa: E731
+    _put_official(live_store, "SPY", [t(0)])
+    live_store.set_sip_latest("SPY", t(0))
+    live_store.upsert_daily("SPY", [{**_bar(_today_et(9, 30), OFFICIAL_CLOSE),
+                                     "session": datetime.now(ET).date().isoformat()}])
+    _put_iex(live_store, "SPY", [t(1), t(2), t(3)])
+    _put_live(live_store, "SPY", [t(2)])
+    for interval in ("1D", "1W"):
+        out = await service.get_history("SPY", interval)
+        bar = out["bars"][-1]
+        assert bar["close"] == IEX_CLOSE                     # 10:03 is IEX, the last minute
+        assert bar["volume"] == 2 * VOL + 2 * IEX_VOL       # 10:00 SIP, 10:02 live, 2 IEX
+        assert out["live_from"] == t(2)
