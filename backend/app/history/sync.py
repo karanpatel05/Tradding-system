@@ -31,6 +31,7 @@ _SPLIT_TOLERANCE = 0.0001
 _SPLIT_MIN_OVERLAP = 10
 _SPLIT_LOOKBACK_DAYS = 5                 # reference day for the daily split check, in trading days
 _MAX_BACKOFF = 900.0
+_FINALIZE_RETRY = timedelta(minutes=30)  # a failed end-of-day finalize is retried this often
 
 
 def _from_ms(t: int) -> datetime:
@@ -59,6 +60,7 @@ class HistorySync:
         self._limiter = RateLimiter(per_minute=180)   # one cap shared by every request
         self._seen: set[str] = set()                  # symbols synced by this instance
         self._iex_since: dict[str, int] = {}          # symbol -> start ms of stored IEX tail
+        self._finalize_failed: dict[date, datetime] = {}  # day -> when its finalize last failed
         self.errors = 0                               # symbols that failed in the last run_once
 
     async def _store(self, fn, *args, **kw):
@@ -164,10 +166,11 @@ class HistorySync:
         have = {m["time"] for m in await self._store(self.store.minutes, symbol, open_ms, end_ms)}
         return [t for t in range(open_ms, end_ms, _MINUTE_MS) if t not in have]
 
-    async def finalize_day(self, day: date) -> None:
+    async def finalize_day(self, day: date) -> bool:
         """Make sure `day`'s official RTH minutes are stored, then drop that day's trades and
         trade-built minutes. Official bars win: live data is never copied into bars_1m.
-        A failed re-fetch leaves the day undeleted so the next pass retries it."""
+        A failed re-fetch still drops the day's trades but keeps its live_1m rows, which
+        mark the day for a retry. Returns False when a re-fetch failed."""
         open_ms = et_session_start_ms(day)
         start, end = _from_ms(open_ms), _from_ms(open_ms + 390 * _MINUTE_MS)
         failed = False
@@ -187,18 +190,31 @@ class HistorySync:
                 logger.warning("history finalize %s %s failed: %s", symbol, day, note)
             if note:
                 await self._store(self.store.set_state, symbol, note=note)
-        if not failed:
-            await self._store(self.store.delete_live_day, day)
+        if failed:
+            await self._store(self.store.delete_ticks_day, day)
+            return False
+        await self._store(self.store.delete_live_day, day)
+        return True
 
     async def _finalize_due_days(self) -> None:
-        local = self._now().astimezone(ET)
+        now = self._now()
+        local = now.astimezone(ET)
         today, after_close = local.date(), local.time() >= dtime(20, 15)
         for d in await self._store(self.store.live_days):
-            if d < today or (d == today and after_close):
-                try:
-                    await self.finalize_day(d)
-                except Exception:  # noqa: BLE001 - retried next pass
-                    logger.exception("history: finalizing %s failed", d)
+            if not (d < today or (d == today and after_close)):
+                continue
+            last = self._finalize_failed.get(d)
+            if last is not None and now - last < _FINALIZE_RETRY:
+                continue
+            try:
+                ok = await self.finalize_day(d)
+            except Exception:  # noqa: BLE001 - retried on a later pass
+                logger.exception("history: finalizing %s failed", d)
+                ok = False
+            if ok:
+                self._finalize_failed.pop(d, None)
+            else:
+                self._finalize_failed[d] = now
 
     async def run_once(self) -> None:
         self.errors = 0

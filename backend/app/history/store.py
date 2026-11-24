@@ -207,6 +207,12 @@ class HistoryStore:
             c.execute("DELETE FROM ticks WHERE minute>=? AND minute<?", (lo, hi))
             c.execute("DELETE FROM live_1m WHERE ts>=? AND ts<?", (lo, hi))
 
+    def delete_ticks_day(self, day: date) -> None:
+        """Drop one ET day's raw trades but keep its live_1m rows (a finalize retry marker)."""
+        lo, hi = _day_range(day)
+        with closing(self._connect()) as c, c:
+            c.execute("DELETE FROM ticks WHERE minute>=? AND minute<?", (lo, hi))
+
     def get_state(self, symbol: str) -> dict | None:
         with closing(self._connect()) as c:
             r = c.execute("SELECT status, note, last_full_check FROM sync_state "

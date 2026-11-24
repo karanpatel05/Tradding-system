@@ -1,5 +1,6 @@
 import asyncio
 import fcntl
+from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -483,6 +484,49 @@ async def test_finalize_fetch_failure_keeps_day(store, monkeypatch):
     await _eod_sync(store, f, datetime(2026, 11, 19, 15, tzinfo=UTC)).finalize_day(D1)
     assert store.live_days() == [D1]
     assert "boom" in store.get_state("SPY")["note"]
+    with closing(store._connect()) as c:
+        assert c.execute("SELECT COUNT(*) FROM ticks").fetchone()[0] == 0   # trades gone
+    assert len(store.live_minutes("SPY", 0, 2**62)) == 1     # live_1m kept: retry marker
+
+
+@pytest.mark.asyncio
+async def test_failed_finalize_retries_at_most_every_30_minutes(store, monkeypatch):
+    monkeypatch.setattr(S, "stock_symbols", lambda: ("SPY",))
+    f = FakeFetch(raises={"SPY": RuntimeError("boom")})
+    _fill_rth_minutes(store, "SPY", D1, skip={_et(11, 0)})
+    store.insert_trades([_trade(_et(10, 0, 1))])
+    box = [datetime(2026, 11, 19, 15, tzinfo=UTC)]
+    sync = S.HistorySync(store, fetch=f, now=lambda: box[0])
+    await sync._finalize_due_days()
+    assert len(f.calls) == 1 and store.live_days() == [D1]
+    box[0] += timedelta(minutes=29)
+    await sync._finalize_due_days()
+    assert len(f.calls) == 1                                   # throttled: no re-pull
+    f.raises.clear()
+    box[0] += timedelta(minutes=2)
+    await sync._finalize_due_days()
+    assert len(f.calls) == 2
+    assert store.live_days() == [] and store.live_minutes("SPY", 0, 2**62) == []
+
+
+@pytest.mark.asyncio
+async def test_finalize_crash_is_also_throttled(store, monkeypatch):
+    store.insert_trades([_trade(_et(10, 0, 1))])
+    box = [datetime(2026, 11, 19, 15, tzinfo=UTC)]
+    sync = S.HistorySync(store, fetch=FakeFetch(), now=lambda: box[0])
+    calls = []
+
+    async def crash(day):
+        calls.append(day)
+        raise OSError("db locked")
+    monkeypatch.setattr(sync, "finalize_day", crash)
+    await sync._finalize_due_days()
+    box[0] += timedelta(minutes=5)
+    await sync._finalize_due_days()
+    assert calls == [D1]
+    box[0] += timedelta(minutes=30)
+    await sync._finalize_due_days()
+    assert calls == [D1, D1]
 
 
 @pytest.mark.asyncio

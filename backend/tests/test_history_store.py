@@ -234,3 +234,13 @@ def test_sip_latest_round_trip_is_monotonic_and_cleared_with_symbol(store):
     assert store.sip_latest("SPY") == 3_000
     store.delete_symbol("SPY")
     assert store.sip_latest("SPY") is None
+
+
+def test_delete_ticks_day_keeps_live_minutes(store):
+    store.insert_trades([T(_et(10, 0, 1, day=D1), 1, 1.0, 1),
+                         T(_et(10, 0, 1, day=D2), 2, 1.0, 1)])
+    store.delete_ticks_day(D1)
+    with closing(store._connect()) as c:
+        assert c.execute("SELECT COUNT(*) FROM ticks").fetchone()[0] == 1
+    assert len(store.live_minutes("SPY", 0, 2**62)) == 2
+    assert store.live_days() == [D1, D2]
