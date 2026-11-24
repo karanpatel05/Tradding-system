@@ -16,6 +16,18 @@ from app.db.base import init_db, session_scope
 from app.db.models import OrderIntent
 from app.engine import execution
 
+
+@pytest.fixture(autouse=True)
+def _pin_ledger_clock(monkeypatch):
+    """This module's fixtures use fixed option symbols (e.g. 2026-11 expiries); pin the
+    ledger's expiry clock before them so they are never dropped as expired."""
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo as _Z
+
+    from app.broker import ledger as _ledger
+    monkeypatch.setattr(_ledger, "_now", lambda: _dt(2026, 1, 2, 10, 0, tzinfo=_Z("America/New_York")))
+
+
 BLOCKED = "blocked: Alpaca live endpoint locked (paper only)"
 
 

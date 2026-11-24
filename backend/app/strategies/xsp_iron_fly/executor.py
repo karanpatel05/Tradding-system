@@ -27,7 +27,7 @@ from app.strategies.xsp_iron_fly import logic as L
 
 @dataclass
 class OrderResult:
-    status: str                       # filled | partial | unfilled | rejected
+    status: str                       # filled | partial | unfilled | rejected | unknown
     filled_qty: int = 0
     prices: dict[str, float] = field(default_factory=dict)   # role -> fill price
     mids: dict[str, float] = field(default_factory=dict)     # role -> mid at fill
@@ -113,9 +113,9 @@ class SimExecutor:
 class LiveExecutorUnavailable:
     name = "live"
     supports_combo = True
-    REASON = ("no live XSP order route is built: Alpaca paper is this app's only order "
-              "path and has no verified XSP index-option support, and this app never "
-              "sends orders to Tastytrade")
+    REASON = ("real-money XSP orders are not supported: this app routes orders only to "
+              "Alpaca paper (XSP_FLY_MODE=alpaca_paper) and never sends orders to "
+              "Tastytrade")
 
     async def combo(self, legs, qty, limit_credit, *, max_age=None) -> OrderResult:
         return OrderResult("rejected", detail=self.REASON)

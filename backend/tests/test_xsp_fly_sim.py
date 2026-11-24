@@ -558,7 +558,7 @@ def test_registered_activatable_in_sim_and_refused_live():
     assert isinstance(s, XspIronFlyStrategy) and s.ready and not s.external_runner
     assert XspIronFlyStrategy(IronFlyParams()).activation_block_reason() is None
     reason = XspIronFlyStrategy(IronFlyParams(mode="live")).activation_block_reason()
-    assert reason and "no live XSP order route" in reason
+    assert reason and "never sends orders to Tastytrade" in reason
     assert len(registry.list_strategies()) == 5
 
 

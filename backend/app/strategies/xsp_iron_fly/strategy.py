@@ -62,7 +62,7 @@ class XspIronFlyStrategy(BaseStrategy):
         return "1m"
 
     def execution_label(self) -> str:
-        return "Simulated fills"  # sim mode only; live mode is refused below
+        return "Alpaca paper" if self.params.mode == "alpaca_paper" else "Simulated fills"
 
     # The session row (one per day, 4 leg TradeRecords) is the source of truth for
     # the Strategies screen, not a count of ledger rows.
@@ -86,9 +86,14 @@ class XspIronFlyStrategy(BaseStrategy):
         errs = p.validate()
         if errs:
             return f"Invalid XSP fly settings: {'; '.join(errs)}."
+        if p.mode == "alpaca_paper":
+            from app.strategies.xsp_iron_fly.alpaca_executor import AlpacaPort
+            why = AlpacaPort(self.key).routing_block()
+            return (f"Alpaca paper mode can't place orders: {why}. Fix it or set "
+                    "XSP_FLY_MODE=sim.") if why else None
         if p.mode != "sim":
             return (f"Live mode is refused: {LiveExecutorUnavailable.REASON}. "
-                    "Set XSP_FLY_MODE=sim to run it on simulated fills.")
+                    "Set XSP_FLY_MODE=sim or alpaca_paper.")
         return None
 
     def build_runner(self):
@@ -101,7 +106,14 @@ class XspIronFlyStrategy(BaseStrategy):
         p = self.params
         feed = TastytradeFeed()
         clock = RealClock()
-        executor = SimExecutor(feed, clock) if p.mode == "sim" else LiveExecutorUnavailable()
+        if p.mode == "sim":
+            executor = SimExecutor(feed, clock)
+        elif p.mode == "alpaca_paper":
+            from app.strategies.xsp_iron_fly.alpaca_executor import (AlpacaFlyExecutor,
+                                                                     AlpacaPort)
+            executor = AlpacaFlyExecutor(AlpacaPort(self.key), feed, clock)
+        else:
+            executor = LiveExecutorUnavailable()
         return IronFlyRunner(self.key, p, feed, executor, clock,
                              equity_fn=self._equity, safe_mode_fn=is_safe_mode,
                              alert_fn=send_alert)

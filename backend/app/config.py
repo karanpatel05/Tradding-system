@@ -126,9 +126,9 @@ class Settings(BaseSettings):
     qqq_spread_close_deadline_seconds: int = 300  # aim flat by 15:55 ET
 
     # --- XSP 0DTE iron fly (xsp_iron_fly) ---
-    # Fills are SIMULATED against live Tastytrade NBBO ("sim"); "live" is refused
-    # because there is no live XSP order route (see strategies/xsp_iron_fly/executor.py).
-    # ENABLE_LIVE_ORDERS does not affect this strategy.
+    # "sim": fills SIMULATED against live Tastytrade NBBO (ENABLE_LIVE_ORDERS ignored).
+    # "alpaca_paper": REAL orders and fills on the Alpaca paper account through the
+    # app's tagged order path (needs ENABLE_LIVE_ORDERS on). "live" is refused.
     xsp_fly_mode: str = "sim"
     xsp_fly_entry_time: str = "09:45"            # ET
     xsp_fly_wing_width: float = 10.0             # index points

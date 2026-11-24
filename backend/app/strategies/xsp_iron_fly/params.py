@@ -35,7 +35,7 @@ class IronFlyParams:
     entry_grace_seconds: float = 120.0      # guards re-checked this long, then skip/missed
 
     # --- execution ---
-    mode: str = "sim"                       # "sim" only; "live" is refused (no adapter)
+    mode: str = "sim"                       # "sim" | "alpaca_paper"; "live" is refused
     multiplier: int = 100
     tick: float = 0.01
     fees_per_contract: float = 1.00         # $ per contract per fill (open or close)
@@ -66,8 +66,8 @@ class IronFlyParams:
             errs.append("max_daily_loss_per_contract must be > 0")
         if self.stop_trigger not in ("ask", "mark"):
             errs.append("stop_trigger must be 'ask' or 'mark'")
-        if self.mode not in ("sim", "live"):
-            errs.append("mode must be 'sim' or 'live'")
+        if self.mode not in ("sim", "alpaca_paper", "live"):
+            errs.append("mode must be 'sim', 'alpaca_paper' or 'live'")
         return errs
 
     @classmethod

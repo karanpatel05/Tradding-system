@@ -117,7 +117,9 @@ class IronFlyRunner:
             await self._log(f"invalid parameters, not running: {errs}", level="error")
             return
         await self._log(f"XSP iron fly worker started (mode={self.p.mode}, executor="
-                        f"{self.ex.name}; fills are simulated against live NBBO)",
+                        f"{self.ex.name}; " + ("fills are simulated against live NBBO)"
+                                               if self.ex.name == "sim" else
+                                               "REAL Alpaca paper orders and fills)"),
                         category="action", data={"params": _params_dict(self.p)})
         try:
             while True:
@@ -178,12 +180,57 @@ class IronFlyRunner:
         return s
 
     # ------------------------------------------------------------------ recovery
+    def _expected_broker(self, s: dict) -> dict[str, int]:
+        """Net qty per OCC symbol the session's own ORDER fills imply (settlement and
+        no-bid abandon bookings are not orders, so the broker still holds those)."""
+        from app.broker.alpaca_client import occ_unpadded
+        to_occ = {l["symbol"]: occ_unpadded(l.get("occ") or l["symbol"])
+                  for l in s.get("legs") or []}
+        out = {sym: 0 for sym in to_occ.values()}
+        for f in s.get("fills") or []:
+            if f.get("kind") in ("settle", "abandon"):
+                continue
+            sym = to_occ.get(f["symbol"], f["symbol"])
+            out[sym] = out.get(sym, 0) + (1 if f["side"] == "BUY" else -1) * int(f["qty"])
+        return out
+
+    async def _broker_check_on_restart(self, s: dict) -> bool:
+        """Real-order executors only: cancel anything a crash left working on today's
+        symbols, then require Alpaca's app-owned fills to match the session's. A
+        mismatch (e.g. a fill that landed after the crash) trips SAFE_MODE. True = ok."""
+        if not hasattr(self.ex, "check_positions") or s.get("mode") != "alpaca_paper":
+            return True
+        n = await self.ex.cancel_working_for(s.get("legs") or [])
+        if n:
+            await self._log(f"restart: cancelled {n} working Alpaca order(s) on today's legs",
+                            level="warning")
+        issues = await self.ex.check_positions(self._expected_broker(s))
+        if issues:
+            await self._fatal(s, "restart: Alpaca positions differ from the session: "
+                                 + "; ".join(issues))
+            return False
+        return True
+
     async def _recover_today(self, s: dict) -> dict:
+        if s["status"] in ("entering", "open") and (s.get("mode") or "sim") != self.p.mode:
+            # Never manage a fly with a different executor than the one that opened it
+            # (a sim fly must not send closes to Alpaca, an Alpaca fly must not be
+            # "closed" by simulated fills). Leave it for a human; nothing is changed.
+            msg = (f"{s['session_date']}: open session was opened in mode "
+                   f"{s.get('mode') or 'sim'} but the strategy now runs in {self.p.mode}; "
+                   "not managing it. Switch the mode back or close it by hand.")
+            await self._log(msg, level="error")
+            await self._alert("xsp_fly_mode_mismatch", msg)
+            return {**s, "status": "mode_mismatch"}
         if s["status"] == "entering":
+            if not await self._broker_check_on_restart(s):
+                return s
             return await self._resume_entry(s)
         if s["status"] != "open":
             return s
         await self._detect_killed(s)
+        if s["status"] == "open" and not await self._broker_check_on_restart(s):
+            return s
         if s["status"] == "open":
             await self._log(f"{s['session_date']}: resuming open fly x{s['contracts']} "
                             f"(stops {[(l['role'], l.get('stop_level')) for l in s['legs'] if l['action'] == 'SELL']})",
@@ -478,6 +525,9 @@ class IronFlyRunner:
                 limit = L.round_to_tick(mid_c - k * p.entry_reprice_step, p.tick, "down")
                 res = await self.ex.combo(s["legs"], target - filled, limit,
                                           max_age=p.max_quote_age)
+                if res.status == "unknown":     # a real order may have filled unseen
+                    await self._fatal(s, f"entry order state unknown: {res.detail}")
+                    break
                 if res.status == "rejected":
                     s["reason"] = f"combo rejected: {res.detail}"
                     break
@@ -513,6 +563,9 @@ class IronFlyRunner:
                 if lim is not None:
                     res = await self.ex.single(leg, side, qty - got, lim,
                                                max_age=self.p.max_quote_age)
+                    if res.status == "unknown":
+                        await self._fatal(s, f"leg-in order state unknown: {res.detail}")
+                        break
                     if not res.filled_qty:
                         self._last_miss = res.detail
                     if res.filled_qty:
@@ -603,6 +656,10 @@ class IronFlyRunner:
                     break
                 res = await self.ex.single(leg, side, qty - got, lim,
                                            max_age=self.p.feed_stale_alert_seconds)
+                if res.status == "unknown":     # a real order may have filled unseen
+                    await self._fatal(s, f"{kind} close for {leg['role']} state unknown: "
+                                         f"{res.detail}")
+                    break
                 if res.status == "rejected":
                     await self._log(f"{kind} close rejected for {leg['role']}: {res.detail}",
                                     level="error")
@@ -703,6 +760,8 @@ class IronFlyRunner:
         last_sub = None
         stale = False
         while True:
+            if s["status"] == "error":         # SAFE_MODE tripped: a human takes over
+                return
             now = self.clock.now()
             if now >= close or (flatten_at and now >= flatten_at):
                 break
@@ -798,6 +857,15 @@ class IronFlyRunner:
         s["closed_time"] = self.clock.now()
         states = await store.trade_states([l["trade_id"] for l in legs if l.get("trade_id")])
         s["reconciliation"] = reconcile_session(s, states)
+        if hasattr(self.ex, "check_positions") and s.get("mode") == "alpaca_paper":
+            issues = await self.ex.check_positions(self._expected_broker(s))
+            rec = s["reconciliation"]
+            rec["broker"] = {"checked": "Alpaca app-owned fills vs session order fills",
+                             "issues": issues,
+                             "note": "cash settlement posts ~21:00 ET (OPCSH/OPEXP; "
+                                     "visible the next day on paper)"}
+            rec["issues"] = rec["issues"] + [f"broker: {i}" for i in issues]
+            rec["ok"] = rec["ok"] and not issues
         await store.save(s)
         rec = s["reconciliation"]
         await self._log(

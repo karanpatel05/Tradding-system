@@ -109,14 +109,19 @@ async def finalize_entry(sess: dict, key: str, now: datetime) -> None:
     """Atomically: one open TradeRecord per filled leg + the session row as open."""
     import copy
     async with session_scope() as s:
+        real = sess.get("mode") == "alpaca_paper"
         for leg in sess["legs"]:
             if not leg.get("qty"):
                 continue
-            tr = TradeRecord(strategy_key=key, symbol=leg["symbol"][:16],
+            # Real Alpaca fills: the OCC symbol (matches the ledger, like QQQ's legs) and
+            # transmitted=True so startup reconciliation compares them with Alpaca.
+            sym = (leg.get("occ") or leg["symbol"]).replace(" ", "") if real \
+                else leg["symbol"][:16]
+            tr = TradeRecord(strategy_key=key, symbol=sym,
                              side="sell" if leg["action"] == "SELL" else "buy",
                              quantity=float(leg["qty"]), entry_price=leg["entry_price"],
                              stop=leg.get("stop_level"), entry_time=_db(now), status="open",
-                             transmitted=False)
+                             transmitted=real)
             s.add(tr)
             await s.flush()
             leg["trade_id"] = tr.id

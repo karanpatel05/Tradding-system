@@ -4,6 +4,9 @@ orders and their nested children), never from the account's raw positions."""
 from __future__ import annotations
 
 import logging
+import re
+from datetime import date, datetime, time
+from zoneinfo import ZoneInfo
 
 from app.broker.alpaca_client import AlpacaError, is_app_owned, occ_unpadded, request
 
@@ -107,11 +110,43 @@ def _accumulate(o: dict, net: dict[str, float]) -> None:
         _accumulate(child, net)
 
 
-async def app_net_positions() -> dict[str, int]:
+_OCC_EXPIRY = re.compile(r"^[A-Z]{1,6}(\d{2})(\d{2})(\d{2})[CP]\d{8}$")
+_ET = ZoneInfo("America/New_York")
+_EXPIRY_CUTOFF = time(16, 0)    # 0DTE PM-settled index and equity options stop at 16:00 ET
+
+
+def _now() -> datetime:
+    """Wall clock for expiry checks (tests pin it)."""
+    return datetime.now(_ET)
+
+
+def option_expired(symbol: str, now: datetime | None = None) -> bool:
+    """True for an option OCC symbol whose expiry has passed: the expiry date is before
+    today (ET), or it is today and the 16:00 ET close has passed. A contract held to
+    expiry (cash-settled index options, worthless equity options) gets no closing order,
+    so without this the order-fill ledger would show it as held forever."""
+    m = _OCC_EXPIRY.match(occ_unpadded(symbol or ""))
+    if not m:
+        return False                                  # stocks/ETFs: never expire
+    yy, mm, dd = (int(g) for g in m.groups())
+    try:
+        exp = date(2000 + yy, mm, dd)
+    except ValueError:
+        return False
+    now_et = (now or _now()).astimezone(_ET)
+    return exp < now_et.date() or (exp == now_et.date() and now_et.time() >= _EXPIRY_CUTOFF)
+
+
+async def app_net_positions(*, include_expired: bool = False,
+                            now: datetime | None = None) -> dict[str, int]:
+    """App-owned net quantity per symbol from its tagged order fills. Options past
+    expiry are dropped unless ``include_expired`` (used to check a day's own fills
+    after the close)."""
     net: dict[str, float] = {}
     for o in await app_orders("all"):
         _accumulate(o, net)
-    return {k: int(round(v)) for k, v in net.items() if int(round(v)) != 0}
+    return {k: int(round(v)) for k, v in net.items()
+            if int(round(v)) != 0 and (include_expired or not option_expired(k, now))}
 
 
 async def account_positions() -> dict[str, dict]:
