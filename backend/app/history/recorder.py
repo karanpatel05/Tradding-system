@@ -60,7 +60,7 @@ def _seconds_to_window(local: datetime) -> float:
 class LiveRecorder:
     def __init__(self, store: HistoryStore, streamer_factory=get_streamer,
                  now=lambda: datetime.now(UTC), flush_seconds: float = 1.0,
-                 subscribe_timeout: float = 10.0, max_buffer: int = 2_000_000):
+                 subscribe_timeout: float = 15.0, max_buffer: int = 2_000_000):
         self.store = store
         self._factory = streamer_factory
         self._now = now
@@ -176,17 +176,28 @@ class LiveRecorder:
         for symbol in sorted(self._symbols):
             # Re-read every time: a DXLink drop replaces the whole _subscribed dict.
             if symbol not in streamer._subscribed.get(_CLS, ()):
-                # The SDK waits for CHANNEL_OPENED with no timeout while holding the
-                # shared _sub_lock; cancelling on timeout releases it for other callers.
+                # Backstop above the SDK's own 10 s channel wait (held under the shared
+                # _sub_lock). Cancelling can leave the SDK's channel state half-open, so
+                # on expiry reset the shared connection, like a failed subscribe does.
                 try:
                     ok = await asyncio.wait_for(streamer._subscribe(TimeAndSale, symbol),
                                                 self._subscribe_timeout)
                 except asyncio.TimeoutError:
+                    await self._teardown(streamer)
                     raise ConnectionError(f"TimeAndSale subscribe {symbol} timed out after "
                                           f"{self._subscribe_timeout:g}s") from None
                 if not ok:
                     return False
         return True
+
+    @staticmethod
+    async def _teardown(streamer) -> None:
+        """Best effort: drop the shared connection so the next try starts clean."""
+        try:
+            await streamer.teardown()
+        except Exception:  # noqa: BLE001 - never raise from the reset itself
+            logger.warning("live recorder: streamer teardown after a subscribe timeout "
+                           "failed", exc_info=True)
 
     async def _release_feed(self) -> None:
         streamer = self._streamer

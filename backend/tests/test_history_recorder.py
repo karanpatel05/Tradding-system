@@ -41,6 +41,10 @@ class FakeStreamer:
         self._subscribed = {"Quote": set(), "Trade": set(), "TimeAndSale": set()}
         self.listeners: dict[str, list] = {}
         self.subscribe_calls = 0
+        self.teardowns = 0
+
+    async def teardown(self):
+        self.teardowns += 1
 
     async def _ensure(self):
         return True
@@ -235,6 +239,25 @@ async def test_stalled_subscribe_times_out_and_releases_the_lock(store, fake_str
         await asyncio.wait_for(rec._step(), 2)
     assert loop.time() - t < 1.0
     assert not lock.locked()
+    assert fake_streamer.teardowns == 1      # the half-open channel state is reset
+
+
+async def test_subscribe_timeout_default_exceeds_sdk_wait(store):
+    assert LiveRecorder(store)._subscribe_timeout == 15.0
+
+
+async def test_teardown_failure_on_timeout_is_contained(store, fake_streamer):
+    async def stalled(cls, symbol):
+        await asyncio.Event().wait()
+
+    async def bad_teardown():
+        raise RuntimeError("socket gone")
+    fake_streamer._subscribe = stalled
+    fake_streamer.teardown = bad_teardown
+    rec = LiveRecorder(store, lambda: fake_streamer, now=lambda: _dt(10, 0, 30),
+                       subscribe_timeout=0.05)
+    with pytest.raises(ConnectionError):
+        await asyncio.wait_for(rec._step(), 2)
 
 
 async def test_buffer_cap_drops_oldest_on_failed_flush(store, fake_streamer, monkeypatch,
