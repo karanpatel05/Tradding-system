@@ -258,4 +258,6 @@ async def get_history(symbol: str, interval: str, *, before: int | None = None,
     bars = _select(series, before, after, around, limit)
     first = series[0]["time"] if series else None
     last = series[-1]["time"] if series else None
+    if live_from is not None and not any(b["time"] == last for b in bars):
+        live_from = None  # the page does not include today's (or today's week's) bar
     return _result(symbol, interval, bars, first, last, last, source, note, live_from)

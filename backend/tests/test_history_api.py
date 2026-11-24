@@ -338,3 +338,28 @@ async def test_1d_and_1w_use_merged_today(live_store):
         assert out["live_from"] == _today_et(10, 1)
     plain = await service.get_history("SPY", "1D")
     assert len(plain["bars"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_1d_appends_today_when_no_official_daily_row(live_store):
+    yesterday = _today_et(10, 0) - 86_400_000
+    _put_official(live_store, "SPY", [yesterday, _today_et(10, 0)])
+    live_store.upsert_daily("SPY", [{**_bar(yesterday, OFFICIAL_CLOSE), "session": "old"}])
+    _put_live(live_store, "SPY", [_today_et(10, 1)])
+    out = await service.get_history("SPY", "1D")
+    assert [b["time"] for b in out["bars"]][-1] == _today_et(9, 30)
+    assert len(out["bars"]) == 2 and out["bars"][-1]["close"] == LIVE_CLOSE
+    assert out["live_from"] == _today_et(10, 1)
+
+
+@pytest.mark.asyncio
+async def test_live_from_none_when_daily_page_excludes_today(live_store):
+    old = _today_et(10, 0) - 14 * 86_400_000  # a different ET week
+    _put_official(live_store, "SPY", [old, _today_et(10, 0)])
+    live_store.upsert_daily("SPY", [{**_bar(old, OFFICIAL_CLOSE), "session": "old"}])
+    _put_live(live_store, "SPY", [_today_et(10, 1)])
+    for interval in ("1D", "1W"):
+        out = await service.get_history("SPY", interval, before=_today_et(9, 30))
+        assert out["bars"][-1]["time"] == old and out["live_from"] is None
+        newest = await service.get_history("SPY", interval)
+        assert newest["live_from"] == _today_et(10, 1)
