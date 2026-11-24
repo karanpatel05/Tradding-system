@@ -90,7 +90,10 @@ def client():
             app.dependency_overrides[require_auth] = saved
 
 
-def test_live_orders_requires_token(client):
+def test_live_orders_requires_token(client, monkeypatch, tmp_path):
+    from app.routers import system
+    env = tmp_path / ".env"
+    monkeypatch.setattr(system, "_ENV_PATH", env)     # never the real backend/.env
     s = get_settings()
     old = s.app_auth_token
     s.app_auth_token = "sekret"
@@ -100,6 +103,7 @@ def test_live_orders_requires_token(client):
         ok = client.request("PUT", "/api/system/live-orders", json={"enabled": False},
                             headers={"X-App-Token": "sekret"})
         assert ok.status_code == 200, ok.text
+        assert "ENABLE_LIVE_ORDERS=false" in env.read_text()   # the write went here
     finally:
         s.app_auth_token = old
 

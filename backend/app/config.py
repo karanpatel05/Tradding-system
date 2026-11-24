@@ -102,12 +102,13 @@ class Settings(BaseSettings):
     scan_interval_seconds: int = 60
 
     # --- Order routing (SAFETY GATE) ---
-    # Master switch for transmitting orders to the Alpaca PAPER account. Default False:
-    # strategies run their full logic (signals, sizing, trade records) with simulated
-    # fills and no order is sent until this is explicitly set True. Orders only ever go
-    # to Alpaca paper — live (real-money) Alpaca is locked in code (broker/alpaca_client).
-    # Tastytrade is market data only and never receives orders.
-    enable_live_orders: bool = False
+    # Master switch for transmitting orders to the Alpaca PAPER account. Default True
+    # (the user's choice: "default should be alpaca paper mode"), so a restart or a lost
+    # .env line can't silently leave strategies unable to trade. Routing is still refused
+    # unless BOTH paper keys are set AND the host is the paper host (orders._paper_lock_
+    # blocked); live (real-money) Alpaca is locked in code (broker/alpaca_client). False
+    # = simulated fills, nothing sent. Tastytrade is market data only, never orders.
+    enable_live_orders: bool = True
 
     # --- QQQ first-hour credit spread (runs OUTSIDE this app) ---
     # Folder of the external live runner (com.karan.spreadlive). Read-only: the app
