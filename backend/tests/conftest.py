@@ -23,3 +23,22 @@ def _isolate_weekly_refresh(monkeypatch):
         task.cancel()
     market._weekly_cache.clear()
     market._weekly_task = None
+
+
+@pytest.fixture(autouse=True)
+def _isolate_broker_probe():
+    """pytest-asyncio gives each test its own loop: never let one test's in-flight
+    Tastytrade probe (possibly a deliberately hung one) leak into the next."""
+    from app.broker import status as st
+
+    def _reset():
+        for task in [st._inflight, *st._tasks]:
+            if task is not None and not task.done():
+                task.cancel()
+        st._tasks.clear()
+        st._inflight = None
+        st._inflight_forced = False
+
+    _reset()
+    yield
+    _reset()
