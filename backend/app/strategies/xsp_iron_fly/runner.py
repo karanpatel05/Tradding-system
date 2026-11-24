@@ -316,6 +316,16 @@ class IronFlyRunner:
                 # fills agree with the session (a human may have fixed it); else wait.
                 if not hasattr(self.ex, "check_positions") or s.get("mode") != "alpaca_paper":
                     continue
+                if await self.safe_mode_fn():
+                    continue                   # a human hasn't cleared SAFE_MODE yet
+                legs_q = [l for l in s.get("legs") or [] if int(l.get("qty") or 0) > 0]
+                if not legs_q or any(l.get("status") in ("pending", None) for l in legs_q):
+                    # The error hit during entry: the fly was never activated (no stops,
+                    # no TradeRecords), so settling it automatically would book wrong
+                    # P&L. Leave it to a human.
+                    await self._log(f"{s['session_date']}: error during entry; not booked "
+                                    "automatically, needs a human", level="warning")
+                    continue
                 issues = await self.ex.check_positions(self._expected_broker(s))
                 if issues:
                     await self._log(f"{s['session_date']}: error session still differs from "
@@ -643,8 +653,18 @@ class IronFlyRunner:
         s["reason"] = msg
         await store.save(s)
         await trip_safe_mode(f"XSP fly: {msg}")
-        await self._log(f"FATAL: {msg}; SAFE_MODE tripped", level="error")
-        await self._alert("safe_mode", f"XSP fly: {msg}")
+        cleanup = ""
+        if hasattr(self.ex, "cancel_working_for"):
+            # Best effort: an order behind an "unknown" result has no id, so cancel by
+            # symbol whatever app order still works on the day's legs.
+            try:
+                n, problem = await self.ex.cancel_working_for(s.get("legs") or [])
+                cleanup = (f"; working orders on the legs: cancelled {n}"
+                           + (f", PROBLEM: {problem}" if problem else ""))
+            except Exception as exc:  # noqa: BLE001 - never mask the original error
+                cleanup = f"; cancel of working orders failed: {exc!r}"
+        await self._log(f"FATAL: {msg}; SAFE_MODE tripped{cleanup}", level="error")
+        await self._alert("safe_mode", f"XSP fly: {msg}{cleanup}")
 
     # ------------------------------------------------------------------ exits
     async def _close_qty(self, s: dict, leg: dict, qty: int, kind: str,
@@ -739,6 +759,9 @@ class IronFlyRunner:
                                                         self.clock.now())
                 if got:
                     self._add_exit(leg, got, px, by_order=True)
+                if s["status"] == "error":     # SAFE_MODE tripped: no more orders
+                    await store.save(s)
+                    return
                 if int(leg.get("exit_qty") or 0) >= int(leg["qty"]):
                     await self._finish_leg(s, leg, "closed", reason)
                     left.remove(leg)
@@ -820,6 +843,8 @@ class IronFlyRunner:
                             await self._flatten(s, "daily_loss")
                             break
             await self.clock.sleep(p.monitor_interval)
+        if s["status"] == "error":             # SAFE_MODE: no flatten, no settlement
+            return
         for leg in self._legs_open(s):
             if leg["status"] == "stopping":
                 await self._log(f"stop close for {leg['role']} incomplete at the end of "
@@ -827,6 +852,8 @@ class IronFlyRunner:
                                 "remainder is flattened or settles", level="warning")
         if flatten_at and self.clock.now() >= flatten_at and self._legs_open(s):
             await self._flatten(s, "pre_settlement")
+        if s["status"] == "error":
+            return
         await self._settle(s)
 
     # ------------------------------------------------------------------ settlement

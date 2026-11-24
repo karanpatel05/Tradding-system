@@ -56,7 +56,8 @@ async def app_orders(status: str = "all") -> list[dict]:
 # Still on the book. pending_cancel included: Alpaca's DELETE is async and the order can
 # still fill (or reserve qty) until the cancel settles, so it must count as open.
 OPEN_STATUSES = {"new", "accepted", "pending_new", "partially_filled", "held",
-                 "accepted_for_bidding", "pending_replace", "pending_cancel"}
+                 "accepted_for_bidding", "pending_replace", "pending_cancel", "stopped",
+                 "suspended"}
 
 
 def _is_open(o: dict) -> bool:

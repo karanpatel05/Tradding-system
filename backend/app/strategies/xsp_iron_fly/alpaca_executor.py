@@ -176,11 +176,9 @@ class AlpacaFlyExecutor:
         """(order_id, why_not, unknown). ``unknown`` = the order may exist at Alpaca but
         couldn't be identified: the caller must fail closed (never resend)."""
         out = await self.port.submit(body, intent, qty)
-        if out.get("transmitted"):
-            if out.get("order_id"):
-                return str(out["order_id"]), "", False
-            return None, f"transmitted without an order id (ref {out.get('ref')})", True
-        if out.get("unknown_state"):
+        if out.get("transmitted") and out.get("order_id"):
+            return str(out["order_id"]), "", False
+        if out.get("unknown_state") or out.get("transmitted"):   # landed, id unknown
             ref = out.get("ref")
             if not ref:
                 return None, f"order state unknown, no ref: {out.get('detail')}", True
@@ -197,7 +195,9 @@ class AlpacaFlyExecutor:
                 if self.clock.now().timestamp() >= deadline:
                     break
                 await self.clock.sleep(self.step)
-            return None, f"order state unknown after POST ({last}; ref {ref})", True
+            why = "transmitted without an order id" if out.get("transmitted") else \
+                "order state unknown after POST"
+            return None, f"{why} ({last}; ref {ref})", True
         return None, str(out.get("detail") or "not transmitted"), False
 
     async def _settle_order(self, order_id: str) -> dict | None:

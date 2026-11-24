@@ -599,6 +599,9 @@ async def test_transmitted_without_an_order_id_is_unknown():
     alp = FakeAlpaca(feed)
     alp.no_id = True
     res = await ex_for(clock, feed, alp).combo(legs, 1, 0.5, max_age=5)
+    assert res.status == "filled"                 # resolved through its tagged id
+    alp.lookup = "missing"
+    res = await ex_for(clock, feed, alp).combo(legs, 1, 0.5, max_age=5)
     assert res.status == "unknown" and "without an order id" in res.detail
 
 
@@ -788,3 +791,87 @@ async def test_real_port_lookup_tells_404_from_errors(monkeypatch):
     for fn, want in ((r404, "missing"), (r500, "error"), (rnet, "error"), (rok, "found")):
         monkeypatch.setattr(ac, "request", fn)
         assert (await port.find_by_ref("x"))[0] == want
+
+
+
+# --- BACKEND review round 3 -------------------------------------------------------
+@pytest.mark.asyncio
+async def test_error_during_pre_settlement_flatten_stops_orders_and_settlement():
+    from app.engine.safe_mode import is_safe_mode
+    clock = SimClock(at(D, 9, 0))
+    feed = FakeFeed(clock, flat(600.4))
+    alp = await _bound_fake(clock, feed)
+    alp.unreadable_intents = {"buy_to_close"}
+    s = await _runner(clock, feed, alp, replace(PA, close_before_settlement=True)).run_session(D)
+    assert s["status"] == "error" and await is_safe_mode()
+    closes = [b for b in alp.bodies if b.get("position_intent") == "buy_to_close"]
+    assert len(closes) == 1                      # no second close after the error
+    assert s["settlement_price"] is None and s["realized_pnl"] is None
+
+
+@pytest.mark.asyncio
+async def test_unknown_entry_cancels_the_resting_order_by_symbol():
+    clock = SimClock(at(D, 9, 0))
+    feed = FakeFeed(clock, flat(600.0))
+    alp = await _bound_fake(clock, feed)
+    alp.unknown, alp.lookup, alp.open_polls = True, "error", 10**6
+    s = await _runner(clock, feed, alp).run_session(D)
+    assert s["status"] == "error"
+    assert alp.orders["o1"]["status"] == "canceled"   # found by symbol, cancelled
+
+
+@pytest.mark.asyncio
+async def test_error_during_entry_is_never_auto_booked():
+    clock = SimClock(at(D, 9, 45))
+    feed = FakeFeed(clock, flat(600.0))
+    legs = await _legs(clock, feed)
+    pend = [dict(l, qty=1, status="pending", entry_price=1.0) for l in legs]
+    fills = [{"symbol": l["symbol"], "side": l["action"], "qty": 1, "kind": "entry",
+              "fee": 1.0} for l in legs]
+    await store.create_session(KEY, D, status="error", mode="alpaca_paper", legs=pend,
+                               fills=fills, close_time=at(D, 16, 0), contracts=1,
+                               reason="entry order state unknown")
+    alp = FakeAlpaca(feed)
+    alp.extra = {occ(l): (-1 if l["action"] == "SELL" else 1) for l in legs}   # matches
+    nxt = D + timedelta(days=1)
+    clock.t = at(nxt, 8, 0)
+    feed2 = FakeFeed(clock, flat(600.0))
+    await feed2.contracts("XSP", D)
+    await _runner(clock, feed2, alp).recover_stale(nxt)
+    s = await store.get_session(KEY, D)
+    assert s["status"] == "error" and s["realized_pnl"] is None
+
+
+@pytest.mark.asyncio
+async def test_error_session_waits_while_safe_mode_is_on():
+    from app.engine.safe_mode import trip_safe_mode
+    clock = SimClock(at(D, 9, 0))
+    path = ramp(at(D, 10, 0), at(D, 11, 0), 600.0, 603.5)
+    feed = FakeFeed(clock, path)
+    alp = await _bound_fake(clock, feed)
+    alp.unreadable_intents = {"buy_to_close"}
+    s = await _runner(clock, feed, alp).run_session(D)
+    assert s["status"] == "error"
+    (stop_oid,) = alp.unreadable_ids
+    alp.orders[stop_oid].update(status="canceled", filled_qty="0")   # Alpaca agrees
+    await trip_safe_mode("still on")
+    nxt = D + timedelta(days=1)
+    clock.t = at(nxt, 8, 0)
+    feed2 = FakeFeed(clock, path)
+    await feed2.contracts("XSP", D)
+    await _runner(clock, feed2, alp, safe=True).recover_stale(nxt)
+    assert (await store.get_session(KEY, D))["status"] == "error"     # not while on
+
+
+@pytest.mark.asyncio
+async def test_real_port_open_orders_uses_the_terminal_filter(monkeypatch):
+    from app.strategies.xsp_iron_fly.alpaca_executor import AlpacaPort
+    rows = [{"id": i, "status": st} for i, st in enumerate(
+        ["new", "filled", "pending_cancel", "canceled", "stopped", "suspended", "",
+         "rejected", "partially_filled"])]
+
+    async def app_orders(status="all"):
+        return rows
+    monkeypatch.setattr(ledger, "app_orders", app_orders)
+    got = [o["status"] for o in await AlpacaPort(KEY).open_orders()]
+    assert got == ["new", "pending_cancel", "stopped", "suspended", "", "partially_filled"]
