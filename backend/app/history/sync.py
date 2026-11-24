@@ -10,6 +10,7 @@ import logging
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from app.history import recorder as recorder_mod
 from app.history.aggregate import daily_from_minutes, et_session_start_ms
 from app.history.alpaca_bars import AlpacaDataError, RateLimiter, fetch_minutes
 from app.history.live_bars import stock_symbols
@@ -209,6 +210,7 @@ async def run_forever(sync: HistorySync) -> None:
     except OSError:
         logger.exception("history sync: cannot open %s.lock; sync not started", sync.store.path)
         return
+    rec_task: asyncio.Task | None = None
     try:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -217,6 +219,14 @@ async def run_forever(sync: HistorySync) -> None:
                         sync.store.path)
             return
         logger.info("history sync started")
+        # The live recorder writes the same store, so it runs only under this lock.
+        try:
+            rec = recorder_mod.LiveRecorder(sync.store)
+        except Exception:  # noqa: BLE001 - the sync must run even if the recorder cannot
+            logger.exception("live recorder could not start; continuing without it")
+        else:
+            recorder_mod.recorder = rec
+            rec_task = asyncio.create_task(rec.run(), name="history-live-recorder")
         failures = 0
         while True:
             try:
@@ -231,6 +241,15 @@ async def run_forever(sync: HistorySync) -> None:
                      else next_delay(datetime.now(UTC)))
             await asyncio.sleep(delay)
     finally:
+        if rec_task is not None:
+            rec_task.cancel()
+            try:
+                await rec_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001
+                logger.exception("live recorder ended with an error")
+            recorder_mod.recorder = None
         lock.close()
 
 

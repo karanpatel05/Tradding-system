@@ -9,9 +9,10 @@ import logging
 import math
 import time
 from datetime import datetime, timezone
+from typing import Any, Callable
 
 from tastytrade import DXLinkStreamer
-from tastytrade.dxfeed import Candle, Quote, Trade
+from tastytrade.dxfeed import Candle, Quote, TimeAndSale, Trade
 
 from app.tastytrade.session import get_tt_session
 
@@ -22,20 +23,28 @@ def _accept_fractional_trade_sizes() -> None:
     """SDK 12.4.1 types Trade.size/day_volume as int, but Tastytrade sends fractional
     values (e.g. dayVolume 19189452.77). The SDK silently skips events that fail
     validation, so EVERY live Trade was dropped and 'last' froze at the previous
-    session's trade. Relax both fields to float. Remove once the SDK is fixed."""
-    changed = False
-    for name in ("size", "day_volume"):
-        field = Trade.model_fields.get(name)
-        if field is not None and field.annotation == (int | None):
-            field.annotation = float | None
-            changed = True
-    if changed:
-        Trade.model_rebuild(force=True)
+    session's trade. Relax both fields to float. TimeAndSale.size (plain int) gets the
+    same relaxation so a fractional print is never silently dropped. Remove once the SDK
+    is fixed."""
+    for model, names in ((Trade, ("size", "day_volume")), (TimeAndSale, ("size",))):
+        changed = False
+        for name in names:
+            field = model.model_fields.get(name)
+            if field is not None and field.annotation in (int, int | None):
+                field.annotation = float | None
+                changed = True
+        if changed:
+            model.model_rebuild(force=True)
 
 
 _accept_fractional_trade_sizes()
 
 _INTERVALS = {"1m": "1m", "5m": "5m", "15m": "15m", "1d": "1d"}
+_LISTENER_LOG_EVERY = 60.0      # seconds between listener-failure logs per event type
+
+
+def _empty_subscriptions() -> dict[str, set[str]]:
+    return {"Quote": set(), "Trade": set(), "TimeAndSale": set()}
 
 
 def _num(x):
@@ -62,7 +71,10 @@ class TTStreamer:
         # Previous session close per symbol, from Trade.change (price - change).
         self._prev_close: dict[str, float] = {}
         self._candles: dict[str, dict[int, dict]] = {}
-        self._subscribed: dict[str, set[str]] = {"Quote": set(), "Trade": set()}
+        self._subscribed: dict[str, set[str]] = _empty_subscriptions()
+        # Per-event-type callbacks run synchronously by the pump. Kept across reconnects.
+        self._listeners: dict[str, list[Callable[[Any], None]]] = {}
+        self._listener_err_at: dict[str, float] = {}
         self._runner: asyncio.Task | None = None
         # SDK 12.x race: a channel is marked ready on CHANNEL_OPENED, BEFORE its
         # FEED_SETUP is sent, so a concurrent 2nd subscribe can go out first; the server
@@ -122,7 +134,7 @@ class TTStreamer:
         self._pumps = []
         self._dx = None
         self._runner = None
-        self._subscribed = {"Quote": set(), "Trade": set()}
+        self._subscribed = _empty_subscriptions()
 
     def _alive(self) -> bool:
         return self._dx is not None and (self._runner is None or not self._runner.done())
@@ -156,11 +168,53 @@ class TTStreamer:
             self._subscribed[cls.__name__].add(symbol)
             return True
 
+    async def _unsubscribe(self, cls, symbols: list[str]) -> None:
+        """Best-effort unsubscribe: always forgets the symbols, never raises or tears down."""
+        name = cls.__name__
+        symbols = list(symbols)
+        if not symbols:
+            return
+        async with self._sub_lock:
+            subs = self._subscribed.get(name)
+            if subs is not None:
+                subs.difference_update(symbols)
+            dx = self._dx
+            if dx is None:
+                return
+            try:
+                await dx.unsubscribe(cls, symbols)
+            except Exception:  # noqa: BLE001
+                logger.warning("DXLink unsubscribe %s %s failed", name, symbols, exc_info=True)
+
+    def add_listener(self, cls_name: str, fn: Callable[[Any], None]) -> None:
+        lst = self._listeners.setdefault(cls_name, [])
+        if fn not in lst:
+            lst.append(fn)
+
+    def remove_listener(self, cls_name: str, fn: Callable[[Any], None]) -> None:
+        lst = self._listeners.get(cls_name)
+        if lst and fn in lst:
+            lst.remove(fn)
+
+    def _notify(self, cls_name: str, ev) -> None:
+        """Run listeners synchronously; a listener failure is logged (rate-limited) and
+        never reaches the pump, which would tear down the shared connection."""
+        for fn in tuple(self._listeners.get(cls_name, ())):
+            try:
+                fn(ev)
+            except Exception:  # noqa: BLE001
+                now = time.monotonic()
+                if now - self._listener_err_at.get(cls_name, -math.inf) >= _LISTENER_LOG_EVERY:
+                    self._listener_err_at[cls_name] = now
+                    logger.warning("DXLink %s listener failed (further failures muted "
+                                   "for %.0fs)", cls_name, _LISTENER_LOG_EVERY, exc_info=True)
+
     def _start_pumps(self) -> None:
         self._pumps = [
             asyncio.create_task(self._pump(Quote)),
             asyncio.create_task(self._pump(Trade)),
             asyncio.create_task(self._pump(Candle)),
+            asyncio.create_task(self._pump(TimeAndSale)),
         ]
 
     async def _pump(self, cls) -> None:
@@ -179,12 +233,13 @@ class TTStreamer:
                         ch = _num(getattr(ev, "change", None))
                         if ch is not None and p - ch > 0:
                             self._prev_close[ev.event_symbol] = round(p - ch, 4)
-                else:  # Candle: event_symbol like "QQQ{=5m}"
+                elif cls is Candle:  # event_symbol like "QQQ{=5m}"
                     bucket = self._candles.setdefault(ev.event_symbol, {})
                     t = int(ev.time)
                     bucket[t] = {"time": t, "open": _num(ev.open), "high": _num(ev.high),
                                  "low": _num(ev.low), "close": _num(ev.close),
                                  "volume": _num(ev.volume) or 0.0}
+                self._notify(cls.__name__, ev)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - websocket died; drop so next call reconnects

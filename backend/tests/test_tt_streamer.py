@@ -27,6 +27,9 @@ class _FakeDx:
     async def unsubscribe_candle(self, symbols, interval):
         pass
 
+    async def unsubscribe(self, cls, symbols):
+        self.subscribed.append(("unsub", cls.__name__, list(symbols)))
+
     async def listen(self, cls):
         q = self._q(cls)
         while True:
@@ -333,3 +336,73 @@ async def test_candles_stop_at_max_seconds_even_if_events_keep_coming(monkeypatc
     elapsed = loop.time() - t
     task.cancel(); await s.teardown()
     assert bars and elapsed < 1.2
+
+
+# --- TimeAndSale (live tick recorder) -----------------------------------------------
+def _tas_event(symbol="SPY", index=1):
+    return SimpleNamespace(event_symbol=symbol, time=1795105424454, index=index, price=1.0,
+                           size=1.0, valid_tick=True, extended_trading_hours=False, type="NEW")
+
+
+@pytest.mark.asyncio
+async def test_time_and_sale_listener_receives_events(monkeypatch):
+    fake = _FakeDx()
+    s = st_mod.TTStreamer()
+    monkeypatch.setattr(s, "_connect", _fake_connect(fake, s))
+    from tastytrade.dxfeed import TimeAndSale
+    got = []
+
+    def boom(ev):
+        raise RuntimeError("listener bug")
+    s.add_listener("TimeAndSale", boom)
+    s.add_listener("TimeAndSale", got.append)
+    s.add_listener("TimeAndSale", got.append)            # idempotent
+    assert await s._ensure()
+    assert await s._subscribe(TimeAndSale, "SPY")
+    assert "SPY" in s._subscribed["TimeAndSale"]
+    await fake._q(TimeAndSale).put(_tas_event(index=1))
+    for _ in range(50):
+        if got:
+            break
+        await asyncio.sleep(0.01)
+    assert [e.index for e in got] == [1]                 # called once per event
+    await fake._q(TimeAndSale).put(_tas_event(index=2))  # a raising listener did not kill it
+    for _ in range(50):
+        if len(got) == 2:
+            break
+        await asyncio.sleep(0.01)
+    assert [e.index for e in got] == [1, 2] and s._dx is fake
+    s.remove_listener("TimeAndSale", got.append)
+    s.remove_listener("TimeAndSale", got.append)         # missing: no error
+    await s.teardown()
+    assert s._subscribed["TimeAndSale"] == set()         # cleared on drop, key kept
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_is_best_effort(monkeypatch):
+    fake = _FakeDx()
+    s = st_mod.TTStreamer()
+    monkeypatch.setattr(s, "_connect", _fake_connect(fake, s))
+    from tastytrade.dxfeed import TimeAndSale
+    assert await s._ensure()
+    await s._subscribe(TimeAndSale, "SPY")
+    await s._subscribe(TimeAndSale, "QQQ")
+    await s._unsubscribe(TimeAndSale, ["SPY"])
+    assert s._subscribed["TimeAndSale"] == {"QQQ"}
+    assert ("unsub", "TimeAndSale", ["SPY"]) in fake.subscribed
+
+    async def broken(cls, symbols):
+        raise RuntimeError("socket closed")
+    fake.unsubscribe = broken
+    await s._unsubscribe(TimeAndSale, ["QQQ"])           # never raises, never tears down
+    assert s._subscribed["TimeAndSale"] == set() and s._dx is fake
+    await s.teardown()
+
+
+def test_time_and_sale_with_fractional_size_is_not_dropped():
+    import app.tastytrade.streamer  # noqa: F401 - applies the model patch
+    from tastytrade.dxfeed import TimeAndSale
+    row = ["NVDA", 0, 0, 7406, 1795105424454, 0, 1, "Q", 180.25, 10.5, 180.2, 180.3,
+           "@ I", "0", "BUY", False, False, False, "NEW", None, None]
+    [t] = TimeAndSale.from_stream(row)
+    assert t.size == 10.5 and t.index == 7406

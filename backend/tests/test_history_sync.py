@@ -351,3 +351,66 @@ def test_write_chunk_is_atomic_and_merges_stored_minutes(store):
     with pytest.raises(sqlite3.OperationalError):
         sync._write_chunk("SPY", later)
     assert store.minutes("SPY", later[0]["time"], later[-1]["time"] + 1) == []
+
+
+@pytest.mark.asyncio
+async def test_run_forever_runs_the_recorder_under_the_lock(store, monkeypatch):
+    from app.history import recorder as R
+    started, stopped = asyncio.Event(), []
+
+    class FakeRecorder:
+        def __init__(self, st):
+            assert st is store
+
+        async def run(self):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                stopped.append(1)
+                raise
+
+    monkeypatch.setattr(R, "LiveRecorder", FakeRecorder)
+    sync = make_sync(store, FakeFetch(), datetime(2022, 1, 5, 22, 0, tzinfo=UTC))
+    task = asyncio.create_task(S.run_forever(sync))
+    await asyncio.wait_for(started.wait(), 5)
+    assert isinstance(R.recorder, FakeRecorder)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert stopped == [1] and R.recorder is None
+
+
+@pytest.mark.asyncio
+async def test_second_process_does_not_start_a_recorder(store, monkeypatch):
+    from app.history import recorder as R
+    monkeypatch.setattr(R, "LiveRecorder", _raise_on_init)
+    fd = open(f"{store.path}.lock", "a+")
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        await asyncio.wait_for(
+            S.run_forever(make_sync(store, FakeFetch(), datetime(2022, 1, 5, 22, 0, tzinfo=UTC))), 5)
+    finally:
+        fd.close()
+    assert R.recorder is None
+
+
+def _raise_on_init(*a, **kw):
+    raise AssertionError("recorder must not start without the lock")
+
+
+@pytest.mark.asyncio
+async def test_recorder_that_cannot_start_does_not_stop_the_sync(store, monkeypatch, caplog):
+    from app.history import recorder as R
+    monkeypatch.setattr(R, "LiveRecorder", _raise_on_init)
+    f = FakeFetch()
+    task = asyncio.create_task(S.run_forever(
+        make_sync(store, f, datetime(2022, 1, 5, 22, 0, tzinfo=UTC))))
+    for _ in range(200):
+        if f.calls:
+            break
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert f.calls and R.recorder is None and "recorder" in caplog.text.lower()
