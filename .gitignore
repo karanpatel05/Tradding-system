@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 data_cache/
 *.db
+*.db-wal
+*.db-shm
+*.db.lock
 *.db.bak-*
 .session_store.json
 .env

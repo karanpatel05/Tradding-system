@@ -1,0 +1,57 @@
+// Pure helpers for paging price history into the chart. No React, no network.
+
+// Symbols the backend history store serves (/api/market/history).
+export const HISTORY_SYMBOLS = ["SPY", "QQQ", "TSLA", "NVDA", "SPX", "NDX"];
+
+// Merge a fetched page into the loaded bars: unique by time, ascending. A bar in the
+// page replaces a loaded bar with the same time (the newest page refreshes the forming bar).
+export function mergePage(bars, page, side) {
+  if (!page || !page.length) return bars || [];
+  const byTime = new Map();
+  const [first, second] = side === "before" ? [page, bars || []] : [bars || [], page];
+  for (const b of first) byTime.set(b.time, b);
+  for (const b of second) byTime.set(b.time, b);
+  return [...byTime.values()].sort((a, b) => a.time - b.time);
+}
+
+// Should a page be requested for `side`? view = {length, offset} with offset counted from
+// the newest bar, as in PriceChart. One request per side at a time; nothing when the store
+// has no more in that direction.
+export function shouldLoad(view, total, loaded, side, threshold = 100) {
+  if (!total || loaded.inFlight[side]) return false;
+  if (side === "before") return loaded.hasMoreBefore && total - view.offset - view.length < threshold;
+  return loaded.hasMoreAfter && view.offset < threshold;
+}
+
+// Bars appended on the right keep the same view only if the offset grows by that count;
+// a prepend needs no change because the offset is counted from the newest bar.
+export function offsetAfterAppend(offset, appendedCount) {
+  return offset + appendedCount;
+}
+
+// A loadMore page is only valid if the bars it was requested from still end where its
+// cursor was taken (a replacing load or a refresh may have moved the edge since).
+export function cursorMatches(bars, side, cursor) {
+  if (!bars || !bars.length) return false;
+  return (side === "before" ? bars[0].time : bars.at(-1).time) === cursor;
+}
+
+const DAY_MS = 24 * 3600e3;
+// The response's `latest` is a bar START for 1D/1W (the last session's 09:30 / the week's first day), so those
+// bars stay current for a day / a week past it. Intraday `latest` is the last stored minute.
+const BAR_SPAN_MS = { "1D": DAY_MS, "1W": 7 * DAY_MS };
+// Longer than the longest normal market closure (Fri 20:00 ET to Tue 04:00 ET after a Monday holiday).
+export const HISTORY_STALE_MS = 4 * DAY_MS;
+
+// Is a newest-page history response worth showing? Not when the store has no bars yet (first backfill, sync off,
+// Alpaca keys rejected) or its newest bar is days old: the pane then uses the live feed loader instead.
+export function historyUsable(resp, nowMs) {
+  if (!resp || !(resp.bars || []).length || !Number.isFinite(resp.latest)) return false;
+  return nowMs - (resp.latest + (BAR_SPAN_MS[resp.interval] || 0)) <= HISTORY_STALE_MS;
+}
+
+// Did a loadMore page bring the chart up to the newest stored bar? Then the newest-page re-poll may resume
+// (after go-to-date, paging right to the present must not leave the chart frozen).
+export function reachedNewest(side, resp) {
+  return side === "after" && !!resp && !resp.has_more_after;
+}

@@ -1,5 +1,5 @@
 // Plain-node test (no runner configured). Run: node frontend/src/components/charts/chartMath.test.mjs
-import { aggregate, bollinger, crossovers, donchian, ema, heikinAshi, makeScale, normalizeBars, rsi, sessionOf, sessionStats, sma, sourceValues } from "./chartMath.js";
+import { weekly, aggregate, bollinger, crossovers, donchian, ema, heikinAshi, makeScale, normalizeBars, rsi, sessionOf, sessionStats, sma, sourceValues } from "./chartMath.js";
 import { applyStudy, studyValues } from "./chartData.js";
 
 const eq = (a, b, msg) => {
@@ -115,4 +115,37 @@ eq(applyStudy(pane2, { id: "fast", type: "EMA", period: 12 })[0].period, 12, "id
 eq(applyStudy(pane2, { id: "zz", type: "RSI", period: 21 })[1].period, 21, "single-instance types replace their study");
 eq(applyStudy(pane2, { id: "zz", type: "RSI", period: 21 })[1].id, "r", "replaced study keeps the pane's id");
 
+
+// weekly: 10 trading days over two weeks -> 2 bars; a holiday week is still one bar.
+{
+  const day = (d, o, h, l, c) => ({ time: Date.UTC(2026, 10, d, 14, 30), open: o, high: h, low: l, close: c, volume: 10 });
+  const days = normalizeBars([
+    day(2, 10, 12, 9, 11), day(3, 11, 15, 10, 12), day(4, 12, 13, 8, 9), day(5, 9, 10, 7, 8), day(6, 8, 9, 6, 7),
+    day(9, 7, 20, 7, 19), day(10, 19, 21, 18, 20), day(11, 20, 22, 19, 21), day(12, 21, 23, 20, 22), day(13, 22, 24, 21, 23),
+  ]);
+  const w = weekly(days);
+  eq(w.length, 2, "two calendar weeks");
+  eq(w[0].open, 10, "week open is first day open");
+  eq(w[0].high, 15, "week high");
+  eq(w[0].low, 6, "week low");
+  eq(w[0].close, 7, "week close is last day close");
+  eq(w[0].volume, 50, "week volume summed");
+  eq(w[0].time, days[0].time, "week time is first bar time");
+  eq(weekly(days.filter(b => sessionOf(b.time) !== "2026-11-04")).length, 2, "missing day (holiday) keeps the week one bar");
+  eq(weekly(days.slice(4, 6)).length, 2, "Friday and next Monday are different weeks");
+}
+// F1: daily bars from /api/market/bars are stamped 09:30 ET of their session (across the
+// 2026-11-01 DST change: 13:30 UTC in EDT, 14:30 UTC in EST). Mon-Fri is one week, the next
+// Monday starts another. The old 00:00 UTC stamps read as the previous ET day (Sun-Thu).
+{
+  const et0930 = (m, d) => Date.UTC(2026, m, d, m === 9 ? 13 : 14, 30);
+  const mk = t => ({ time: t, open: 1, high: 2, low: 0.5, close: 1.5, volume: 1 });
+  const stamped = normalizeBars([[9, 26], [9, 27], [9, 28], [9, 29], [9, 30], [10, 2]].map(([m, d]) => mk(et0930(m, d))));
+  eq(stamped[0].session, "2026-10-26", "09:30 ET stamp keeps its own session date");
+  eq(weekly(stamped).length, 2, "Mon-Fri + next Monday = two weeks");
+  eq(weekly(stamped)[0].time, stamped[0].time, "week starts at Monday's bar");
+  const midnightUtc = normalizeBars([[9, 26], [9, 27], [9, 28], [9, 29], [9, 30]].map(([m, d]) => mk(Date.UTC(2026, m, d))));
+  eq(midnightUtc[0].session, "2026-10-25", "00:00 UTC stamp reads as the previous ET day");
+  eq(weekly(midnightUtc).length, 2, "00:00 UTC stamps split one Mon-Fri week in two (the defect F1 removes)");
+}
 console.log("chartMath: all tests passed");

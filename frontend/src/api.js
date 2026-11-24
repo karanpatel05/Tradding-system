@@ -69,6 +69,11 @@ export const api = {
   marketOverview: () => request("/api/market/overview"),
   marketBars: (symbol, interval) =>
     request(`/api/market/bars?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}`),
+  marketHistory: ({ symbol, interval, before, after, around, limit }) => {
+    const q = new URLSearchParams({ symbol, interval });
+    for (const [k, v] of Object.entries({ before, after, around, limit })) if (v != null) q.set(k, v);
+    return request(`/api/market/history?${q}`);
+  },
   marketQuotes: (symbols) =>
     request(`/api/market/quotes?symbols=${encodeURIComponent(symbols.join(","))}`),
   positions: () => request("/api/positions"),

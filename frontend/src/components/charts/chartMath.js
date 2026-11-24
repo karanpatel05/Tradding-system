@@ -40,6 +40,28 @@ export function aggregate(bars, factor) {
   return out;
 }
 
+// Build calendar-week bars (Monday-start, by ET session date) from daily bars.
+export function weekly(bars) {
+  const out = [];
+  let week;
+  for (const bar of bars) {
+    const [y, m, d] = bar.session.split("-").map(Number);
+    const t = new Date(Date.UTC(y, m - 1, d));
+    t.setUTCDate(t.getUTCDate() - (t.getUTCDay() + 6) % 7);
+    const key = t.toISOString().slice(0, 10);
+    const last = out.at(-1);
+    if (!last || week !== key) { out.push({ ...bar }); week = key; }
+    else {
+      last.high = Math.max(last.high, bar.high);
+      last.low = Math.min(last.low, bar.low);
+      last.close = bar.close;
+      last.volume += bar.volume;
+      last.value += bar.value;
+    }
+  }
+  return out;
+}
+
 export function ema(values, period) {
   let e;
   const k = 2 / (period + 1);

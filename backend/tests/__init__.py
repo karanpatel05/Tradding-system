@@ -12,3 +12,14 @@ if not _url or "trading.db" in _url:
     raise RuntimeError(
         "Refusing to run tests against the live trading.db — set DATABASE_URL to a "
         "throwaway sqlite file, e.g. DATABASE_URL=sqlite+aiosqlite:///./_t_x.db")
+
+# Same protection for the local price-history file: never touch the real
+# backend/market_history.db. Default to a per-process temp file.
+if not os.environ.get("MARKET_HISTORY_PATH"):
+    import tempfile
+    os.environ["MARKET_HISTORY_PATH"] = os.path.join(
+        tempfile.gettempdir(), f"_t_market_history_{os.getpid()}.db")
+if os.environ["MARKET_HISTORY_PATH"].replace("\\", "/").endswith("backend/market_history.db"):
+    raise RuntimeError(
+        "Refusing to run tests against the live market_history.db — set "
+        "MARKET_HISTORY_PATH to a throwaway sqlite file.")

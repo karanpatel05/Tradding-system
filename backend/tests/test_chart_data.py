@@ -125,3 +125,40 @@ async def test_empty_result_is_not_cached(monkeypatch):
     first = await chart_data.get_bars("QQQ", "5m", now=100.0)
     second = await chart_data.get_bars("QQQ", "5m", now=101.0)
     assert first["bars"] == [] and len(second["bars"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_daily_bars_are_stamped_at_et_session_open(monkeypatch):
+    """Tastytrade stamps daily candles 00:00 UTC, which is the PREVIOUS evening in New
+    York. get_bars re-stamps them to 09:30 ET of the same UTC date (F1)."""
+    from datetime import date, datetime, timezone
+
+    from app.history.aggregate import et_session_start_ms, weekly_from_daily
+
+    days = [date(2026, 11, d) for d in (16, 17, 18, 19, 20, 23)]  # Mon-Fri + next Mon
+    midnight = [int(datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp() * 1000)
+                for d in days]
+
+    async def bars(symbol, interval, start, end=None):
+        return [_bar(t, 100.0 + i) for i, t in enumerate(midnight)]
+
+    monkeypatch.setattr(chart_data, "facade_bars", bars)
+    out = await chart_data.get_bars("SPX", "1d")
+    assert [b["time"] for b in out["bars"]] == [et_session_start_ms(d) for d in days]
+    weeks = weekly_from_daily(out["bars"])
+    assert [w["time"] for w in weeks] == [et_session_start_ms(days[0]),
+                                          et_session_start_ms(days[5])]
+    assert weeks[0]["close"] == 104.0  # Friday closes the Mon-Fri week
+    # the cached copy is re-stamped too
+    again = await chart_data.get_bars("SPX", "1d")
+    assert [b["time"] for b in again["bars"]] == [et_session_start_ms(d) for d in days]
+
+
+@pytest.mark.asyncio
+async def test_intraday_bar_times_are_not_restamped(monkeypatch):
+    async def bars(symbol, interval, start, end=None):
+        return [_bar(1_700_000_000_000, 100.0)]
+
+    monkeypatch.setattr(chart_data, "facade_bars", bars)
+    out = await chart_data.get_bars("SPY", "5m")
+    assert out["bars"][0]["time"] == 1_700_000_000_000

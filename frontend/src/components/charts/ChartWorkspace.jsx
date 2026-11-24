@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {drawingTools,symbolDrawings} from "./Drawings.jsx";
 import PaneResize from "./PaneResize.jsx";
 import PriceChart from "./PriceChart.jsx";
 import { applyStudy, intervals, symbols } from "./chartData.js";
 import { sessionStats } from "./chartMath.js";
-import { useBars, usePositions, useQuotes } from "./marketData.js";
+import { HISTORY_SYMBOLS } from "./historyPaging.js";
+import { applyLiveBars, foldForInterval, rebaseLive } from "./liveCandle.js";
+import { usePaneBars, usePositions, useQuotes } from "./marketData.js";
 import { conditionLabel, rearm, useAlertEngine, useAlerts } from "./alerts.js";
 import { SYMBOL_PATTERN, describe } from "./controls/catalog.js";
 import SymbolSearch from "./controls/SymbolSearch.jsx";
@@ -83,9 +85,41 @@ async function copyChartImage(svg, name) {
   return "Clipboard unavailable here, so the chart image was downloaded";
 }
 
-function ChartPane({index, pane, selected, tool, positions, settings, onSettings, alerts, resetToken, onActivate, patch,
+function ChartPane({index, pane, selected, tool, positions, settings, onSettings, alerts, resetToken, onActivate, patch, chartPrices, chartBars, onActiveData,
   drawingProps, selectedDrawing, onDrawingChange, onDrawingDelete, onDrawingCopy, onDrawingAlert, onEditStudy, onSearch, onContextMenu}) {
-  const {bars, live, stale, note} = useBars(pane.symbol, pane.interval, !selected);
+  const data = usePaneBars(pane.symbol, pane.interval, !selected);
+  const {live, stale, note} = data;
+  const history = HISTORY_SYMBOLS.includes(pane.symbol) && !!data.goToDate; // false while a stored symbol falls back to the feed
+  const behind = !!data.hasMoreAfter; // history symbols only: newer bars are stored but not loaded, so the pane is not at the newest bar
+  // Live trades accumulate into the newest candle (open stays the first live price, high/low widen) while the
+  // pane shows the newest bars. New stored bars rebase the live state; each tick is folded once (deduped by ts).
+  const tick = chartPrices?.[pane.symbol];
+  const liveBars = chartBars?.[pane.symbol]; // server-built 1m bars (regular session only); preferred over the price fold
+  const lastLive = liveBars?.at(-1);
+  const liveSig = lastLive ? lastLive.time+"|"+lastLive.close+"|"+lastLive.volume : "";
+  const liveRef = useRef({key:"", base:null, bars:null, ts:0, sig:""});
+  const bars = useMemo(() => {
+    const L = liveRef.current, key = pane.symbol+"|"+pane.interval;
+    if (L.key !== key) Object.assign(L, {key, base:null, bars:null, ts:0, sig:""});
+    if (!data.bars || !live || behind) { L.bars = null; L.base = null; return data.bars; }
+    const rebased = !(L.bars && L.base === data.bars);
+    let cur = rebased ? rebaseLive(data.bars, L.bars) : L.bars;
+    L.base = data.bars;
+    if (liveBars?.length) {
+      if (rebased || liveSig !== L.sig) { L.sig = liveSig; cur = applyLiveBars(cur, liveBars, pane.interval); }
+      if (tick) L.ts = tick.ts; // the price fold is skipped while server bars drive the candle
+    } else if (tick && tick.ts !== L.ts) { L.ts = tick.ts; cur = foldForInterval(cur, tick.price, tick.ts, pane.interval); }
+    L.bars = cur;
+    return cur;
+  }, [data.bars, live, behind, tick?.ts, tick?.price, liveSig, pane.symbol, pane.interval]); // eslint-disable-line react-hooks/exhaustive-deps
+  const latest = useRef(data);
+  latest.current = data;
+  useEffect(() => { // the toolbar and side panel read the selected pane's own data and paging state (no second fetch)
+    if (selected) onActiveData({history, behind, bars:data.bars, live, stale, note,
+      goToDate:d=>latest.current.goToDate?.(d), backToLive:()=>latest.current.backToLive?.()});
+  }, [selected, history, behind, data.bars, live, stale, note, pane.symbol, pane.interval]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Near-edge check keyed on view/bars changes in PriceChart; loadMore guards in-flight requests itself.
+  const onNearEdge = side => data.loadMore?.(side);
   return <article className={"cx-pane "+(selected?"selected":"")} data-pane={index} tabIndex="0" aria-label={"Chart "+(index+1)+" "+pane.symbol}
     onFocus={onActivate} onPointerDown={e=>{onActivate(); if(e.target.closest("svg.cx-plot") && !e.target.closest("[data-drawing]")) drawingProps.onSelect(null);}}>
     <div className="cx-controls"><button className="cx-sym-btn" aria-label={"Change symbol for chart "+(index+1)} onClick={onSearch}>{pane.symbol} <span>▾</span></button>
@@ -96,6 +130,8 @@ function ChartPane({index, pane, selected, tool, positions, settings, onSettings
       onAlert={selectedDrawing.type==="Horizontal line" ? onDrawingAlert : null}/>}
     {bars ? <PriceChart key={pane.symbol+"-"+pane.interval} paneId={"p"+index} pane={pane} bars={bars} tool={tool} live={live && !stale}
       position={live ? positionFor(positions, pane.symbol) : null} settings={settings} onSettings={onSettings} alerts={alerts} resetToken={resetToken}
+      onNearEdge={history ? onNearEdge : undefined} hasMoreBefore={!!data.hasMoreBefore} hasMoreAfter={behind} earliest={data.earliest}
+      focusTime={data.focusTime} appended={data.appended || 0} appendedFor={data.bars}
       onRemove={id=>patch({studies:pane.studies.filter(study=>study.id!==id)})} onEditStudy={onEditStudy} onContextMenu={onContextMenu} drawingProps={drawingProps}/>
       : <div className="cx-loading" role="status">Loading {pane.symbol} {pane.interval} candles…</div>}
     <PaneResize direction="width"/><PaneResize direction="height"/></article>;
@@ -189,7 +225,7 @@ function BottomPanel({positions, positionsNote, quotes, account, accountError, a
   </section>;
 }
 
-export default function ChartWorkspace({account, accountError, onOpenBuilder}) {
+export default function ChartWorkspace({account, accountError, onOpenBuilder, chartPrices, chartBars, onChartSymbols}) {
   const [s,set]=useState(load);
   const [tool,setTool]=useState("Crosshair");
   const [selected,setSelected]=useState(null);
@@ -203,13 +239,18 @@ export default function ChartWorkspace({account, accountError, onOpenBuilder}) {
   const [alertDraft,setAlertDraft]=useState(null); // {symbol, price}
   const [ctx,setCtx]=useState(null); // context menu
   const [resets,setResets]=useState({});
+  const [activeCtl,setActiveCtl]=useState(null); // selected pane: {history, behind, bars, live, stale, note, goToDate, backToLive}
   const [toasts,setToasts]=useState([]);
   const refs={symbol:useRef(null), timeframe:useRef(null), type:useRef(null), layout:useRef(null), draw:useRef(null)};
   useEffect(()=>{try{localStorage.setItem(key,JSON.stringify(s));}catch{/* Private browsing. */}},[s]);
   const active=s.panes[s.active];
   const start=Math.floor(s.active/s.count)*s.count;
   const ids=Array.from({length:s.count},(_,i)=>start+i);
-  const activeData=useBars(active.symbol, active.interval);
+  const activeData=activeCtl || {}; // the selected pane reports its bars (see ChartPane), so they are fetched once
+  // Tell the server which symbols the visible panes show so it can push their live prices.
+  const symbolsKey=[...new Set(ids.map(i=>s.panes[i].symbol))].sort().join(",");
+  useEffect(()=>{ onChartSymbols?.(symbolsKey.split(",")); return ()=>onChartSymbols?.([]); },[symbolsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const today=(d=>d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"))(new Date());
   const [alerts,setAlerts]=useAlerts();
   const quoteSymbols=[...new Set([...s.watchlist, ...alerts.filter(a=>a.active).map(a=>a.symbol)])];
   const quotes=useQuotes(quoteSymbols.length?quoteSymbols:["QQQ"]);
@@ -269,6 +310,9 @@ export default function ChartWorkspace({account, accountError, onOpenBuilder}) {
     <div className="cx-tools">
       {s.favoriteTools.length>0 && <div className="cx-favorites" role="toolbar" aria-label="Favorite drawing tools">{s.favoriteTools.map(name=><button key={name} title={name} aria-label={"Favorite: "+name} aria-pressed={tool===name} onClick={()=>chooseTool(name)}>{toolIcon[name]}</button>)}</div>}
       <button ref={refs.layout} className="cx-tool-btn" aria-label={"Layout: "+s.count+" charts"} aria-expanded={open==="layout"} onClick={()=>setOpen(open==="layout"?null:"layout")}><Icon name="layout"/> {s.count}</button>
+      {activeCtl?.history && <label className="cx-goto">Go to date<input type="date" min="2022-01-03" max={today} aria-label="Go to date"
+        onChange={e=>{ if(e.target.value) activeCtl.goToDate(e.target.value); }}/></label>}
+      {activeCtl?.history && activeCtl.behind && <button className="cx-tool-btn cx-live-btn" title="Jump back to the newest bars" onClick={()=>activeCtl.backToLive()}>Live</button>}
       <button aria-pressed={s.side} onClick={()=>set({...s,side:!s.side})}>Watchlist</button>
       <button aria-pressed={s.bottom} onClick={()=>set({...s,bottom:!s.bottom})}>Positions</button>
       <button className="cx-icon-btn" aria-label="Chart settings" title="Chart settings" onClick={()=>setOpen("settings")}><Icon name="gear"/></button>
@@ -287,6 +331,7 @@ export default function ChartWorkspace({account, accountError, onOpenBuilder}) {
         const updateSel = changes => saveDrawings(i, drawingsOf(p).map(d=>d.id===selected?{...d,...changes}:d));
         return <ChartPane key={i} index={i} pane={p} selected={s.active===i} tool={tool} positions={positions} settings={s.settings} onSettings={setSettings}
           alerts={alerts.filter(a=>a.symbol===p.symbol && (a.active || a.status==="Triggered"))} resetToken={resets[i]}
+          chartPrices={chartPrices} chartBars={chartBars} onActiveData={setActiveCtl}
           onActivate={()=>set(old=>old.active===i?old:{...old,active:i})} patch={changes=>patch(i,changes)}
           onSearch={()=>setSearch({target:i, query:""})} onEditStudy={id=>setEditStudy({pane:i,id})}
           onContextMenu={info=>setCtx({...info, pane:i})}

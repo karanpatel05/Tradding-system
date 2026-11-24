@@ -109,7 +109,9 @@ export default function App() {
   }, [auth, refresh]);
 
   // Connect the live feed only once Tastytrade is verified.
-  const { snapshot, connected } = useSnapshot(auth?.connected);
+  // The chart reports which symbols it shows; the socket asks the server for their live prices.
+  const [chartSymbols, setChartSymbols] = useState([]);
+  const { snapshot, connected } = useSnapshot(auth?.connected, chartSymbols);
 
   if (auth === null) {
     return <div className="boot">Loading…</div>;
@@ -237,6 +239,9 @@ export default function App() {
               <ChartWorkspace
                 account={acct}
                 accountError={accountError}
+                chartPrices={snapshot?.chart_prices}
+                chartBars={snapshot?.chart_bars}
+                onChartSymbols={setChartSymbols}
                 onOpenBuilder={(symbol) => {
                   setBuilderSymbol(symbol);
                   setTab("Builder");
