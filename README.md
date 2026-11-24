@@ -216,6 +216,17 @@ settlement. Quotes for decisions come from Tastytrade, which never receives orde
     settlement around 21:00 ET (`OPCSH`/`OPEXP`, visible the next day on paper).
   - **Mode guard.** A fly recorded under another mode (e.g. the old simulator) is never
     managed. It's left alone, with an alert.
+  - **Emergency stop.** Cash-settled index legs (XSP, SPX…) are closed with
+    **marketable limits**, never market orders, each priced through the live touch:
+    - shorts close first, concurrently, then longs;
+    - each group is repriced and retried for about 6 seconds, then whatever is left is
+      cancelled;
+    - a long wing with no bid is left to settle worthless, and the result says so;
+    - an unfilled close reports "Flatten incomplete", and that leg's TradeRecord stays
+      open;
+    - a short with no ask is reported, never skipped.
+
+    Equity/ETF options (e.g. QQQ) still close at market.
 - **Expired options in the ledger.** The app's Alpaca ledger, and the local side of
   startup reconciliation, drop **cash-settled index** option contracts (XSP, SPX/SPXW, NDX,
   RUT, VIX…) past their expiry: the session close on the expiry day, 13:00 ET on half

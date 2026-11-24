@@ -176,6 +176,23 @@ async def option_mid(underlying: str, expiry, strike: float, right: str) -> floa
     return await _race(f"option_mid:{key}", tt)
 
 
+async def option_nbbo(root: str, expiry, strike: float, right: str
+                      ) -> tuple[float | None, float | None]:
+    """RAW (bid, ask) for one option, without the mid sanity guard: for pricing a
+    marketable close, where a fast move must not be filtered out. (None, None) when
+    unavailable."""
+    e = expiry.strftime("%y%m%d") if hasattr(expiry, "strftime") else str(expiry)
+    try:
+        q = await asyncio.wait_for(
+            _get_streamer().quote(f".{root}{e}{right.upper()}{float(strike):g}", timeout=2.0),
+            _SOURCE_TIMEOUT)
+    except Exception:  # noqa: BLE001 - unavailable is a miss, never a crash
+        return None, None
+    if not q:
+        return None, None
+    return q.get("bid"), q.get("ask")
+
+
 async def _warn_sanity(key: str, bid, ask, reason: str) -> None:
     from app.services.journal import log_event
     await log_event(f"sanity: rejected mid for {key} ({reason}; bid={bid} ask={ask})",

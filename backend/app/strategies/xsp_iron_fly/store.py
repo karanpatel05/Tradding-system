@@ -88,14 +88,18 @@ async def unfinished_before(key: str, d: date) -> list[dict]:
         return [_to_dict(r) for r in rows]
 
 
-def expected_broker(sess: dict) -> dict[str, int]:
+def expected_broker(sess: dict, closed_trade_ids: set | frozenset = frozenset()) -> dict[str, int]:
     """Net qty per OCC symbol the session's own ORDER fills imply. Settlement and
-    no-bid abandon bookings are not orders, so the broker still holds those legs."""
+    no-bid abandon bookings are not orders, so the broker still holds those legs.
+    Legs closed by the kill switch (status "abandoned", or their TradeRecord closed
+    outside the runner) are left out: the flatten's close isn't in the session."""
+    skip = {l["symbol"] for l in sess.get("legs") or []
+            if l.get("status") == "abandoned" or l.get("trade_id") in closed_trade_ids}
     to_occ = {l["symbol"]: (l.get("occ") or l["symbol"]).replace(" ", "")
-              for l in sess.get("legs") or []}
+              for l in sess.get("legs") or [] if l["symbol"] not in skip}
     out = {sym: 0 for sym in to_occ.values()}
     for f in sess.get("fills") or []:
-        if f.get("kind") in ("settle", "abandon"):
+        if f.get("kind") in ("settle", "abandon") or f["symbol"] in skip:
             continue
         sym = to_occ.get(f["symbol"], f["symbol"])
         out[sym] = out.get(sym, 0) + (1 if f["side"] == "BUY" else -1) * int(f["qty"])
@@ -113,8 +117,12 @@ async def broker_expected_positions(key: str) -> dict[str, int]:
             XspFlySession.strategy_key == key, XspFlySession.mode == "alpaca_paper",
             XspFlySession.status.in_(("entering", "open", "error"))))).scalars().all()
         sessions = [_to_dict(r) for r in rows]
+    ids = [l["trade_id"] for sess in sessions for l in sess.get("legs") or []
+           if l.get("trade_id")]
+    states = await trade_states(ids)
+    closed = {i for i, st in states.items() if st.get("status") == "closed"}
     for sess in sessions:
-        for sym, q in expected_broker(sess).items():
+        for sym, q in expected_broker(sess, closed).items():
             out[sym] = out.get(sym, 0) + q
     return {k: v for k, v in out.items() if v}
 

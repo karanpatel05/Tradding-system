@@ -564,6 +564,108 @@ async def _cancel_app_orders() -> tuple[int, list[str], list[dict] | None]:
     return cancelled, failures, still
 
 
+# --- kill switch: marketable-limit closes for cash-settled index options -----------
+_IDX_THROUGH = 0.05        # limit this far through the touch
+_IDX_ATTEMPT = 2.0         # seconds an attempt rests before it is cancelled and repriced
+_IDX_GROUP_WAIT = 6.0      # bound per group (shorts, then longs); whole flatten <~15 s
+_IDX_STEP = 0.25
+_TERMINAL_ORDER = {"filled", "canceled", "expired", "rejected", "done_for_day", "replaced"}
+
+
+def is_index_option(sym: str) -> bool:
+    """A cash-settled index option (XSP, SPX/SPXW, ...): these take no IOC and are closed
+    with marketable limits by the kill switch, never market orders."""
+    from app.broker.ledger import CASH_SETTLED_ROOTS
+    p = parse_occ(sym)
+    return p is not None and p[0] in CASH_SETTLED_ROOTS
+
+
+def index_option_tick(price: float) -> float:
+    """$0.01 under $3.00, $0.05 from $3.00 (same rule as the XSP executor)."""
+    return 0.01 if price < 3.0 - 1e-9 else 0.05
+
+
+def _round_tick(x: float, up: bool) -> float:
+    import math
+    t = index_option_tick(x)
+    n = math.ceil(x / t - 1e-9) if up else math.floor(x / t + 1e-9)
+    return round(n * t, 2)
+
+
+async def _index_option_quote(sym: str) -> tuple[float | None, float | None]:
+    """(bid, ask) for an OCC index option from the market-data facade (data only; no
+    order ever goes to the data provider). Indirection point for tests."""
+    p = parse_occ(sym)
+    if p is None:
+        return None, None
+    root, exp, right, strike = p
+    from app.marketdata.facade import option_nbbo
+    return await option_nbbo(root, exp, strike, right)
+
+
+async def _close_index_leg(sym: str, qty: int, side: str, deadline: float) -> dict:
+    """Close ``qty`` of one index-option leg with marketable limits until filled or the
+    deadline: price through the live touch, rest briefly, cancel (confirmed), reprice.
+    Returns {"filled", "left", "settle" (long with no bid: left to settle), "error"}.
+    Fills come only from Alpaca's own order state."""
+    filled, error = 0, None
+    intent = f"{side}_to_close"
+    while filled < qty and time.monotonic() < deadline:
+        bid, ask = await _index_option_quote(sym)
+        if side == "sell":
+            if not bid or bid <= 0:
+                return {"filled": filled, "left": qty - filled, "settle": True, "error": None}
+            limit = max(0.01, _round_tick(bid - _IDX_THROUGH, up=False))
+        else:
+            if not ask or ask <= 0:
+                return {"filled": filled, "left": qty - filled, "settle": False,
+                        "error": "short leg has no ask: cannot price a buy-to-close"}
+            limit = _round_tick(ask + _IDX_THROUGH, up=True)
+        out = await submit_option_order(sym, side, qty - filled, limit_price=limit,
+                                        position_intent=intent, reason="kill switch")
+        oid = out.get("order_id")
+        if not out.get("transmitted") or not oid:
+            error = out.get("detail") or "close not transmitted"
+            if out.get("unknown_state"):
+                error = f"close state unknown ({error})"
+                break
+            await asyncio.sleep(_IDX_STEP)
+            continue
+        o, rest_until = None, min(deadline, time.monotonic() + _IDX_ATTEMPT)
+        while time.monotonic() < rest_until:
+            try:
+                o = await ac.request("GET", f"/v2/orders/{oid}")
+            except _LOOKUP_ERRORS:
+                o = None
+            if o and str(o.get("status") or "").lower() in _TERMINAL_ORDER:
+                break
+            await asyncio.sleep(_IDX_STEP)
+        if not o or str(o.get("status") or "").lower() not in _TERMINAL_ORDER:
+            try:
+                await ac.request("DELETE", f"/v2/orders/{oid}", write=True)
+            except (*_LOOKUP_ERRORS, PaperLockError):
+                pass
+            for _ in range(int(_CANCEL_WAIT / _IDX_STEP)):
+                try:
+                    o = await ac.request("GET", f"/v2/orders/{oid}")
+                except _LOOKUP_ERRORS:
+                    o = None
+                if o and str(o.get("status") or "").lower() in _TERMINAL_ORDER:
+                    break
+                await asyncio.sleep(_IDX_STEP)
+        if not o or str(o.get("status") or "").lower() not in _TERMINAL_ORDER:
+            error = f"close order {oid} state unknown after cancel"
+            break
+        try:
+            filled += int(round(float(o.get("filled_qty") or 0)))
+        except (TypeError, ValueError):
+            error = f"close order {oid}: unreadable filled_qty"
+            break
+    if filled < qty and error is None:
+        error = f"unfilled after {_IDX_GROUP_WAIT:g}s of marketable limits"
+    return {"filled": filled, "left": qty - filled, "settle": False, "error": error}
+
+
 async def _transmitted_open_trades() -> dict[str, int]:
     """Open TradeRecords that were actually sent to Alpaca, as {symbol: signed qty}."""
     from sqlalchemy import select
@@ -633,6 +735,8 @@ async def flatten_all() -> str:
 
     from app.engine.order_store import record_intent
     closed: list[str] = []
+    settle_left: dict[str, int] = {}          # index longs with no bid: left to settle
+    index_jobs: list[tuple[str, int, str]] = []
     # shorts first: buying back a spread's short leg before selling its long keeps the
     # account covered while it unwinds
     for sym, app_qty in sorted(app_net.items(), key=lambda kv: (kv[1] > 0, kv[0])):
@@ -656,6 +760,9 @@ async def flatten_all() -> str:
                             f"{abs(app_qty)}")
         side = "sell" if app_qty > 0 else "buy"
         option = ap.get("asset_class") == "us_option" or bool(_OCC.match(sym.upper()))
+        if is_index_option(sym):
+            index_jobs.append((sym, qty, side))   # marketable limits, below
+            continue
         try:
             ref = await record_intent("", sym[:16], "exit_long" if app_qty > 0 else "exit_short",
                                       qty)
@@ -672,6 +779,34 @@ async def flatten_all() -> str:
         else:
             failures.append(f"{sym} x{qty} ({out.get('detail')})")
 
+    # Index options: no market orders (and no IOC). Shorts concurrently, then longs,
+    # each group bounded, so the emergency stop stays prompt.
+    for group in ([j for j in index_jobs if j[2] == "buy"],
+                  [j for j in index_jobs if j[2] == "sell"]):
+        if not group:
+            continue
+        deadline = time.monotonic() + _IDX_GROUP_WAIT
+        results = await asyncio.gather(*[_close_index_leg(sym, qty, side, deadline)
+                                         for sym, qty, side in group],
+                                       return_exceptions=True)
+        for (sym, qty, side), res in zip(group, results):
+            if isinstance(res, BaseException):
+                failures.append(f"{sym} x{qty} ({res!r})")
+                continue
+            if res["filled"]:
+                closed.append(f"{sym} x{res['filled']}")
+            if res["settle"] and res["left"]:
+                settle_left[sym] = res["left"]
+            elif res["left"]:
+                failures.append(f"{sym} x{res['left']} not closed ({res['error']})")
+        if any(isinstance(r, BaseException) or r["left"] and not r["settle"]
+               for r in results) and group[0][2] == "buy":
+            # A short is still open: don't sell its protection. Report, stop here.
+            longs = [j for j in index_jobs if j[2] == "sell"]
+            failures += [f"{sym} x{qty} (held: a short leg is still open)"
+                         for sym, qty, _ in longs]
+            break
+
     remaining = app_net
     if closed:
         deadline = time.monotonic() + _FLATTEN_WAIT
@@ -680,12 +815,18 @@ async def flatten_all() -> str:
                 remaining, poll_error = await app_net_positions(), None
             except _LOOKUP_ERRORS as exc:
                 poll_error = exc        # keep the last known `remaining`
-            if (poll_error is None and not remaining) or time.monotonic() >= deadline:
+            unsettled = {k for k in remaining if k not in settle_left}
+            if (poll_error is None and not unsettled) or time.monotonic() >= deadline:
                 break
             await asyncio.sleep(_FLATTEN_STEP)
         if poll_error is not None:
             failures.append(f"position check failed ({poll_error})")
 
+    for sym, left in settle_left.items():     # worthless long wings: not a failure
+        if remaining.get(sym, 0) > 0:
+            remaining = {k: v for k, v in remaining.items() if k != sym}
+    settle_note = (f"left to settle (no bid): {_fmt(settle_left)}; " if settle_left else "")
+    note = note + settle_note
     if remaining or failures:
         parts = []
         if remaining:
