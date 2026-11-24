@@ -65,10 +65,10 @@ git commit -m "chore(history): TimeAndSale probe (<counts per symbol per minute>
 **Interfaces:**
 - Produces: `Settings.live_bar_symbols: str = "SPY,QQQ,TSLA,NVDA"` (env `LIVE_BAR_SYMBOLS`).
 - Produces: `app.history.live_bars.stock_symbols() -> tuple[str, ...]` — parsed, upper-cased, de-duplicated, validated with `chart_data.normalize_symbol`; `SPX`/`NDX` and invalid entries dropped with one warning each. Replaces every use of `STOCK_SYMBOLS` (keep `STOCK_SYMBOLS` out of the code entirely; `sync.py` and `service.py` call `stock_symbols()`).
-- Produces: `Trade = NamedTuple("Trade", symbol: str, ts_ms: int, seq: int, price: float, size: float)`.
-- Produces: `is_rth_trade(ts_ms: int, extended: bool | None, valid: bool | None) -> bool`.
+- Produces: `Trade = NamedTuple("Trade", symbol: str, ts_ms: int, seq: int, price: float, size: float, valid: bool = True)`. `seq` holds the DXLink `TimeAndSale.index` (unique per event; see Task 1 findings). `valid` is `TimeAndSale.valid_tick`.
+- Produces: `is_rth_trade(ts_ms: int, extended: bool | None) -> bool` — session filter only. `valid_tick` does NOT drop a trade (Task 1: 53-71% of prints are `valid_tick=false`, mostly odd lots, which count toward volume but do not set prices).
 - Produces: `minute_of(ts_ms: int) -> int` — minute start in ms; a trade at exactly 16:00:00.000 ET maps to the 15:59 minute.
-- Produces: `fold(bars: dict[int, dict], trades: Iterable[Trade]) -> set[int]` — mutates `bars` (keyed by minute ms) in trade-time order per minute, returns touched minute keys. Bars carry an extra `"trades"` count.
+- Produces: `fold(bars: dict[int, dict], trades: Iterable[Trade]) -> set[int]` — mutates `bars` (keyed by minute ms) in trade-time order per minute, returns touched minute keys. Bars carry an extra `"trades"` count. **Price rule:** open/high/low/close come from `valid` trades only; volume and `trades` count every trade. A minute with no valid trade yet takes its prices from its invalid trades until the first valid one arrives, which then resets open/high/low/close to valid-only.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -78,13 +78,13 @@ def test_stock_symbols_from_setting(monkeypatch):
     assert stock_symbols() == ("SPY", "QQQ", "NVDA")
 
 def test_rth_window():
-    assert is_rth_trade(_et(9, 30, 0, 0), False, True)
-    assert not is_rth_trade(_et(9, 29, 59, 999), False, True)
-    assert is_rth_trade(_et(16, 0, 0, 0), False, True)          # closing print kept
-    assert not is_rth_trade(_et(16, 0, 0, 1), False, True)
-    assert not is_rth_trade(_et(10, 0, 0, 0), True, True)       # extended-hours flag
-    assert not is_rth_trade(_et(10, 0, 0, 0), False, False)     # invalid tick
-    assert not is_rth_trade(_et(10, 0, 0, 0, day=HOLIDAY), False, True)
+    assert is_rth_trade(_et(9, 30, 0, 0), False)
+    assert not is_rth_trade(_et(9, 29, 59, 999), False)
+    assert is_rth_trade(_et(16, 0, 0, 0), False)          # closing print kept
+    assert not is_rth_trade(_et(16, 0, 0, 1), False)
+    assert not is_rth_trade(_et(10, 0, 0, 0), True)             # extended-hours flag
+    assert is_rth_trade(_et(10, 0, 0, 0), False)                # session filter only
+    assert not is_rth_trade(_et(10, 0, 0, 0, day=HOLIDAY), False)
 
 def test_closing_print_folds_into_1559():
     assert minute_of(_et(16, 0, 0, 0)) == _et(15, 59, 0, 0)
@@ -95,6 +95,13 @@ def test_fold_builds_ohlcv():
     assert bars[_et(10,0)] == {"time": _et(10,0), "open": 100.0, "high": 101.0, "low": 99.5,
                                "close": 99.5, "volume": 16.0, "trades": 3}
 
+def test_fold_odd_lots_add_volume_not_price():
+    bars = {}
+    fold(bars, [T(_et(10,0,1), 1, 100.0, 100), T(_et(10,0,2), 2, 105.0, 5, valid=False),
+                T(_et(10,0,3), 3, 101.0, 100)])
+    b = bars[_et(10,0)]
+    assert (b["high"], b["close"], b["volume"], b["trades"]) == (101.0, 101.0, 205.0, 3)
+
 def test_fold_late_trade_updates_its_own_minute():
     bars = {}
     fold(bars, [T(_et(10,1,5), 2, 101.0, 1)])
@@ -102,7 +109,7 @@ def test_fold_late_trade_updates_its_own_minute():
     assert touched == {_et(10,0)} and bars[_et(10,1)]["volume"] == 1.0 and bars[_et(10,0)]["close"] == 100.0
 ```
 
-(`_et(h, m, s=0, ms=0, day=<a trading day>)` and `T(ts, seq, price, size, symbol="SPY")` are test helpers in the file; `HOLIDAY = date(2026, 11, 26)`.)
+(`_et(h, m, s=0, ms=0, day=<a trading day>)` and `T(ts, seq, price, size, symbol="SPY", valid=True)` are test helpers in the file; `HOLIDAY = date(2026, 11, 26)`.)
 
 - [ ] **Step 2: Run to verify they fail** — `pytest tests/test_live_bars.py -v` → FAIL (module not found).
 - [ ] **Step 3: Implement** `live_bars.py`, the setting, and switch `sync.py`/`service.py` to `stock_symbols()`. `fold` with a late trade: open/close follow trade time order — keep per-bar `first_ts`/`last_ts` internally (not returned) so a late trade only changes open if earlier than `first_ts`, close if later than `last_ts`.
@@ -118,7 +125,7 @@ def test_fold_late_trade_updates_its_own_minute():
 **Interfaces:**
 - Consumes: `Trade`, `fold`, `minute_of` (Task 2).
 - Produces on `HistoryStore`:
-  - `insert_trades(trades: list[Trade]) -> set[tuple[str, int]]` — one transaction: `INSERT OR IGNORE` into `ticks(symbol, ts_ms, seq, minute, price, size, PRIMARY KEY(symbol, ts_ms, seq))` where `minute = minute_of(ts_ms)` (so the 16:00:00.000 print groups into 15:59), then recompute each touched `(symbol, minute)` in `live_1m(symbol, ts, open, high, low, close, volume, trades, PRIMARY KEY(symbol, ts))` **from `ticks`** (so duplicates and late trades are exact). Returns touched `(symbol, minute)`.
+  - `insert_trades(trades: list[Trade]) -> set[tuple[str, int]]` — one transaction: `INSERT OR IGNORE` into `ticks(symbol, ts_ms, seq, minute, price, size, valid, PRIMARY KEY(symbol, seq))` where `minute = minute_of(ts_ms)` (so the 16:00:00.000 print groups into 15:59), then recompute each touched `(symbol, minute)` in `live_1m(symbol, ts, open, high, low, close, volume, trades, PRIMARY KEY(symbol, ts))` **from `ticks`** (so duplicates and late trades are exact). Returns touched `(symbol, minute)`.
   - `live_minutes(symbol: str, start_ms: int, end_ms: int) -> list[dict]` — ascending, bar shape (no `trades` key).
   - `rebuild_live(day: date) -> int` — recompute all `live_1m` rows of that ET date from `ticks`; returns rows written.
   - `live_days() -> list[date]` — distinct ET dates present in `ticks` or `live_1m`.
@@ -151,7 +158,7 @@ def test_rebuild_live_from_ticks(store):
 ```
 
 - [ ] **Step 2: Run** `pytest tests/test_history_store.py -v` → new tests FAIL.
-- [ ] **Step 3: Implement.** Recompute a minute in SQL (`MIN/MAX`, first/last price by `ts_ms, seq` order, `SUM(size)`, `COUNT(*)`), not from in-memory state.
+- [ ] **Step 3: Implement.** Recompute a minute in SQL from `ticks`, applying Task 2's price rule (prices from `valid=1` rows when the minute has any, else from all rows; first/last by `ts_ms, seq`; `SUM(size)` and `COUNT(*)` over all rows), not from in-memory state. Add a test `test_live_minute_prices_ignore_odd_lots` mirroring Task 2's `test_fold_odd_lots_add_volume_not_price`.
 - [ ] **Step 4: Run** `pytest tests/test_history_store.py -v` → PASS.
 - [ ] **Step 5: Commit** `feat(history): ticks and live_1m tables`.
 
@@ -164,10 +171,10 @@ def test_rebuild_live_from_ticks(store):
 - Test: `backend/tests/test_tt_streamer.py` (append), `backend/tests/test_history_recorder.py`
 
 **Interfaces:**
-- Produces on `TTStreamer`: `"TimeAndSale"` key in `_subscribed`; a `TimeAndSale` pump; `add_listener(cls_name: str, fn: Callable[[Any], None]) -> None` and `remove_listener(cls_name, fn)`; the pump calls each listener synchronously per event and logs (never propagates) listener exceptions; `async _unsubscribe(cls, symbols: list[str]) -> None` (best-effort `dx.unsubscribe`, removes them from `_subscribed`, never raises). The recorder calls `_unsubscribe(TimeAndSale, …)` at 16:01:00 ET (60 s grace so the delayed 16:00 closing print still arrives; trades are still filtered by their own timestamp).
+- Produces on `TTStreamer`: relax `TimeAndSale.size` to `float | None` in `_accept_fractional_trade_sizes` (same reason as `Trade`); `"TimeAndSale"` key in `_subscribed`; a `TimeAndSale` pump; `add_listener(cls_name: str, fn: Callable[[Any], None]) -> None` and `remove_listener(cls_name, fn)`; the pump calls each listener synchronously per event and logs (never propagates) listener exceptions; `async _unsubscribe(cls, symbols: list[str]) -> None` (best-effort `dx.unsubscribe`, removes them from `_subscribed`, never raises). The recorder calls `_unsubscribe(TimeAndSale, …)` at 16:01:00 ET (60 s grace so the delayed 16:00 closing print still arrives; trades are still filtered by their own timestamp).
 - Produces: `class LiveRecorder(store: HistoryStore, streamer_factory=get_streamer, now=lambda: datetime.now(UTC), flush_seconds: float = 1.0)` with
   - `async run() -> None` — forever: outside RTH hold no subscription and sleep until 09:29:30 ET of the next trading day (wake at least every 60 s); inside RTH ensure listener + `TimeAndSale` subscription for `stock_symbols()` (re-check every flush: resubscribe if the symbol is missing from `streamer._subscribed["TimeAndSale"]`), flush every `flush_seconds`.
-  - `on_event(ev) -> None` — converts to `Trade` (`ev.event_symbol`, `int(ev.time)`, `int(ev.sequence or 0)`, `float(ev.price)`, `float(ev.size or 0)`), keeps only listed symbols where `is_rth_trade(...)`, appends to the buffer, folds into the in-memory forming bars.
+  - `on_event(ev) -> None` — converts to `Trade` (`ev.event_symbol`, `int(ev.time)`, `int(ev.index)`, `float(ev.price)`, `float(ev.size or 0)`, `bool(ev.valid_tick)`), drops events whose `type` is a deletion/cancel (anything other than NEW or CORRECTION; only NEW was observed live), keeps only listed symbols where `is_rth_trade(ev.time, ev.extended_trading_hours)`, appends to the buffer, folds into the in-memory forming bars.
   - `async flush() -> int` — swaps the buffer, `await asyncio.to_thread(store.insert_trades, batch)`; on exception puts the batch back at the front, logs, returns 0.
   - `live_bars(symbol: str) -> list[dict]` — the just-closed and forming minute for today from memory (0–2 bars, bar shape), empty outside RTH.
   - On `run()` start during RTH: `await asyncio.to_thread(store.rebuild_live, today)` and seed in-memory bars for the current and previous minute from `store.live_minutes`.
