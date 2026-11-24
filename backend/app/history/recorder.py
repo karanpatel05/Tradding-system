@@ -59,16 +59,21 @@ def _seconds_to_window(local: datetime) -> float:
 
 class LiveRecorder:
     def __init__(self, store: HistoryStore, streamer_factory=get_streamer,
-                 now=lambda: datetime.now(UTC), flush_seconds: float = 1.0):
+                 now=lambda: datetime.now(UTC), flush_seconds: float = 1.0,
+                 subscribe_timeout: float = 10.0, max_buffer: int = 2_000_000):
         self.store = store
         self._factory = streamer_factory
         self._now = now
         self._flush_seconds = flush_seconds
+        self._subscribe_timeout = subscribe_timeout
+        self._max_buffer = max_buffer
         self._symbols: frozenset[str] = frozenset(stock_symbols())
         self._buffer: list[Trade] = []
         self._bars: dict[str, dict[int, dict]] = {}
         self._streamer = None                  # the instance our listener is attached to
         self._seeded_day: date | None = None
+        self._bars_day: date | None = None
+        self._seed_failures = 0
         self._flush_failures = 0
 
     # --- hot path (runs inside the streamer pump; no I/O, no awaits) ------------------
@@ -99,6 +104,11 @@ class LiveRecorder:
                 raise
             except Exception:  # noqa: BLE001
                 self._buffer = batch + self._buffer
+                over = len(self._buffer) - self._max_buffer
+                if over > 0:
+                    del self._buffer[:over]
+                    logger.error("live recorder: buffer over its %d-trade cap; dropped the "
+                                 "%d oldest trades", self._max_buffer, over)
                 self._flush_failures += 1
                 logger.warning("live recorder: flush of %d trades failed (%d in a row); "
                                "will retry", len(batch), self._flush_failures,
@@ -135,8 +145,6 @@ class LiveRecorder:
                 for s in self._symbols}
 
     async def _seed(self, day: date) -> None:
-        if self._seeded_day is not None and self._seeded_day != day:
-            self._bars.clear()                   # a new session
         seed = await asyncio.to_thread(self._load_seed, day, self._current_minute())
         for symbol, rows in seed.items():
             bars = self._bars.setdefault(symbol, {})
@@ -168,7 +176,15 @@ class LiveRecorder:
         for symbol in sorted(self._symbols):
             # Re-read every time: a DXLink drop replaces the whole _subscribed dict.
             if symbol not in streamer._subscribed.get(_CLS, ()):
-                if not await streamer._subscribe(TimeAndSale, symbol):
+                # The SDK waits for CHANNEL_OPENED with no timeout while holding the
+                # shared _sub_lock; cancelling on timeout releases it for other callers.
+                try:
+                    ok = await asyncio.wait_for(streamer._subscribe(TimeAndSale, symbol),
+                                                self._subscribe_timeout)
+                except asyncio.TimeoutError:
+                    raise ConnectionError(f"TimeAndSale subscribe {symbol} timed out after "
+                                          f"{self._subscribe_timeout:g}s") from None
+                if not ok:
                     return False
         return True
 
@@ -189,8 +205,19 @@ class LiveRecorder:
             await self._release_feed()
             await self.flush()
             return min(_IDLE_WAKE, max(self._flush_seconds, _seconds_to_window(local)))
+        if self._bars_day != local.date():
+            self._bars.clear()                   # a new session
+            self._bars_day = local.date()
         if self._seeded_day != local.date():
-            await self._seed(local.date())
+            try:
+                await self._seed(local.date())
+                self._seed_failures = 0
+            except Exception:  # noqa: BLE001 - record unseeded; retry next iteration
+                self._seed_failures += 1
+                if self._seed_failures == 1 or self._seed_failures % 60 == 0:
+                    logger.warning("live recorder: seeding live bars failed (%d in a row); "
+                                   "recording unseeded and retrying", self._seed_failures,
+                                   exc_info=self._seed_failures == 1)
         connected = await self._ensure_feed()
         await self.flush()
         if not connected:

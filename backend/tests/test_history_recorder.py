@@ -218,3 +218,50 @@ async def test_run_survives_errors(store, fake_streamer):
     await _until(lambda: set(stock_symbols()) <= fake_streamer._subscribed["TimeAndSale"])
     assert not task.done()
     await _stop(task)
+
+
+async def test_stalled_subscribe_times_out_and_releases_the_lock(store, fake_streamer):
+    lock = asyncio.Lock()
+
+    async def stalled(cls, symbol):
+        async with lock:                       # like TTStreamer._sub_lock
+            await asyncio.Event().wait()       # CHANNEL_OPENED never arrives
+    fake_streamer._subscribe = stalled
+    rec = LiveRecorder(store, lambda: fake_streamer, now=lambda: _dt(10, 0, 30),
+                       subscribe_timeout=0.05)
+    loop = asyncio.get_running_loop()
+    t = loop.time()
+    with pytest.raises(ConnectionError):
+        await asyncio.wait_for(rec._step(), 2)
+    assert loop.time() - t < 1.0
+    assert not lock.locked()
+
+
+async def test_buffer_cap_drops_oldest_on_failed_flush(store, fake_streamer, monkeypatch,
+                                                       caplog):
+    rec = LiveRecorder(store, lambda: fake_streamer, now=lambda: _dt(10, 0, 30),
+                       max_buffer=3)
+    for i in range(1, 6):
+        rec.on_event(_tas("SPY", _et(10, 0, i), i, 100.0, 1))
+    monkeypatch.setattr(store, "insert_trades", _raise(OSError("disk full")))
+    with caplog.at_level("ERROR"):
+        assert await rec.flush() == 0
+    assert [t.seq for t in rec._buffer] == [3, 4, 5]
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1 and "2" in errors[0].getMessage()
+
+
+async def test_seed_failure_still_records_and_retries(store, fake_streamer, monkeypatch):
+    real_rebuild = store.rebuild_live
+    monkeypatch.setattr(store, "rebuild_live", _raise(OSError("db locked")))
+    rec = LiveRecorder(store, lambda: fake_streamer, now=lambda: _dt(10, 0, 30),
+                       flush_seconds=0.01)
+    task = asyncio.create_task(rec.run())
+    await _until(lambda: set(stock_symbols()) <= fake_streamer._subscribed["TimeAndSale"])
+    fake_streamer.listeners["TimeAndSale"][0](_tas("SPY", _et(10, 0, 5), 1, 100.0, 4))
+    await _until(lambda: store.live_minutes("SPY", 0, 2**62) != [])
+    assert rec._seeded_day is None
+    monkeypatch.setattr(store, "rebuild_live", real_rebuild)
+    await _until(lambda: rec._seeded_day == DAY)
+    assert rec.live_bars("SPY")[0]["volume"] == 4.0         # recorded bar not wiped
+    await _stop(task)
