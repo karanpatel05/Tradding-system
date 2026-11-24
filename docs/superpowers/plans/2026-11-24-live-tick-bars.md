@@ -118,7 +118,7 @@ def test_fold_late_trade_updates_its_own_minute():
 **Interfaces:**
 - Consumes: `Trade`, `fold`, `minute_of` (Task 2).
 - Produces on `HistoryStore`:
-  - `insert_trades(trades: list[Trade]) -> set[tuple[str, int]]` — one transaction: `INSERT OR IGNORE` into `ticks(symbol, ts_ms, seq, price, size, PRIMARY KEY(symbol, ts_ms, seq))`, then recompute each touched `(symbol, minute)` in `live_1m(symbol, ts, open, high, low, close, volume, trades, PRIMARY KEY(symbol, ts))` **from `ticks`** (so duplicates and late trades are exact). Returns touched `(symbol, minute)`.
+  - `insert_trades(trades: list[Trade]) -> set[tuple[str, int]]` — one transaction: `INSERT OR IGNORE` into `ticks(symbol, ts_ms, seq, minute, price, size, PRIMARY KEY(symbol, ts_ms, seq))` where `minute = minute_of(ts_ms)` (so the 16:00:00.000 print groups into 15:59), then recompute each touched `(symbol, minute)` in `live_1m(symbol, ts, open, high, low, close, volume, trades, PRIMARY KEY(symbol, ts))` **from `ticks`** (so duplicates and late trades are exact). Returns touched `(symbol, minute)`.
   - `live_minutes(symbol: str, start_ms: int, end_ms: int) -> list[dict]` — ascending, bar shape (no `trades` key).
   - `rebuild_live(day: date) -> int` — recompute all `live_1m` rows of that ET date from `ticks`; returns rows written.
   - `live_days() -> list[date]` — distinct ET dates present in `ticks` or `live_1m`.
@@ -164,7 +164,7 @@ def test_rebuild_live_from_ticks(store):
 - Test: `backend/tests/test_tt_streamer.py` (append), `backend/tests/test_history_recorder.py`
 
 **Interfaces:**
-- Produces on `TTStreamer`: `"TimeAndSale"` key in `_subscribed`; a `TimeAndSale` pump; `add_listener(cls_name: str, fn: Callable[[Any], None]) -> None` and `remove_listener(cls_name, fn)`; the pump calls each listener synchronously per event and logs (never propagates) listener exceptions; `async _unsubscribe(cls, symbols: list[str]) -> None` (best-effort `dx.unsubscribe`, removes them from `_subscribed`, never raises). The recorder calls `_unsubscribe(TimeAndSale, …)` when RTH ends.
+- Produces on `TTStreamer`: `"TimeAndSale"` key in `_subscribed`; a `TimeAndSale` pump; `add_listener(cls_name: str, fn: Callable[[Any], None]) -> None` and `remove_listener(cls_name, fn)`; the pump calls each listener synchronously per event and logs (never propagates) listener exceptions; `async _unsubscribe(cls, symbols: list[str]) -> None` (best-effort `dx.unsubscribe`, removes them from `_subscribed`, never raises). The recorder calls `_unsubscribe(TimeAndSale, …)` at 16:01:00 ET (60 s grace so the delayed 16:00 closing print still arrives; trades are still filtered by their own timestamp).
 - Produces: `class LiveRecorder(store: HistoryStore, streamer_factory=get_streamer, now=lambda: datetime.now(UTC), flush_seconds: float = 1.0)` with
   - `async run() -> None` — forever: outside RTH hold no subscription and sleep until 09:29:30 ET of the next trading day (wake at least every 60 s); inside RTH ensure listener + `TimeAndSale` subscription for `stock_symbols()` (re-check every flush: resubscribe if the symbol is missing from `streamer._subscribed["TimeAndSale"]`), flush every `flush_seconds`.
   - `on_event(ev) -> None` — converts to `Trade` (`ev.event_symbol`, `int(ev.time)`, `int(ev.sequence or 0)`, `float(ev.price)`, `float(ev.size or 0)`), keeps only listed symbols where `is_rth_trade(...)`, appends to the buffer, folds into the in-memory forming bars.
@@ -209,7 +209,9 @@ async def test_unsubscribes_when_rth_ends(store, fake_streamer):
     clock = [_dt(15, 59, 59)]
     rec = LiveRecorder(store, lambda: fake_streamer, now=lambda: clock[0], flush_seconds=0.01)
     task = asyncio.create_task(rec.run()); await asyncio.sleep(0.05)
-    clock[0] = _dt(16, 0, 1); await asyncio.sleep(0.05); task.cancel()
+    clock[0] = _dt(16, 0, 30); await asyncio.sleep(0.05)
+    assert fake_streamer._subscribed["TimeAndSale"]                         # grace for the closing print
+    clock[0] = _dt(16, 1, 1); await asyncio.sleep(0.05); task.cancel()
     assert not fake_streamer._subscribed["TimeAndSale"]
 ```
 
