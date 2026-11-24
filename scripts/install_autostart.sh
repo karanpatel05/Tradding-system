@@ -16,9 +16,9 @@
 # dashboard; order/kill/activate actions still need APP_AUTH_TOKEN. Never port-forward
 # it to the internet (use the Docker stack's Caddy TLS + Basic Auth for that).
 #
-# Order routing is NOT armed here: ENABLE_LIVE_ORDERS comes only from backend/.env
-# (default false = simulated fills). An env var in this plist would override that file,
-# so don't add one while the project is in development.
+# Order routing is not set here: ENABLE_LIVE_ORDERS comes only from backend/.env
+# (default true = Alpaca PAPER, and only with paper keys + the paper host). An env var in
+# this plist would override that file, so don't add one.
 #
 # NOTE: don't also run `./scripts/run_web.sh` manually while the agent is active —
 # they'd both want port 8765. The agent becomes the single managing process.

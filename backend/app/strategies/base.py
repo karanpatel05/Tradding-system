@@ -69,7 +69,10 @@ class BaseStrategy(ABC):
         if self.external_runner:
             return "External runner"
         from app.config import get_settings
-        return "Alpaca paper" if get_settings().enable_live_orders else "Simulated"
+        if not get_settings().enable_live_orders:
+            return "Simulated"
+        from app.broker import alpaca_client as ac
+        return "Alpaca paper" if ac.configured() else "Alpaca paper (keys missing)"
 
     async def research_record(self) -> dict | None:
         """Research snapshot from a strategy's own session store, or None to let the

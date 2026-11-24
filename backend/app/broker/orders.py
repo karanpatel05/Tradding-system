@@ -33,6 +33,7 @@ from app.engine.safe_mode import is_safe_mode  # noqa: F401 — monkeypatch poin
 logger = logging.getLogger("trading.broker.orders")
 
 BLOCKED_DETAIL = "blocked: Alpaca live endpoint locked (paper only)"
+NO_KEYS_DETAIL = "blocked: Alpaca paper keys not configured"
 MAX_COMBO_LEGS = 4          # Alpaca mleg limit; never split a combo
 _CANCEL_WAIT = 5.0          # seconds to wait for cancelled orders to leave the book
 _CANCEL_STEP = 0.25
@@ -63,7 +64,11 @@ async def _mid(symbol: str) -> float | None:
 
 # --- Alpaca transmit plumbing -------------------------------------------------
 def _paper_lock_blocked() -> dict | None:
-    """The blocked dict when the configured Alpaca host is not the paper host."""
+    """The blocked dict when routing can't go to Alpaca paper: no paper keys configured
+    (refused before any request), or the configured host is not the paper host."""
+    if not ac.configured():
+        logger.error("Order refused: Alpaca paper keys are not configured")
+        return {"transmitted": False, "detail": NO_KEYS_DETAIL}
     try:
         ac.trading_base()
     except PaperLockError:

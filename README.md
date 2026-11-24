@@ -87,9 +87,11 @@ npx vite build --config redesign.config.js    # builds to frontend/dist-redesign
   Basic Auth + TLS (see the hosted section below).
 - **"Coming Soon" is enforced server-side** — activation, capital allocation, and backtest are
   rejected with `409` for not-ready strategies. The UI hiding is cosmetic only.
-- **Orders go to Alpaca paper only** — `ENABLE_LIVE_ORDERS` OFF (default) = simulated fills,
-  no order sent; ON = tagged orders to `https://paper-api.alpaca.markets`. Any other
-  `APCA_API_BASE_URL` refuses every write. No code path sends orders to Tastytrade.
+- **Orders go to Alpaca paper only** — `ENABLE_LIVE_ORDERS` ON (default) = tagged orders to
+  `https://paper-api.alpaca.markets`; OFF = simulated fills, no order sent. Even when ON,
+  every write is refused unless both Alpaca paper keys are set and `APCA_API_BASE_URL` is
+  the paper host. Live (real-money) Alpaca is locked in code. No code path sends orders to
+  Tastytrade.
 - **Kill switch is real** — cancels every tracked async worker (even if flatten throws), is
   idempotent, and reports partial failure (`fully_flat`). Flatten cancels and closes only
   the app's own (`tsys-`) orders and quantities on the shared Alpaca account.
@@ -155,7 +157,8 @@ Never port-forward this to the internet; use the Docker stack below for remote a
 Re-running the install script without `RUN_WEB_HOST` switches back to this Mac only.
 
 Logs go to `~/Library/Logs/trading-system.{out,err}.log`. The plist doesn't set
-`ENABLE_LIVE_ORDERS`; order routing follows `backend/.env` only. Re-run the install script
+`ENABLE_LIVE_ORDERS`; order routing follows `backend/.env` (default ON = Alpaca paper when
+keys are set). Re-run the install script
 after moving the repo. Rebuild the UI (`cd frontend && npm run build`) before restarting so
 the service serves your frontend changes.
 

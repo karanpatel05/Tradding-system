@@ -4,6 +4,17 @@ import pytest
 from app.services import market
 
 
+@pytest.fixture(autouse=True)
+def _never_write_real_env(monkeypatch, tmp_path):
+    """The app's settings writers (order-routing switch, Tastytrade creds save) go to a
+    temp file in every test, never backend/.env. Tests that need their own file
+    monkeypatch over this."""
+    from app.auth import routes as auth_routes
+    from app.routers import system
+    monkeypatch.setattr(system, "_ENV_PATH", tmp_path / "system.env")
+    monkeypatch.setattr(auth_routes, "_ENV_PATH", tmp_path / "auth.env")
+
+
 class _EmptyHistory:
     async def get_bars(self, *args, **kwargs):
         return []
