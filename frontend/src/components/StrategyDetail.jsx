@@ -1,26 +1,53 @@
 import { useEffect, useState } from "react";
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  CartesianGrid,
-} from "recharts";
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { api } from "../api.js";
+import {
+  usd,
+  signedUsd,
+  tone,
+  humanize,
+  isOptions,
+  canToggle,
+  strategyStatus,
+  StatusMark,
+  ToggleButton,
+  SessionRail,
+  scheduleOf,
+  ChevronLeft,
+} from "./strategyUi.jsx";
 
 const TF_ORDER = ["1D", "1W", "1M", "YTD", "full"];
-const pct = (n) =>
-  n === null || n === undefined ? "—" : `${(n * 100).toFixed(2)}%`;
+const TF_LABEL = { full: "Full" };
+const pct2 = (n) => (n === null || n === undefined ? "—" : `${(n * 100).toFixed(2)}%`);
+const timeOf = (iso) =>
+  iso ? new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "America/New_York" }) : "—";
+const dayLabel = (iso) => (iso ? new Date(iso + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }) : "—");
+const nyToday = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
+const SESSION_TONE = { closed: "", open: "live", entering: "live", missed: "warn", skipped: "", failed: "bad", rejected: "bad", abandoned: "bad", interrupted: "bad" };
 
-export default function StrategyDetail({ keyName, onBack }) {
+function fmt(v) {
+  return v === null || v === undefined || v === "" ? "—" : String(v);
+}
+
+function BackLink({ onBack }) {
+  return (
+    <button className="strat-back" onClick={onBack}>
+      <ChevronLeft />
+      Strategies
+    </button>
+  );
+}
+
+export default function StrategyDetail({ keyName, summary, onBack }) {
   const [detail, setDetail] = useState(null);
   const [backtest, setBacktest] = useState(null);
+  const [sessions, setSessions] = useState(null);
   const [alloc, setAlloc] = useState("");
   const [msg, setMsg] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [backtestError, setBacktestError] = useState(null);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   const load = () =>
     api
@@ -38,230 +65,273 @@ export default function StrategyDetail({ keyName, onBack }) {
 
   useEffect(() => {
     let alive = true;
-    if (ready)
+    if (ready) {
       api
         .backtest(keyName)
-        .then((d) => {
-          if (alive) setBacktest(d);
-        })
-        .catch((e) => {
-          if (alive) setBacktestError(e.message);
-        });
+        .then((d) => alive && setBacktest(d))
+        .catch((e) => alive && setBacktestError(e.message));
+      api
+        .strategySessions(keyName)
+        .then((d) => alive && setSessions(d?.sessions || []))
+        .catch(() => alive && setSessions([]));
+    }
     return () => {
       alive = false;
     };
   }, [ready, keyName]);
 
-  const act = async (fn) => {
+  const act = async (fn, verb) => {
     setMsg(null);
+    setBusy(true);
     try {
       await fn();
-      load();
+      await load();
     } catch (err) {
-      setMsg(err.message);
+      setMsg(err.status === 401 ? `${verb} needs the app access token (Connections)` : err.message);
+    } finally {
+      setBusy(false);
+      setConfirming(false);
     }
   };
 
   if (!detail)
     return (
-      <div>
-        <button className="btn ghost" onClick={onBack}>
-          ← Back to strategies
-        </button>
+      <div className="strategy-detail">
+        <BackLink onBack={onBack} />
         <div className={loadError ? "banner error" : "empty"} role="status">
-          {loadError
-            ? `Could not load strategy: ${loadError}`
-            : "Loading strategy…"}
+          {loadError ? `Could not load strategy: ${loadError}` : "Loading strategy…"}
         </div>
       </div>
     );
+
   const ov = detail.overview;
+  const s = {
+    key: keyName,
+    name: ov.name,
+    ready: ov.ready,
+    running: detail.running,
+    external_runner: detail.external_runner,
+    activation_blocked: detail.activation_blocked,
+  };
+  const meta = [summary?.category, summary?.universe?.join(", "), summary?.execution].filter(Boolean);
+  const { entry, exit } = scheduleOf(ov);
+  const today = nyToday();
+  const todaySession = sessions?.find((x) => x.session_date === today);
+  const pos = detail.position;
 
   return (
     <div className="strategy-detail">
-      <button className="btn ghost" onClick={onBack}>
-        ← Back
-      </button>
-      <div className="row between center">
-        <h1>{ov.name}</h1>
-        {ready ? (
-          <span className={`pill ${detail.running ? "live" : "idle"}`}>
-            {detail.activation_blocked && !detail.running
-              ? "Off"
-              : detail.status}
-          </span>
-        ) : (
-          <span className="pill soon">Coming Soon</span>
-        )}
-      </div>
-
-      {/* COMING SOON: no overview, no backtest, no controls. */}
-      {!ready ? (
-        <div className="card coming-soon-big">
-          <h2>Coming Soon</h2>
-          <p className="muted">
-            This strategy's rules haven't been implemented yet. Overview and
-            backtest will appear here, and activation / capital allocation will
-            unlock, once logic is added.
-          </p>
+      <BackLink onBack={onBack} />
+      <header className="sd-head">
+        <div className="sd-title">
+          <h1>{ov.name}</h1>
+          {meta.length > 0 && <p className="sd-meta">{meta.join(" · ")}</p>}
         </div>
-      ) : (
-        <>
-          <section className="card">
-            <h2>Overview</h2>
-            <p>{ov.description}</p>
-            {ov.rules?.length > 0 && (
-              <>
-                <h4>Rules</h4>
-                <ul>
-                  {ov.rules.map((r, i) => (
-                    <li key={i}>{r}</li>
-                  ))}
-                </ul>
-              </>
-            )}
-            <p>
-              <b>Entry:</b> {ov.entry_logic}
-            </p>
-            <p>
-              <b>Exit:</b> {ov.exit_logic}
-            </p>
-            <p>
-              <b>Selection criteria:</b> {ov.selection_criteria}
-            </p>
-          </section>
-
-          {detail.external_runner ? (
-            <ExternalRunnerCard detail={detail} />
-          ) : (
-            <section className="card">
-              <h2>Controls</h2>
-              <div className="row gap center">
-                <input
-                  className="input narrow"
-                  type="number"
-                  placeholder="Capital $"
-                  aria-label="Capital allocation in dollars"
-                  value={alloc}
-                  onChange={(e) => setAlloc(e.target.value)}
-                />
-                <button
-                  className="btn"
-                  onClick={() =>
-                    act(() => api.allocate(keyName, Number(alloc)))
-                  }
-                >
-                  Set Allocation
-                </button>
-                {detail.running ? (
-                  <button
-                    className="btn danger"
-                    onClick={() => act(() => api.stop(keyName))}
-                  >
-                    Stop
-                  </button>
-                ) : (
-                  <button
-                    className="btn primary"
-                    onClick={() => act(() => api.activate(keyName))}
-                  >
-                    Activate
-                  </button>
-                )}
-              </div>
-              <div className="muted small">
-                Current: ${(detail.capital_allocation || 0).toLocaleString()}
-              </div>
-              <div className="muted small">
-                Each trade is sized into <b>whole shares</b> from this
-                allocation and the per-trade risk %, capped by allocation ÷
-                entry price. Orders go to Alpaca paper only when{" "}
-                <code>ENABLE_LIVE_ORDERS</code> is set server-side (otherwise
-                simulated in-app).
-              </div>
-              {msg && <div className="banner error">{msg}</div>}
-            </section>
+        <div className="sd-head-actions">
+          <StatusMark s={s} />
+          {ready && !detail.external_runner && (
+            <ToggleButton
+              s={s}
+              primary
+              busy={busy}
+              confirming={confirming}
+              onAsk={() => setConfirming(true)}
+              onCancel={() => setConfirming(false)}
+              onConfirm={() => act(() => (s.running ? api.stop(keyName) : api.activate(keyName)), s.running ? "Pausing" : "Starting")}
+            />
           )}
+        </div>
+      </header>
+      {ready && ov.description && <p className="sd-lede">{ov.description}</p>}
+      {msg && <div className="banner error" role="alert">{msg}</div>}
+      {ready && !canToggle(s) && !detail.external_runner && strategyStatus(s).title && <p className="muted small">{strategyStatus(s).title}</p>}
 
-          <section className="card">
-            <h2>Backtest</h2>
-            {!backtest?.data_available ? (
-              <div className={backtestError ? "banner error" : "muted"}>
-                {backtestError || backtest?.note || "Loading backtest…"}
+      {!ready ? (
+        <section className="card sd-soon">
+          <h2>Coming soon</h2>
+          <p className="muted">
+            The rules for this strategy are not implemented yet. The overview and backtest appear here, and activation and allocation unlock, once
+            they are.
+          </p>
+        </section>
+      ) : (
+        <div className="sd-grid">
+          <div className="sd-main">
+            <section className="card sd-today" aria-label="Today">
+              <div className="sd-card-head">
+                <h2>Today</h2>
+                <span className="sd-card-meta">{dayLabel(today)}</span>
               </div>
-            ) : (
-              <>
-                <div className="muted small">
-                  {backtest.symbol} · {backtest.basis} ·{" "}
-                  {backtest.date_range.start} → {backtest.date_range.end} (
-                  {backtest.date_range.trading_days} trading days)
+              <SessionRail entry={entry} exit={exit} />
+              <dl className="sd-facts">
+                <div><dt>Phase</dt><dd>{humanize(detail.phase || detail.status)}</dd></div>
+                <div><dt>Trades today</dt><dd>{fmt(detail.trades_today)}</dd></div>
+                <div>
+                  <dt>Position</dt>
+                  <dd>{pos ? `${humanize(pos.side)} ${fmt(pos.quantity)} ${fmt(pos.symbol)} @ ${fmt(pos.entry_price)}` : "Flat"}</dd>
                 </div>
-                <table className="table metrics">
-                  <thead>
-                    <tr>
-                      <th>Timeframe</th>
-                      <th>Return</th>
-                      <th>Win%</th>
-                      <th>Expectancy</th>
-                      <th>Max DD</th>
-                      <th>Sharpe</th>
-                      <th>Trades</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {TF_ORDER.filter((tf) => backtest.timeframes[tf]).map(
-                      (tf) => {
-                        const m = backtest.timeframes[tf];
-                        return (
-                          <tr key={tf}>
-                            <td>{tf}</td>
-                            <td className={m.total_return >= 0 ? "pos" : "neg"}>
-                              {pct(m.total_return)}
-                            </td>
-                            <td>{pct(m.win_rate)}</td>
-                            <td>{pct(m.expectancy)}</td>
-                            <td className="neg">{pct(m.max_drawdown)}</td>
-                            <td>{m.sharpe}</td>
-                            <td>{m.trade_count}</td>
-                          </tr>
-                        );
-                      },
-                    )}
-                  </tbody>
-                </table>
-                <h4>Equity Curve</h4>
-                <ResponsiveContainer width="100%" height={240}>
-                  <LineChart data={backtest.equity_curve}>
-                    <CartesianGrid
-                      strokeDasharray="3 3"
-                      stroke="var(--border)"
-                    />
-                    <XAxis
-                      dataKey="date"
-                      tick={{ fontSize: 10 }}
-                      minTickGap={40}
-                    />
-                    <YAxis tick={{ fontSize: 10 }} domain={["auto", "auto"]} />
-                    <Tooltip />
-                    <Line
-                      type="monotone"
-                      dataKey="equity"
-                      stroke="var(--accent)"
-                      dot={false}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              </>
+                <div><dt>Last signal</dt><dd>{timeOf(detail.last_signal_time)}</dd></div>
+              </dl>
+              {todaySession && (
+                <p className={"sd-outcome " + (SESSION_TONE[todaySession.status] || "")}>
+                  <b>{humanize(todaySession.status)}</b>
+                  {todaySession.reason ? ` · ${todaySession.reason}` : ""}
+                  {todaySession.realized_pnl != null ? ` · ${signedUsd(todaySession.realized_pnl)}` : ""}
+                </p>
+              )}
+            </section>
+
+            <section className="card sd-rules" aria-label="How it trades">
+              <h2>How it trades</h2>
+              <dl className="sd-logic">
+                <div><dt>Entry</dt><dd>{fmt(ov.entry_logic)}</dd></div>
+                <div><dt>Exit</dt><dd>{fmt(ov.exit_logic)}</dd></div>
+                <div><dt>Selection</dt><dd>{fmt(ov.selection_criteria)}</dd></div>
+              </dl>
+              {ov.rules?.length > 0 && (
+                <>
+                  <h3>Rules</h3>
+                  <ol className="sd-rule-list">
+                    {ov.rules.map((r, i) => (
+                      <li key={i}>
+                        <span className="sd-rule-n">{String(i + 1).padStart(2, "0")}</span>
+                        <span>{r}</span>
+                      </li>
+                    ))}
+                  </ol>
+                </>
+              )}
+            </section>
+
+            {sessions?.length > 0 && (
+              <section className="card sd-sessions" aria-label="Sessions">
+                <div className="sd-card-head">
+                  <h2>Sessions</h2>
+                  <span className="sd-card-meta">{sessions.length} recorded</span>
+                </div>
+                <div className="table-scroll">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Outcome</th>
+                        <th>Note</th>
+                        <th className="num">Realized P&amp;L</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sessions.slice(0, 20).map((x, i) => (
+                        <tr key={x.id ?? `${x.session_date}-${i}`}>
+                          <td className="sd-date">{dayLabel(x.session_date)}</td>
+                          <td><span className={"sd-dot " + (SESSION_TONE[x.status] || "")}><i aria-hidden="true" />{humanize(x.status)}</span></td>
+                          <td className="sd-note">{x.reason || "—"}</td>
+                          <td className={"num " + tone(x.realized_pnl)}>{signedUsd(x.realized_pnl)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
             )}
-          </section>
-        </>
+
+            <section className="card sd-backtest" aria-label="Backtest">
+              <h2>Backtest</h2>
+              {!backtest?.data_available ? (
+                <p className={backtestError ? "banner error" : "muted"}>{backtestError || backtest?.note || "Loading backtest…"}</p>
+              ) : (
+                <>
+                  <p className="sd-card-meta">
+                    {backtest.symbol} · {backtest.basis} · {backtest.date_range.start} to {backtest.date_range.end}, {backtest.date_range.trading_days} trading days
+                  </p>
+                  <div className="table-scroll">
+                    <table className="table metrics">
+                      <thead>
+                        <tr>
+                          <th>Window</th>
+                          <th className="num">Return</th>
+                          <th className="num">Win rate</th>
+                          <th className="num">Expectancy</th>
+                          <th className="num">Max drawdown</th>
+                          <th className="num">Sharpe</th>
+                          <th className="num">Trades</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {TF_ORDER.filter((tf) => backtest.timeframes[tf]).map((tf) => {
+                          const m = backtest.timeframes[tf];
+                          return (
+                            <tr key={tf}>
+                              <td>{TF_LABEL[tf] || tf}</td>
+                              <td className={"num " + (m.total_return >= 0 ? "pos" : "neg")}>{pct2(m.total_return)}</td>
+                              <td className="num">{pct2(m.win_rate)}</td>
+                              <td className="num">{pct2(m.expectancy)}</td>
+                              <td className="num neg">{pct2(m.max_drawdown)}</td>
+                              <td className="num">{fmt(m.sharpe)}</td>
+                              <td className="num">{fmt(m.trade_count)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <h3>Equity curve</h3>
+                  <div className="sd-chart">
+                    <ResponsiveContainer width="100%" height={240}>
+                      <LineChart data={backtest.equity_curve} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+                        <CartesianGrid stroke="var(--border-soft)" vertical={false} />
+                        <XAxis dataKey="date" tick={{ fontSize: 11, fill: "var(--muted)", fontFamily: "var(--num)" }} tickLine={false} axisLine={{ stroke: "var(--border)" }} minTickGap={48} />
+                        <YAxis tick={{ fontSize: 11, fill: "var(--muted)", fontFamily: "var(--num)" }} tickLine={false} axisLine={false} width={56} domain={["auto", "auto"]} />
+                        <Tooltip contentStyle={{ border: "1px solid var(--border)", borderRadius: 8, fontSize: 12, boxShadow: "none" }} />
+                        <Line type="monotone" dataKey="equity" stroke="var(--accent)" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </>
+              )}
+            </section>
+          </div>
+
+          <aside className="sd-side">
+            {detail.external_runner ? (
+              <ExternalRunnerCard detail={detail} />
+            ) : (
+              <section className="card sd-controls" aria-label="Allocation">
+                <h2>Allocation</h2>
+                <div className="sd-alloc-now">
+                  <span>Current</span>
+                  <b>{usd(detail.capital_allocation || 0)}</b>
+                </div>
+                <div className="sd-alloc-form">
+                  <input
+                    className="input"
+                    type="number"
+                    placeholder="Amount in $"
+                    aria-label="Capital allocation in dollars"
+                    value={alloc}
+                    onChange={(e) => setAlloc(e.target.value)}
+                  />
+                  <button className="btn" disabled={busy || alloc === ""} onClick={() => act(() => api.allocate(keyName, Number(alloc)), "Setting allocation")}>
+                    Set allocation
+                  </button>
+                </div>
+                <dl className="sd-kv">
+                  <div><dt>Execution</dt><dd>{summary?.execution || "—"}</dd></div>
+                  <div><dt>Contracts cap</dt><dd>{fmt(detail.contracts)}</dd></div>
+                  <div><dt>Broker</dt><dd>{detail.broker_connected ? "Connected" : "Disconnected"}</dd></div>
+                </dl>
+                {summary && !isOptions(summary) && (
+                  <p className="strat-caption">
+                    Each trade is sized into whole shares from this allocation and the per-trade risk %, capped by allocation ÷ entry price. Orders go to
+                    Alpaca paper only when <code>ENABLE_LIVE_ORDERS</code> is set server-side, otherwise they are simulated in the app.
+                  </p>
+                )}
+              </section>
+            )}
+          </aside>
+        </div>
       )}
     </div>
   );
-}
-
-function fmt(v) {
-  return v === null || v === undefined || v === "" ? "—" : String(v);
 }
 
 // A strategy that executes outside this app (e.g. the QQQ credit spread under its
@@ -272,79 +342,39 @@ function ExternalRunnerCard({ detail }) {
   const today = ext.today;
   const pos = today?.position;
   return (
-    <section className="card">
-      <h2>Controls</h2>
-      <div className="row gap center">
-        <label
-          className="row gap center"
-          title={detail.activation_blocked || ""}
-        >
-          <input
-            type="checkbox"
-            role="switch"
-            checked={false}
-            disabled
-            aria-label="Run in this app"
-          />
-          <span>
-            Run in this app: <b>Off</b>
-          </span>
-        </label>
-      </div>
-      {detail.activation_blocked && (
-        <div className="muted small">{detail.activation_blocked}</div>
-      )}
-      <div className="muted small">
-        The app's emergency stop does not stop the external runner.
-      </div>
-
-      <h4>External runner</h4>
+    <section className="card sd-controls" aria-label="External runner">
+      <h2>External runner</h2>
+      <label className="sd-switch" title={detail.activation_blocked || ""}>
+        <input type="checkbox" role="switch" checked={false} disabled aria-label="Run in this app" />
+        <span>Run in this app: <b>Off</b></span>
+      </label>
+      {detail.activation_blocked && <p className="strat-caption">{detail.activation_blocked}</p>}
+      <p className="strat-caption">The app's emergency stop does not stop the external runner.</p>
       {!ext.found ? (
-        <div className="muted small">
-          Runner folder not found on this host ({fmt(ext.live_dir)}).
-        </div>
+        <p className="strat-caption">Runner folder not found on this host ({fmt(ext.live_dir)})</p>
       ) : (
-        <table className="table">
-          <tbody>
-            <tr>
-              <td>Service</td>
-              <td>
-                <code>{fmt(ext.runner)}</code>{" "}
-                <span
-                  className={`pill ${ext.daemon_running ? "live" : "idle"}`}
-                >
-                  {ext.daemon_running ? "running" : "not running"}
-                </span>
-                {ext.pid ? (
-                  <span className="muted small"> pid {ext.pid}</span>
-                ) : null}
-              </td>
-            </tr>
-            <tr>
-              <td>Session</td>
-              <td>{fmt(today?.session_date)}</td>
-            </tr>
-            <tr>
-              <td>Entry / 15:30 check / final close</td>
-              <td>
-                {fmt(today?.entry)} / {fmt(today?.checkpoint)} /{" "}
-                {fmt(today?.final_close)}
-              </td>
-            </tr>
-            <tr>
-              <td>Today's spread</td>
-              <td>
-                {pos
-                  ? `${pos.ticker} ${pos.spread} ${fmt(pos.short_strike)}/${fmt(
-                      pos.long_strike,
-                    )} ×${fmt(pos.quantity)} @ ${fmt(pos.credit_per_share)} credit (${fmt(
-                      pos.status,
-                    )})`
-                  : "—"}
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <dl className="sd-kv">
+          <div>
+            <dt>Service</dt>
+            <dd>
+              <span className={"sd-dot " + (ext.daemon_running ? "live" : "")}><i aria-hidden="true" />{ext.daemon_running ? "Running" : "Not running"}</span>
+              {ext.pid ? <span className="muted small"> · pid {ext.pid}</span> : null}
+            </dd>
+          </div>
+          <div><dt>Runner</dt><dd><code>{fmt(ext.runner)}</code></dd></div>
+          <div><dt>Session</dt><dd>{fmt(today?.session_date)}</dd></div>
+          <div><dt>Entry</dt><dd>{fmt(today?.entry)}</dd></div>
+          <div><dt>15:30 check</dt><dd>{fmt(today?.checkpoint)}</dd></div>
+          <div><dt>Final close</dt><dd>{fmt(today?.final_close)}</dd></div>
+          <div>
+            <dt>Today's spread</dt>
+            <dd>
+              {pos
+                ? `${pos.ticker} ${pos.spread} ${fmt(pos.short_strike)}/${fmt(pos.long_strike)} ×${fmt(pos.quantity)} @ ${fmt(pos.credit_per_share)} credit (${fmt(pos.status)})`
+                : "—"}
+            </dd>
+          </div>
+        </dl>
       )}
     </section>
   );
