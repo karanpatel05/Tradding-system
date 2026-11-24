@@ -1,3 +1,4 @@
+import sqlite3
 from contextlib import closing
 from datetime import date, datetime
 
@@ -182,3 +183,43 @@ def test_delete_symbol_clears_live_tables(store):
     store.insert_trades([T(_et(10, 0, 1), 1, 100.0, 10)])
     store.delete_symbol("SPY")
     assert store.live_minutes("SPY", 0, 2**62) == [] and store.live_days() == []
+
+
+def _ticks_pk(store):
+    with closing(store._connect()) as c:
+        cols = c.execute("PRAGMA table_info(ticks)").fetchall()
+    return [r[1] for r in sorted((r for r in cols if r[5]), key=lambda r: r[5])]
+
+
+def test_ticks_primary_key_is_symbol_minute_seq_without_extra_index(store):
+    assert _ticks_pk(store) == ["symbol", "minute", "seq"]
+    with closing(store._connect()) as c:
+        idx = c.execute("SELECT name FROM sqlite_master WHERE type='index' "
+                        "AND tbl_name='ticks' AND sql IS NOT NULL").fetchall()
+    assert idx == []
+
+
+def test_old_ticks_table_is_recreated_and_live_1m_kept(tmp_path):
+    path = str(tmp_path / "old.db")
+    with closing(sqlite3.connect(path)) as c, c:
+        c.executescript("""
+            CREATE TABLE ticks(symbol TEXT, ts_ms INTEGER, seq INTEGER, minute INTEGER,
+                price REAL, size REAL, valid INTEGER, PRIMARY KEY(symbol, seq)) WITHOUT ROWID;
+            CREATE INDEX ticks_symbol_minute ON ticks(symbol, minute);
+            CREATE TABLE live_1m(symbol TEXT, ts INTEGER, open REAL, high REAL, low REAL,
+                close REAL, volume REAL, trades INTEGER, PRIMARY KEY(symbol, ts)) WITHOUT ROWID;
+            INSERT INTO ticks VALUES ('SPY', 1, 1, 0, 1.0, 1.0, 1);
+            INSERT INTO live_1m VALUES ('SPY', 0, 1, 1, 1, 1, 1, 1);
+        """)
+    s = HistoryStore(path)
+    assert _ticks_pk(s) == ["symbol", "minute", "seq"]
+    with closing(s._connect()) as c:
+        assert c.execute("SELECT COUNT(*) FROM ticks").fetchone()[0] == 0
+        assert c.execute("SELECT COUNT(*) FROM sqlite_master WHERE name="
+                         "'ticks_symbol_minute'").fetchone()[0] == 0
+    assert len(s.live_minutes("SPY", 0, 1)) == 1
+    s2 = HistoryStore(path)          # reopening a new-key table keeps its rows
+    s2.insert_trades([T(_et(10, 0, 1), 1, 100.0, 10)])
+    assert len(HistoryStore(path).live_minutes("SPY", 0, 2**62)) == 2
+    with closing(s2._connect()) as c:
+        assert c.execute("SELECT COUNT(*) FROM ticks").fetchone()[0] == 1

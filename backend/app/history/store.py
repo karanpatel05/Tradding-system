@@ -24,8 +24,7 @@ CREATE TABLE IF NOT EXISTS sync_state(
     symbol TEXT PRIMARY KEY, status TEXT, note TEXT, last_full_check TEXT);
 CREATE TABLE IF NOT EXISTS ticks(
     symbol TEXT, ts_ms INTEGER, seq INTEGER, minute INTEGER, price REAL, size REAL,
-    valid INTEGER, PRIMARY KEY(symbol, seq)) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS ticks_symbol_minute ON ticks(symbol, minute);
+    valid INTEGER, PRIMARY KEY(symbol, minute, seq)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS live_1m(
     symbol TEXT, ts INTEGER, open REAL, high REAL, low REAL, close REAL, volume REAL,
     trades INTEGER, PRIMARY KEY(symbol, ts)) WITHOUT ROWID;
@@ -59,6 +58,7 @@ def _day_range(day: date) -> tuple[int, int]:
     return int(lo.timestamp()) * 1000, int(hi.timestamp()) * 1000
 
 _STATE_FIELDS = ("status", "note", "last_full_check")
+_TICKS_PK = ("symbol", "minute", "seq")
 
 
 def _row(r) -> dict:
@@ -74,6 +74,12 @@ class HistoryStore:
             os.makedirs(parent, exist_ok=True)
         with closing(self._connect()) as c:
             c.execute("PRAGMA journal_mode=WAL")
+            pk = [r[1] for r in sorted((r for r in c.execute("PRAGMA table_info(ticks)")
+                                        if r[5]), key=lambda r: r[5])]
+            if pk and pk != list(_TICKS_PK):
+                # An older key: ticks only ever hold same-day trades, so start it fresh
+                # (live_1m is left as is). Dropping the table drops its old index too.
+                c.execute("DROP TABLE ticks")
             c.executescript(_SCHEMA)
 
     def _connect(self) -> sqlite3.Connection:
