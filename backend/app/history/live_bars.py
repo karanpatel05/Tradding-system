@@ -91,6 +91,13 @@ def fold(bars: dict[int, dict], trades: Iterable[Trade]) -> set[int]:
     for tr in sorted(trades, key=lambda t: (t.ts_ms, t.seq)):
         m = minute_of(tr.ts_ms)
         bar = bars.get(m)
+        if bar is not None and not isinstance(bar, _Bar):
+            # Plain dict loaded from the store: keep its open, only extend high/low/close.
+            plain = bar
+            bar = bars[m] = _Bar(plain)
+            bar.setdefault("trades", 0)
+            bar.first_ts = bar.last_ts = bar["time"]
+            bar.has_valid = True
         if bar is None:
             bar = bars[m] = _Bar(time=m, open=tr.price, high=tr.price, low=tr.price,
                                  close=tr.price, volume=0.0, trades=0)

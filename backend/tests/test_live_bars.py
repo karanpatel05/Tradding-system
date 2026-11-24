@@ -75,3 +75,12 @@ def test_fold_late_trade_moves_open_not_close():
     fold(bars, [T(_et(10, 0, 10), 1, 99.0, 1)])
     b = bars[_et(10, 0)]
     assert (b["open"], b["close"], b["low"], b["high"]) == (99.0, 101.0, 99.0, 101.0)
+
+
+def test_fold_into_plain_dict_bar_from_store():
+    bars = {_et(10, 0): {"time": _et(10, 0), "open": 100.0, "high": 101.0, "low": 99.0,
+                         "close": 100.5, "volume": 50.0}}
+    fold(bars, [T(_et(10, 0, 40), 1, 102.0, 5)])
+    b = bars[_et(10, 0)]
+    assert (b["open"], b["high"], b["close"], b["volume"]) == (100.0, 102.0, 102.0, 55.0)
+    assert isinstance(b, dict)
