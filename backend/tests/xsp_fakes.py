@@ -27,6 +27,12 @@ class FakeAlpaca:
         self.unknown = False
         self.fill_once = False                   # after a partial, nothing more fills
         self.unreadable_after = None             # order ids >= this read back as None
+        self.lookup = "ok"                       # find_by_ref: ok | missing | error
+        self.no_id = False                       # POST "transmitted" without an order id
+        self.hold_status = None                  # e.g. "stopped": stays non-terminal
+        self.list_error = False                  # open_orders() raises
+        self.unreadable_intents: set = set()     # e.g. {"buy_to_close"}: reads back None
+        self.unreadable_ids: set = set()
         self.extra: dict[str, int] = {}          # fills Alpaca has that the app didn't see
 
     def _touch(self, occ_sym):
@@ -49,10 +55,19 @@ class FakeAlpaca:
                             "polls": 0, "client_order_id": f"tsys-{oid}", "legs": []}
         if self.unknown:
             return {"transmitted": False, "unknown_state": True, "ref": oid}
+        if body.get("position_intent") in self.unreadable_intents:
+            self.unreadable_ids.add(oid)
+        if self.no_id:
+            return {"transmitted": True, "order_id": "", "ref": oid}
+        if self.hold_status is not None:
+            self.orders[oid]["status"] = self.hold_status
         return {"transmitted": True, "order_id": oid, "ref": oid}
 
     async def find_by_ref(self, ref):
-        return self.orders.get(ref)
+        if self.lookup == "error":
+            return "error", None
+        o = self.orders.get(ref) if self.lookup == "ok" else None
+        return ("found", o) if o else ("missing", None)
 
     def _try_fill(self, o):
         b = o["body"]
@@ -82,6 +97,8 @@ class FakeAlpaca:
 
     async def get_order(self, oid):
         if self.unreadable_after and int(oid[1:]) >= self.unreadable_after:
+            return None
+        if oid in self.unreadable_ids:
             return None
         o = self.orders[oid]
         if o["status"] in ("new", "partially_filled"):
@@ -114,6 +131,8 @@ class FakeAlpaca:
         return {k: v for k, v in net.items() if v}
 
     async def open_orders(self):
+        if self.list_error:
+            raise RuntimeError("listing failed")
         return [{"id": o["id"], "symbol": o["body"].get("symbol"),
                  "legs": o["body"].get("legs") or []}
                 for o in self.orders.values() if o["status"] in ("new", "partially_filled")]

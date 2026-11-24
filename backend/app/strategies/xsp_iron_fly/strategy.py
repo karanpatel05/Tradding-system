@@ -97,6 +97,14 @@ class XspIronFlyStrategy(BaseStrategy):
                     "Set XSP_FLY_MODE=alpaca_paper.")
         return None
 
+    def resume_block_reason(self) -> str | None:
+        """An XSP worker that was on always resumes at boot unless its settings are
+        invalid: a refusal (routing off, keys missing) must never strand an open fly.
+        Its orders still go through the gated path, so nothing is sent while routing
+        is off; a rejected stop close alerts."""
+        errs = self.params.validate()
+        return f"Invalid XSP fly settings: {'; '.join(errs)}." if errs else None
+
     def build_runner(self):
         from app.engine.safe_mode import is_safe_mode
         from app.services.alerts import send_alert

@@ -293,9 +293,9 @@ async def test_unreadable_stop_close_trips_safe_mode_and_stops_managing():
     path = ramp(at(D, 10, 0), at(D, 11, 0), 600.0, 603.5)
     feed = FakeFeed(clock, path)
     alp = await _bound_fake(clock, feed)
-    alp.unreadable_after = 2                 # the entry (o1) reads fine; the stop does not
+    alp.unreadable_intents = {"buy_to_close"}   # the entry reads fine; the stop does not
     s = await _runner(clock, feed, alp).run_session(D)
-    assert s["status"] == "error" and "state unknown" in s["reason"]
+    assert s["status"] == "error" and "stop close for short_call state unknown" in s["reason"]
     assert await is_safe_mode()
     assert s["settlement_price"] is None     # left for a human, not settled over
 
@@ -463,12 +463,21 @@ async def test_boot_reconciliation_with_real_occ_legs_before_and_after_the_close
         for k, (side, _) in syms.items():
             db.add(TradeRecord(strategy_key=KEY, symbol=k, side=side, quantity=1.0,
                                entry_price=1.0, status="open", transmitted=True))
+    # XSP's local side comes from its session's own order fills.
+    legs = [{"role": f"r{i}", "symbol": k, "occ": k, "action": side.upper(), "qty": 1}
+            for i, (k, (side, _)) in enumerate(syms.items())]
+    fills = [{"symbol": k, "side": side.upper(), "qty": 1, "kind": "entry"}
+             for k, (side, _) in syms.items()]
+    sess = await store.create_session(KEY, D, status="open", mode="alpaca_paper",
+                                      legs=legs, fills=fills)
     for hh, mm in ((11, 0), (16, 5)):
         monkeypatch.setattr(ledger, "_now",
                             lambda hh=hh, mm=mm: _dt.combine(D, time(hh, mm), tzinfo=ET))
         assert await recovery.run_recovery() is True, (hh, mm)
-    # After the strategy books the settlement (leg TradeRecords closed): still clean,
-    # the same evening and the next morning.
+    # After the strategy books the settlement (session settled, leg TradeRecords
+    # closed): still clean, the same evening and the next morning.
+    sess["status"] = "settled"
+    await store.save(sess)
     async with session_scope() as db:
         for tr in (await db.execute(select(TradeRecord).where(
                 TradeRecord.strategy_key == KEY))).scalars().all():
@@ -547,7 +556,11 @@ async def test_single_leg_helper_is_a_tagged_limit_and_closes_in_safe_mode(routi
 
     async def safe():
         return True
+
+    async def held(**kw):
+        return {"XSP261124C00715000": -1}
     monkeypatch.setattr(orders, "is_safe_mode", safe)
+    monkeypatch.setattr(ledger, "app_net_positions", held)
     assert (await orders.submit_option_order(
         "XSP261124C00715000", "BUY", 1, limit_price=3.5,
         position_intent="buy_to_close"))["transmitted"]                 # a close passes
@@ -560,3 +573,218 @@ async def test_single_leg_helper_is_a_tagged_limit_and_closes_in_safe_mode(routi
     off = await orders.submit_option_order("XSP261124C00715000", "BUY", 1, limit_price=3.5,
                                            position_intent="buy_to_close")
     assert not off["transmitted"] and "ENABLE_LIVE_ORDERS" in off["detail"]
+
+
+# --- BACKEND review round 2 -------------------------------------------------------
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lookup", ["missing", "error"])
+async def test_unresolved_post_state_is_unknown_never_rejected(lookup):
+    clock = SimClock(at(D, 9, 45))
+    feed = FakeFeed(clock, flat(600.0))
+    legs = await _legs(clock, feed)
+    alp = FakeAlpaca(feed)
+    alp.unknown, alp.lookup = True, lookup
+    ex = ex_for(clock, feed, alp)
+    res = await ex.combo(legs, 1, 0.5, max_age=5)
+    assert res.status == "unknown" and "state unknown" in res.detail
+    res = await ex.single(legs[0], "BUY", 1, 5.0, max_age=30)
+    assert res.status == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_transmitted_without_an_order_id_is_unknown():
+    clock = SimClock(at(D, 9, 45))
+    feed = FakeFeed(clock, flat(600.0))
+    legs = await _legs(clock, feed)
+    alp = FakeAlpaca(feed)
+    alp.no_id = True
+    res = await ex_for(clock, feed, alp).combo(legs, 1, 0.5, max_age=5)
+    assert res.status == "unknown" and "without an order id" in res.detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["stopped", "suspended", "pending_cancel", ""])
+async def test_non_terminal_or_unexpected_status_is_never_read_as_unfilled(status):
+    clock = SimClock(at(D, 9, 45))
+    feed = FakeFeed(clock, flat(600.0))
+    legs = await _legs(clock, feed)
+    alp = FakeAlpaca(feed)
+    alp.hold_status = status
+    res = await ex_for(clock, feed, alp).combo(legs, 1, 0.5, max_age=5)
+    assert res.status == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_unknown_entry_trips_safe_mode_and_opens_nothing():
+    from app.engine.safe_mode import is_safe_mode
+    clock = SimClock(at(D, 9, 0))
+    feed = FakeFeed(clock, flat(600.0))
+    alp = await _bound_fake(clock, feed)
+    alp.unknown, alp.lookup = True, "error"
+    s = await _runner(clock, feed, alp).run_session(D)
+    assert s["status"] == "error" and "state unknown" in s["reason"]
+    assert await is_safe_mode() and len(alp.bodies) == 1     # never resent
+
+
+@pytest.mark.asyncio
+async def test_partial_single_leg_stop_closes_over_ticks():
+    from app.strategies.xsp_iron_fly.params import IronFlyParams  # noqa: F401
+    clock = SimClock(at(D, 9, 0))
+    path = ramp(at(D, 10, 0), at(D, 11, 0), 600.0, 603.5)
+    feed = FakeFeed(clock, path)
+    alp = await _bound_fake(clock, feed)
+    params = replace(PA, max_daily_loss_per_contract=2500)
+    runner = _runner(clock, feed, alp, params, equity=10_000)
+    real_submit = alp.submit
+
+    async def one_per_stop(body, intent, qty):           # each stop order fills 1 only
+        if body.get("position_intent") == "buy_to_close":
+            alp.fill_cap, alp.fill_once = 1, True
+        else:
+            alp.fill_cap, alp.fill_once = None, False
+        return await real_submit(body, intent, qty)
+    alp.submit = one_per_stop
+    s = await runner.run_session(D)
+    sc = next(l for l in s["legs"] if l["role"] == "short_call")
+    assert s["contracts"] == 2 and sc["status"] == "stopped" and sc["exit_qty"] == 2
+    stops = [f for f in s["fills"] if f["kind"] == "stop" and f["role"] == "short_call"]
+    assert len(stops) == 2 and all(f["qty"] == 1 and f["order_id"] for f in stops)
+    assert s["reconciliation"]["ok"], s["reconciliation"]
+
+
+@pytest.mark.asyncio
+async def test_restart_fails_closed_when_working_orders_cannot_be_listed():
+    from app.engine.safe_mode import is_safe_mode
+    clock = SimClock(at(D, 9, 0))
+    feed = FakeFeed(clock, flat(600.0))
+    alp = await _bound_fake(clock, feed)
+    await _crash_at(_runner(clock, feed, alp).run_session(D), clock, at(D, 11, 0))
+    alp.list_error = True
+    feed2 = FakeFeed(clock, flat(600.0))
+    await feed2.contracts("XSP", D)
+    s = await _runner(clock, feed2, alp).run_session(D)
+    assert s["status"] == "error" and "could not list open Alpaca orders" in s["reason"]
+    assert await is_safe_mode()
+
+
+@pytest.mark.asyncio
+async def test_error_session_settles_next_day_once_alpaca_agrees():
+    clock = SimClock(at(D, 9, 0))
+    path = ramp(at(D, 10, 0), at(D, 11, 0), 600.0, 603.5)
+    feed = FakeFeed(clock, path)
+    alp = await _bound_fake(clock, feed)
+    alp.unreadable_intents = {"buy_to_close"}   # the stop's order can't be read -> error
+    s = await _runner(clock, feed, alp).run_session(D)
+    assert s["status"] == "error" and "stop close" in s["reason"]
+    async with session_scope() as db:          # a human clears SAFE_MODE
+        await db.execute(delete(SystemFlag).where(SystemFlag.key == "safe_mode"))
+    (stop_oid,) = alp.unreadable_ids             # the stop did fill at Alpaca...
+    alp.unreadable_ids.clear()
+    alp.orders[stop_oid].update(status="filled", filled_qty="1", filled_avg_price="4.0")
+    # ...but the session never recorded it: Alpaca disagrees, so it stays an error.
+    nxt = D + timedelta(days=1)
+    clock.t = at(nxt, 8, 0)
+    feed2 = FakeFeed(clock, path)
+    await feed2.contracts("XSP", D)
+    await _runner(clock, feed2, alp).recover_stale(nxt)
+    assert (await store.get_session(KEY, D))["status"] == "error"
+    # Once Alpaca and the session agree (the stray order never filled), it settles.
+    alp.orders[stop_oid]["filled_qty"] = "0"
+    alp.orders[stop_oid]["status"] = "canceled"
+    await _runner(clock, feed2, alp).recover_stale(nxt)
+    s = await store.get_session(KEY, D)
+    assert s["status"] == "settled" and "resolved after error" in s["reason"]
+    async with session_scope() as db:
+        trs = (await db.execute(select(TradeRecord).where(
+            TradeRecord.strategy_key == KEY))).scalars().all()
+    assert trs and all(t.status == "closed" for t in trs)
+
+
+@pytest.mark.asyncio
+async def test_engine_recovery_mid_entry_counts_session_fills_not_trade_records(monkeypatch):
+    """Restart mid-entry: 4 legs filled at Alpaca, no TradeRecords yet -> clean."""
+    from datetime import datetime as _dt
+
+    from app.config import get_settings
+    from app.engine import recovery
+    st = get_settings()
+    monkeypatch.setattr(st, "apca_api_key_id", "k")
+    monkeypatch.setattr(st, "apca_api_secret_key", "x")
+    monkeypatch.setattr(recovery, "_schedule_backfill", lambda: None)
+    monkeypatch.setattr(ledger, "_now", lambda: _dt.combine(D, time(10, 0), tzinfo=ET))
+    clock = SimClock(at(D, 9, 45))
+    feed = FakeFeed(clock, flat(600.0))
+    legs = await _legs(clock, feed)
+    fills = [{"symbol": l["symbol"], "side": l["action"], "qty": 1, "kind": "entry"}
+             for l in legs]
+    await store.create_session(KEY, D, status="entering", mode="alpaca_paper",
+                               legs=[dict(l, qty=1) for l in legs], fills=fills)
+    held = {occ(l): (-1 if l["action"] == "SELL" else 1) for l in legs}
+    order = {"order_class": "mleg", "client_order_id": "tsys-x", "status": "filled",
+             "legs": [{"symbol": k, "side": "sell" if q < 0 else "buy", "filled_qty": "1"}
+                      for k, q in held.items()]}
+
+    async def app_orders(status="all"):
+        return [order]
+
+    async def account_positions():
+        return {k: {"qty": q, "avg_entry_price": 1.0} for k, q in held.items()}
+    monkeypatch.setattr(ledger, "app_orders", app_orders)
+    monkeypatch.setattr(ledger, "account_positions", account_positions)
+    async with session_scope() as db:
+        await db.execute(delete(TradeRecord).where(TradeRecord.transmitted.is_(True)))
+    assert await recovery.run_recovery() is True
+
+
+def test_resume_ignores_routing_but_not_invalid_settings(monkeypatch):
+    from app.config import get_settings
+    from app.strategies.xsp_iron_fly import XspIronFlyStrategy
+    from app.strategies.xsp_iron_fly.params import IronFlyParams
+    monkeypatch.setattr(get_settings(), "enable_live_orders", False)
+    s = XspIronFlyStrategy(IronFlyParams())
+    assert s.activation_block_reason() and s.resume_block_reason() is None
+    assert XspIronFlyStrategy(IronFlyParams(mode="sim")).resume_block_reason()
+
+
+@pytest.mark.asyncio
+async def test_safe_mode_close_is_capped_at_the_apps_quantity(routing_on, monkeypatch):
+    from app.broker import orders
+
+    async def safe():
+        return True
+
+    async def held(**kw):
+        return {"XSP261124C00715000": -1}
+    monkeypatch.setattr(orders, "is_safe_mode", safe)
+    monkeypatch.setattr(ledger, "app_net_positions", held)
+    out = await orders.submit_option_order("XSP261124C00715000", "BUY", 3, limit_price=3.5,
+                                           position_intent="buy_to_close")
+    assert out["transmitted"] and routing_on[-1]["qty"] == "1"        # capped 3 -> 1
+    none = await orders.submit_option_order("XSP261124P00715000", "BUY", 1, limit_price=3.5,
+                                            position_intent="buy_to_close")
+    assert not none["transmitted"] and "holds nothing" in none["detail"]
+
+
+@pytest.mark.asyncio
+async def test_real_port_lookup_tells_404_from_errors(monkeypatch):
+    import httpx
+
+    from app.broker import alpaca_client as ac
+    from app.broker.alpaca_client import AlpacaError
+    from app.strategies.xsp_iron_fly.alpaca_executor import AlpacaPort
+    port = AlpacaPort(KEY)
+
+    async def r404(*a, **k):
+        raise AlpacaError(404, "order not found")
+
+    async def r500(*a, **k):
+        raise AlpacaError(500, "boom")
+
+    async def rnet(*a, **k):
+        raise httpx.ConnectError("down")
+
+    async def rok(*a, **k):
+        return {"id": "abc"}
+    for fn, want in ((r404, "missing"), (r500, "error"), (rnet, "error"), (rok, "found")):
+        monkeypatch.setattr(ac, "request", fn)
+        assert (await port.find_by_ref("x"))[0] == want

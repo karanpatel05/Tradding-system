@@ -599,7 +599,7 @@ def test_reconcile_flags_open_leg_and_unflat_ledger():
         "fills": [{"symbol": "X", "side": "SELL", "qty": 1, "fee": 0}]}
     rec = reconcile_session(s, {1: {"status": "open", "pnl": None}})
     assert not rec["ok"] and len(rec["issues"]) == 3
-    assert "sim mode has no broker statement" in rec["scope"]
+    assert rec["scope"].startswith("internal")
 
 
 # --- review fixes: stuck stop closes, stale quotes, interrupted entries, kill view ----

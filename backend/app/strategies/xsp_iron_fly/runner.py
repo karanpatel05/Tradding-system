@@ -140,7 +140,7 @@ class IronFlyRunner:
                                                          tzinfo=ET))
         except asyncio.CancelledError:
             try:
-                n = await asyncio.wait_for(self.ex.cancel_all(), 5.0)
+                n = await asyncio.wait_for(self.ex.cancel_all(), 10.0)
             except BaseException:  # noqa: BLE001
                 n = "unknown"
             await self._log(f"worker stopped; working orders cancelled ({n}). Open legs "
@@ -182,18 +182,7 @@ class IronFlyRunner:
 
     # ------------------------------------------------------------------ recovery
     def _expected_broker(self, s: dict) -> dict[str, int]:
-        """Net qty per OCC symbol the session's own ORDER fills imply (settlement and
-        no-bid abandon bookings are not orders, so the broker still holds those)."""
-        from app.broker.alpaca_client import occ_unpadded
-        to_occ = {l["symbol"]: occ_unpadded(l.get("occ") or l["symbol"])
-                  for l in s.get("legs") or []}
-        out = {sym: 0 for sym in to_occ.values()}
-        for f in s.get("fills") or []:
-            if f.get("kind") in ("settle", "abandon"):
-                continue
-            sym = to_occ.get(f["symbol"], f["symbol"])
-            out[sym] = out.get(sym, 0) + (1 if f["side"] == "BUY" else -1) * int(f["qty"])
-        return out
+        return store.expected_broker(s)
 
     async def _broker_check_on_restart(self, s: dict) -> bool:
         """Real-order executors only: cancel anything a crash left working on today's
@@ -201,7 +190,10 @@ class IronFlyRunner:
         mismatch (e.g. a fill that landed after the crash) trips SAFE_MODE. True = ok."""
         if not hasattr(self.ex, "check_positions") or s.get("mode") != "alpaca_paper":
             return True
-        n = await self.ex.cancel_working_for(s.get("legs") or [])
+        n, problem = await self.ex.cancel_working_for(s.get("legs") or [])
+        if problem:
+            await self._fatal(s, f"restart: {problem}")
+            return False
         if n:
             await self._log(f"restart: cancelled {n} working Alpaca order(s) on today's legs",
                             level="warning")
@@ -319,6 +311,19 @@ class IronFlyRunner:
 
     async def recover_stale(self, today: date) -> None:
         for s in await store.unfinished_before(self.key, today):
+            if s["status"] == "error":
+                # A day stopped by SAFE_MODE: book its settlement only once Alpaca's
+                # fills agree with the session (a human may have fixed it); else wait.
+                if not hasattr(self.ex, "check_positions") or s.get("mode") != "alpaca_paper":
+                    continue
+                issues = await self.ex.check_positions(self._expected_broker(s))
+                if issues:
+                    await self._log(f"{s['session_date']}: error session still differs from "
+                                    f"Alpaca ({'; '.join(issues)}); needs a human",
+                                    level="warning")
+                    continue
+                s["reason"] = f"resolved after error ({s.get('reason') or ''})"
+                s["status"] = "open"
             if s["status"] == "entering":
                 await self._resume_entry(s)
             else:
@@ -921,8 +926,7 @@ def reconcile_session(s: dict, trade_states: dict[int, dict]) -> dict:
         elif st["pnl"] is not None and abs(float(st["pnl"]) - float(l.get("pnl") or 0)) > 0.01:
             issues.append(f"{l['role']} TradeRecord pnl {st['pnl']} != leg pnl {l.get('pnl')}")
     return {"ok": not issues, "issues": issues,
-            "scope": ("internal: legs vs fill ledger vs TradeRecords (sim mode has no "
-                      "broker statement)" if s.get("mode") == "sim" else "internal")}
+            "scope": "internal: legs vs fill ledger vs TradeRecords"}
 
 
 def _params_dict(p: IronFlyParams) -> dict:

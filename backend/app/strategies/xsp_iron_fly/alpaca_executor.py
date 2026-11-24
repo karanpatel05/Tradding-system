@@ -27,8 +27,11 @@ from app.strategies.xsp_iron_fly.executor import OrderResult
 
 logger = logging.getLogger("trading.xsp_fly.alpaca")
 
-OPEN_STATUSES = {"new", "accepted", "pending_new", "partially_filled", "held",
-                 "accepted_for_bidding", "pending_cancel", "pending_replace", "calculated"}
+# Terminal order states. Anything else (including stopped, suspended, pending_cancel,
+# an unexpected value or an empty status) counts as still working: treated as open, so
+# a stuck order becomes "unknown" (SAFE_MODE) rather than "unfilled" (re-price).
+TERMINAL = frozenset({"filled", "canceled", "expired", "rejected", "done_for_day",
+                      "replaced"})
 def option_tick(price: float) -> float:
     """Single-leg price increment for XSP options: $0.01 under $3.00, $0.05 from $3.00
     (Cboe penny-pilot style). A limit off-increment would be rejected."""
@@ -88,7 +91,7 @@ class AlpacaPort:
             limit = float(body["limit_price"])
             out = await orders.submit_combo_order(
                 root, legs, net_price=abs(limit), action="SELL" if limit < 0 else "BUY",
-                reason=f"{self.key} {intent}", quantity=int(qty))
+                reason=f"{self.key} {intent}", quantity=int(qty), strategy_key=self.key)
         else:
             out = await orders.submit_option_order(
                 body["symbol"], body["side"], int(qty), limit_price=float(body["limit_price"]),
@@ -98,12 +101,17 @@ class AlpacaPort:
             out = {**out, "transmitted": False}
         return out
 
-    async def find_by_ref(self, ref: str) -> dict | None:
+    async def find_by_ref(self, ref: str) -> tuple[str, dict | None]:
+        """("found", order) | ("missing", None) for a 404 | ("error", None) when the
+        lookup itself failed (which proves nothing about the order)."""
         try:
-            return await ac.request("GET", "/v2/orders:by_client_order_id",
-                                    params={"client_order_id": ac.tag(ref)})
-        except (AlpacaError, httpx.HTTPError):
-            return None
+            o = await ac.request("GET", "/v2/orders:by_client_order_id",
+                                 params={"client_order_id": ac.tag(ref)})
+        except AlpacaError as exc:
+            return ("missing", None) if exc.status == 404 else ("error", None)
+        except httpx.HTTPError:
+            return "error", None
+        return ("found", o) if o and o.get("id") else ("missing", None)
 
     async def get_order(self, order_id: str) -> dict | None:
         try:
@@ -126,9 +134,10 @@ class AlpacaPort:
         return await app_net_positions(include_expired=include_expired)
 
     async def open_orders(self) -> list[dict]:
-        from app.broker.ledger import app_open_orders
-        orders, _ = await app_open_orders()
-        return orders
+        """App-owned parent orders that are not terminal (by ``TERMINAL``, so
+        pending_cancel / stopped / suspended count as working). Raises on a read error."""
+        from app.broker.ledger import app_orders
+        return [o for o in await app_orders("all") if status_of(o) not in TERMINAL]
 
 
 def occ(leg: dict) -> str:
@@ -140,9 +149,10 @@ class AlpacaFlyExecutor:
     supports_combo = True
 
     def __init__(self, port, feed, clock, *, window: float = 4.0, step: float = 0.5,
-                 cancel_wait: float = 6.0) -> None:
+                 cancel_wait: float = 6.0, lookup_wait: float = 4.0) -> None:
         self.port, self.feed, self.clock = port, feed, clock
         self.window, self.step, self.cancel_wait = window, step, cancel_wait
+        self.lookup_wait = lookup_wait
         self._working: set[str] = set()
 
     # --- helpers -------------------------------------------------------------
@@ -161,16 +171,34 @@ class AlpacaFlyExecutor:
             out[leg["role"]] = L.mid(q.bid, q.ask)
         return out
 
-    async def _submit(self, body: dict, intent: str, qty: int) -> tuple[str | None, str]:
+    async def _submit(self, body: dict, intent: str,
+                      qty: int) -> tuple[str | None, str, bool]:
+        """(order_id, why_not, unknown). ``unknown`` = the order may exist at Alpaca but
+        couldn't be identified: the caller must fail closed (never resend)."""
         out = await self.port.submit(body, intent, qty)
-        if out.get("transmitted") and out.get("order_id"):
-            return out["order_id"], ""
-        if out.get("unknown_state") and out.get("ref"):
-            # The POST may have landed: look it up by its tagged id before giving up.
-            o = await self.port.find_by_ref(out["ref"])
-            if o and o.get("id"):
-                return str(o["id"]), ""
-        return None, str(out.get("detail") or "not transmitted")
+        if out.get("transmitted"):
+            if out.get("order_id"):
+                return str(out["order_id"]), "", False
+            return None, f"transmitted without an order id (ref {out.get('ref')})", True
+        if out.get("unknown_state"):
+            ref = out.get("ref")
+            if not ref:
+                return None, f"order state unknown, no ref: {out.get('detail')}", True
+            # The POST may have landed: look it up by its tagged id for a few seconds.
+            # A 404 may just be lag; a failed lookup proves nothing. Either way, if it
+            # stays unresolved the state is unknown, never "rejected".
+            deadline = self.clock.now().timestamp() + self.lookup_wait
+            last = "lookup not attempted"
+            while True:
+                kind, o = await self.port.find_by_ref(ref)
+                if kind == "found" and o:
+                    return str(o["id"]), "", False
+                last = "not found" if kind == "missing" else "lookup failed"
+                if self.clock.now().timestamp() >= deadline:
+                    break
+                await self.clock.sleep(self.step)
+            return None, f"order state unknown after POST ({last}; ref {ref})", True
+        return None, str(out.get("detail") or "not transmitted"), False
 
     async def _settle_order(self, order_id: str) -> dict | None:
         """Poll until terminal or the window ends, then cancel and re-read the final
@@ -180,13 +208,13 @@ class AlpacaFlyExecutor:
         o = None
         while True:
             o = await self.port.get_order(order_id) or o
-            if o is not None and status_of(o) not in OPEN_STATUSES:
+            if o is not None and status_of(o) in TERMINAL:
                 break
             if self.clock.now().timestamp() >= deadline:
                 o = await self._cancel_confirmed(order_id) or o
                 break
             await self.clock.sleep(self.step)
-        if o is not None and status_of(o) not in OPEN_STATUSES:
+        if o is not None and status_of(o) in TERMINAL:
             self._working.discard(order_id)
         return o
 
@@ -195,7 +223,7 @@ class AlpacaFlyExecutor:
         o = None
         for _ in range(max(1, int(self.cancel_wait / self.step))):
             o = await self.port.get_order(order_id) or o
-            if o is not None and status_of(o) not in OPEN_STATUSES:
+            if o is not None and status_of(o) in TERMINAL:
                 return o
             await self.clock.sleep(self.step)
         logger.error("XSP order %s still open after cancel", order_id)
@@ -216,15 +244,16 @@ class AlpacaFlyExecutor:
                           "side": "sell" if l["action"] == "SELL" else "buy",
                           "position_intent": ("sell_to_open" if l["action"] == "SELL"
                                               else "buy_to_open")} for l in legs]}
-        oid, why = await self._submit(body, "fly_open", qty)
+        oid, why, unknown = await self._submit(body, "fly_open", qty)
         if oid is None:
-            return OrderResult("rejected", detail=f"combo not placed: {why}")
+            return OrderResult("unknown" if unknown else "rejected",
+                               detail=f"combo not placed: {why}")
         o = await self._settle_order(oid)
         if o is None:
             return OrderResult("unknown", detail=f"combo {oid}: order unreadable; state "
                                                  f"unknown (reconcile before trading)")
         n = filled_qty(o)
-        if status_of(o) in OPEN_STATUSES:     # cancel didn't take: it may still fill
+        if status_of(o) not in TERMINAL:     # cancel didn't take: it may still fill
             return OrderResult("unknown", filled_qty=n,
                                detail=f"combo {oid} still {status_of(o)} after cancel; "
                                       "not sending another order")
@@ -258,15 +287,16 @@ class AlpacaFlyExecutor:
         body = {"symbol": occ(leg), "qty": str(int(qty)), "side": side.lower(),
                 "type": "limit", "time_in_force": "day", "limit_price": f"{px:.2f}",
                 "position_intent": intent}
-        oid, why = await self._submit(body, f"leg_{intent}", qty)
+        oid, why, unknown = await self._submit(body, f"leg_{intent}", qty)
         if oid is None:
-            return OrderResult("rejected", detail=f"{intent} not placed: {why}")
+            return OrderResult("unknown" if unknown else "rejected",
+                               detail=f"{intent} not placed: {why}")
         o = await self._settle_order(oid)
         if o is None:
             return OrderResult("unknown", detail=f"{intent} {oid}: order unreadable; state "
                                                  f"unknown (reconcile before trading)")
         n = filled_qty(o)
-        if status_of(o) in OPEN_STATUSES:     # cancel didn't take: it may still fill
+        if status_of(o) not in TERMINAL:     # cancel didn't take: it may still fill
             return OrderResult("unknown", filled_qty=n,
                                detail=f"{intent} {oid} still {status_of(o)} after cancel; "
                                       "not sending another order")
@@ -285,7 +315,7 @@ class AlpacaFlyExecutor:
         n = 0
         for oid in list(self._working):
             o = await self._cancel_confirmed(oid)
-            if o is None or status_of(o) not in OPEN_STATUSES:
+            if o is None or status_of(o) in TERMINAL:
                 self._working.discard(oid)
             n += 1
         return n
@@ -303,18 +333,22 @@ class AlpacaFlyExecutor:
         return [f"{sym}: Alpaca {int(held.get(sym, 0)):+d} vs session {want:+d}"
                 for sym, want in sorted(expected.items()) if int(held.get(sym, 0)) != want]
 
-    async def cancel_working_for(self, legs: list[dict]) -> int:
-        """Cancel app-owned open orders on this session's symbols (left by a crash)."""
+    async def cancel_working_for(self, legs: list[dict]) -> tuple[int, str | None]:
+        """Cancel app-owned open orders on this session's symbols (left by a crash).
+        Returns (cancelled, problem). A failed listing or an unconfirmed cancel is a
+        problem: the caller fails closed (an old stop may still be live)."""
         syms = {occ(l) for l in legs}
         try:
             orders = await self.port.open_orders()
-        except Exception:  # noqa: BLE001
-            return 0
-        n = 0
+        except Exception as exc:  # noqa: BLE001
+            return 0, f"could not list open Alpaca orders: {type(exc).__name__}: {exc}"
+        n, stuck = 0, []
         for o in orders:
             touched = {ac.occ_unpadded(x.get("symbol") or "") for x in o.get("legs") or []}
             touched.add(ac.occ_unpadded(o.get("symbol") or ""))
             if touched & syms and o.get("id"):
-                await self._cancel_confirmed(str(o["id"]))
+                final = await self._cancel_confirmed(str(o["id"]))
+                if final is None or status_of(final) not in TERMINAL:
+                    stuck.append(str(o["id"]))
                 n += 1
-        return n
+        return n, (f"cancel not confirmed for {stuck}" if stuck else None)

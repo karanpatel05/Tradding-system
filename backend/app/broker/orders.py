@@ -331,7 +331,8 @@ async def submit_option_order(symbol: str, side: str, quantity: int, *, limit_pr
     every other order: ENABLE_LIVE_ORDERS gate -> paper lock -> durable intent row ->
     tagged POST. SAFE_MODE blocks OPENING orders only: a closing order reduces risk (the
     kill switch's flatten closes in SAFE_MODE too), and blocking a stop would leave a
-    short unprotected. Returns the _transmit dict (order_id, ref) or transmitted False."""
+    short unprotected. In SAFE_MODE a close is capped at the app's own opposite-side
+    quantity. Returns the _transmit dict (order_id, ref) or transmitted False."""
     q = int(quantity)
     if q < 1:
         return {"transmitted": False, "detail": "quantity < 1"}
@@ -340,7 +341,8 @@ async def submit_option_order(symbol: str, side: str, quantity: int, *, limit_pr
             "buy_to_open", "buy_to_close", "sell_to_open", "sell_to_close") \
             or not position_intent.startswith(side):
         return {"transmitted": False, "detail": f"bad side/intent {side}/{position_intent}"}
-    if position_intent.endswith("_open") and await is_safe_mode():
+    safe = await is_safe_mode()
+    if position_intent.endswith("_open") and safe:
         return {"transmitted": False, "safe_mode": True,
                 "detail": f"blocked: SAFE_MODE ({symbol} {position_intent})"}
     if not get_settings().enable_live_orders:
@@ -350,6 +352,21 @@ async def submit_option_order(symbol: str, side: str, quantity: int, *, limit_pr
         return blocked
     from app.engine.order_store import record_intent
     sym = ac.occ_unpadded(symbol)
+    if safe:
+        # In SAFE_MODE a close may only reduce what the APP holds (like flatten): cap it
+        # at the app's opposite-side quantity, and refuse if that can't be read.
+        from app.broker.ledger import app_net_positions
+        try:
+            held = (await app_net_positions(include_expired=True)).get(sym, 0)
+        except _LOOKUP_ERRORS as exc:
+            return {"transmitted": False, "safe_mode": True,
+                    "detail": f"blocked: SAFE_MODE and app position unreadable ({exc})"}
+        coverable = -held if side == "buy" else held
+        if coverable <= 0:
+            return {"transmitted": False, "safe_mode": True,
+                    "detail": f"blocked: SAFE_MODE and the app holds nothing to close in "
+                              f"{sym}"}
+        q = min(q, coverable)
     body = {"symbol": sym, "qty": str(q), "side": side, "type": "limit",
             "limit_price": _px(limit_price), "time_in_force": "day",
             "position_intent": position_intent}
@@ -361,7 +378,8 @@ async def submit_option_order(symbol: str, side: str, quantity: int, *, limit_pr
 
 
 async def submit_combo_order(underlying: str, legs: list[dict], *, net_price: float | None = None,
-                             action: str = "BUY", reason: str = "", quantity: int = 1) -> dict:
+                             action: str = "BUY", reason: str = "", quantity: int = 1,
+                             strategy_key: str = "") -> dict:
     """Multi-leg options order (Alpaca `mleg`). Each leg = {expiry(date), strike, right,
     action}. Per-leg position_intent: (buy|sell) + (_to_close if the APP'S OWN net
     position in that OCC symbol is on the opposite side, else _to_open) — never the shared
@@ -403,12 +421,13 @@ async def submit_combo_order(underlying: str, legs: list[dict], *, net_price: fl
     body: dict = {"order_class": "mleg", "qty": str(q),
                   "type": "limit" if net_price is not None else "market"}
     if net_price is not None:
-        # Alpaca mleg sign convention: positive limit = debit (BUY), negative = credit
-        # (SELL). MUST be verified against Alpaca's docs before any live combo use.
+        # Alpaca mleg sign convention, verified on this paper account (QQQ 2026-11-03;
+        # XSP index test order ef205d21 on 2026-11-24): positive limit = the most debit
+        # paid (BUY), negative = the least credit accepted (SELL).
         net = round(abs(float(net_price)), 2)
         body["limit_price"] = str(net if action.upper() == "BUY" else -net)
     body.update({"time_in_force": "day", "legs": alp_legs})
-    ref = await record_intent("", underlying, f"combo_{action.lower()}", q)
+    ref = await record_intent(strategy_key, underlying, f"combo_{action.lower()}", q)
     out = await _transmit(body, ref, f"COMBO {action} {underlying}")
     out["legs"] = len(legs)
     out.setdefault("detail", f"LIVE combo {action} {underlying} {len(legs)} legs")
@@ -638,7 +657,7 @@ async def flatten_all() -> str:
         side = "sell" if app_qty > 0 else "buy"
         option = ap.get("asset_class") == "us_option" or bool(_OCC.match(sym.upper()))
         try:
-            ref = await record_intent("", sym, "exit_long" if app_qty > 0 else "exit_short",
+            ref = await record_intent("", sym[:16], "exit_long" if app_qty > 0 else "exit_short",
                                       qty)
             out = await _transmit(
                 _market_body(sym, qty, side, f"{side}_to_close" if option else None),

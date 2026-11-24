@@ -79,19 +79,53 @@ async def save(sess: dict) -> None:
 
 
 async def unfinished_before(key: str, d: date) -> list[dict]:
+    """Earlier sessions still to resolve: entering/open, and "error" (a mid-day
+    SAFE_MODE stop) so their settlement is booked once Alpaca agrees."""
     async with session_scope() as s:
         rows = (await s.execute(select(XspFlySession).where(
             XspFlySession.strategy_key == key, XspFlySession.session_date < d,
-            XspFlySession.status.in_(("entering", "open"))))).scalars().all()
+            XspFlySession.status.in_(("entering", "open", "error"))))).scalars().all()
         return [_to_dict(r) for r in rows]
 
 
+def expected_broker(sess: dict) -> dict[str, int]:
+    """Net qty per OCC symbol the session's own ORDER fills imply. Settlement and
+    no-bid abandon bookings are not orders, so the broker still holds those legs."""
+    to_occ = {l["symbol"]: (l.get("occ") or l["symbol"]).replace(" ", "")
+              for l in sess.get("legs") or []}
+    out = {sym: 0 for sym in to_occ.values()}
+    for f in sess.get("fills") or []:
+        if f.get("kind") in ("settle", "abandon"):
+            continue
+        sym = to_occ.get(f["symbol"], f["symbol"])
+        out[sym] = out.get(sym, 0) + (1 if f["side"] == "BUY" else -1) * int(f["qty"])
+    return out
+
+
+async def broker_expected_positions(key: str) -> dict[str, int]:
+    """What the app should hold at Alpaca for XSP right now: the order-fill net of every
+    alpaca_paper session not yet settled (entering/open/error). Used by engine startup
+    recovery instead of XSP's TradeRecords, which don't exist mid-entry and don't track
+    a partial stop."""
+    out: dict[str, int] = {}
+    async with session_scope() as s:
+        rows = (await s.execute(select(XspFlySession).where(
+            XspFlySession.strategy_key == key, XspFlySession.mode == "alpaca_paper",
+            XspFlySession.status.in_(("entering", "open", "error"))))).scalars().all()
+        sessions = [_to_dict(r) for r in rows]
+    for sess in sessions:
+        for sym, q in expected_broker(sess).items():
+            out[sym] = out.get(sym, 0) + q
+    return {k: v for k, v in out.items() if v}
+
+
 async def realized_total(key: str) -> float:
-    """Sum of realized P&L ($, net of fees) over this strategy's finished sessions."""
+    """Sum of realized P&L ($, net of fees) over this strategy's finished Alpaca paper
+    sessions. Sessions from the deleted simulator don't count toward equity."""
     from sqlalchemy import func
     async with session_scope() as s:
         v = (await s.execute(select(func.sum(XspFlySession.realized_pnl)).where(
-            XspFlySession.strategy_key == key,
+            XspFlySession.strategy_key == key, XspFlySession.mode == "alpaca_paper",
             XspFlySession.realized_pnl.is_not(None)))).scalar()
         return float(v or 0.0)
 
