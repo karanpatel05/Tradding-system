@@ -811,7 +811,8 @@ async def _close_trade(trade_id: int, exit_price: float, exit_ms: int | None,
             tr.status = "closed"
 
 
-async def close_open_trades(reason: str = "kill_switch") -> int:
+async def close_open_trades(reason: str = "kill_switch", *,
+                            keep_index_symbols: set[str] | None = frozenset()) -> int:
     """Mark every open TradeRecord closed and return how many were closed.
 
     Used by the kill switch. The dashboard's Open Positions view reads open
@@ -825,6 +826,11 @@ async def close_open_trades(reason: str = "kill_switch") -> int:
     fabricated $0 — the calendar P&L aggregation skips pnl-None trades. Only
     ``exit_time``/``status`` are stamped so the trade leaves the open set.
     Idempotent: returns 0 when the ledger is already flat.
+
+    ``keep_index_symbols``: transmitted cash-settled index-option legs (XSP, ...) whose
+    OCC symbol is in this set are left OPEN, because Alpaca still holds them (their
+    marketable-limit close didn't fill); None = the broker couldn't be read, so every
+    transmitted index-option leg stays open. Never marked closed unless it closed.
     """
     from sqlalchemy import select
 
@@ -833,12 +839,23 @@ async def close_open_trades(reason: str = "kill_switch") -> int:
         rows = (await session.execute(
             select(TradeRecord).where(TradeRecord.status == "open")
         )).scalars().all()
+        from app.broker.orders import is_index_option
+        kept = 0
         for tr in rows:
+            if tr.transmitted and is_index_option(tr.symbol or "") and (
+                    keep_index_symbols is None
+                    or tr.symbol.replace(" ", "") in keep_index_symbols):
+                kept += 1
+                continue
             tr.status = "closed"
             tr.exit_time = now
-    if rows:
-        logger.warning("Kill switch closed %d open trade record(s) [%s]", len(rows), reason)
-    return len(rows)
+    n = len(rows) - kept
+    if n:
+        logger.warning("Kill switch closed %d open trade record(s) [%s]", n, reason)
+    if kept:
+        logger.error("Kill switch left %d index-option leg record(s) OPEN: still held at "
+                     "Alpaca or unreadable [%s]", kept, reason)
+    return n
 
 
 async def _set_status(key: str, status: str) -> None:

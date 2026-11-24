@@ -79,19 +79,61 @@ async def save(sess: dict) -> None:
 
 
 async def unfinished_before(key: str, d: date) -> list[dict]:
+    """Earlier sessions still to resolve: entering/open, and "error" (a mid-day
+    SAFE_MODE stop) so their settlement is booked once Alpaca agrees."""
     async with session_scope() as s:
         rows = (await s.execute(select(XspFlySession).where(
             XspFlySession.strategy_key == key, XspFlySession.session_date < d,
-            XspFlySession.status.in_(("entering", "open"))))).scalars().all()
+            XspFlySession.status.in_(("entering", "open", "error"))))).scalars().all()
         return [_to_dict(r) for r in rows]
 
 
+def expected_broker(sess: dict, closed_trade_ids: set | frozenset = frozenset()) -> dict[str, int]:
+    """Net qty per OCC symbol the session's own ORDER fills imply. Settlement and
+    no-bid abandon bookings are not orders, so the broker still holds those legs.
+    Legs closed by the kill switch (status "abandoned", or their TradeRecord closed
+    outside the runner) are left out: the flatten's close isn't in the session."""
+    skip = {l["symbol"] for l in sess.get("legs") or []
+            if l.get("status") == "abandoned" or l.get("trade_id") in closed_trade_ids}
+    to_occ = {l["symbol"]: (l.get("occ") or l["symbol"]).replace(" ", "")
+              for l in sess.get("legs") or [] if l["symbol"] not in skip}
+    out = {sym: 0 for sym in to_occ.values()}
+    for f in sess.get("fills") or []:
+        if f.get("kind") in ("settle", "abandon") or f["symbol"] in skip:
+            continue
+        sym = to_occ.get(f["symbol"], f["symbol"])
+        out[sym] = out.get(sym, 0) + (1 if f["side"] == "BUY" else -1) * int(f["qty"])
+    return out
+
+
+async def broker_expected_positions(key: str) -> dict[str, int]:
+    """What the app should hold at Alpaca for XSP right now: the order-fill net of every
+    alpaca_paper session not yet settled (entering/open/error). Used by engine startup
+    recovery instead of XSP's TradeRecords, which don't exist mid-entry and don't track
+    a partial stop."""
+    out: dict[str, int] = {}
+    async with session_scope() as s:
+        rows = (await s.execute(select(XspFlySession).where(
+            XspFlySession.strategy_key == key, XspFlySession.mode == "alpaca_paper",
+            XspFlySession.status.in_(("entering", "open", "error"))))).scalars().all()
+        sessions = [_to_dict(r) for r in rows]
+    ids = [l["trade_id"] for sess in sessions for l in sess.get("legs") or []
+           if l.get("trade_id")]
+    states = await trade_states(ids)
+    closed = {i for i, st in states.items() if st.get("status") == "closed"}
+    for sess in sessions:
+        for sym, q in expected_broker(sess, closed).items():
+            out[sym] = out.get(sym, 0) + q
+    return {k: v for k, v in out.items() if v}
+
+
 async def realized_total(key: str) -> float:
-    """Sum of realized P&L ($, net of fees) over this strategy's finished sessions."""
+    """Sum of realized P&L ($, net of fees) over this strategy's finished Alpaca paper
+    sessions. Sessions from the deleted simulator don't count toward equity."""
     from sqlalchemy import func
     async with session_scope() as s:
         v = (await s.execute(select(func.sum(XspFlySession.realized_pnl)).where(
-            XspFlySession.strategy_key == key,
+            XspFlySession.strategy_key == key, XspFlySession.mode == "alpaca_paper",
             XspFlySession.realized_pnl.is_not(None)))).scalar()
         return float(v or 0.0)
 
@@ -109,14 +151,19 @@ async def finalize_entry(sess: dict, key: str, now: datetime) -> None:
     """Atomically: one open TradeRecord per filled leg + the session row as open."""
     import copy
     async with session_scope() as s:
+        real = sess.get("mode") == "alpaca_paper"
         for leg in sess["legs"]:
             if not leg.get("qty"):
                 continue
-            tr = TradeRecord(strategy_key=key, symbol=leg["symbol"][:16],
+            # Real Alpaca fills: the OCC symbol (matches the ledger, like QQQ's legs) and
+            # transmitted=True so startup reconciliation compares them with Alpaca.
+            sym = (leg.get("occ") or leg["symbol"]).replace(" ", "") if real \
+                else leg["symbol"][:16]
+            tr = TradeRecord(strategy_key=key, symbol=sym,
                              side="sell" if leg["action"] == "SELL" else "buy",
                              quantity=float(leg["qty"]), entry_price=leg["entry_price"],
                              stop=leg.get("stop_level"), entry_time=_db(now), status="open",
-                             transmitted=False)
+                             transmitted=real)
             s.add(tr)
             await s.flush()
             leg["trade_id"] = tr.id

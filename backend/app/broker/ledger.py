@@ -4,6 +4,9 @@ orders and their nested children), never from the account's raw positions."""
 from __future__ import annotations
 
 import logging
+import re
+from datetime import date, datetime, time
+from zoneinfo import ZoneInfo
 
 from app.broker.alpaca_client import AlpacaError, is_app_owned, occ_unpadded, request
 
@@ -50,8 +53,11 @@ async def app_orders(status: str = "all") -> list[dict]:
     return out
 
 
+# Still on the book. pending_cancel included: Alpaca's DELETE is async and the order can
+# still fill (or reserve qty) until the cancel settles, so it must count as open.
 OPEN_STATUSES = {"new", "accepted", "pending_new", "partially_filled", "held",
-                 "accepted_for_bidding", "pending_replace"}
+                 "accepted_for_bidding", "pending_replace", "pending_cancel", "stopped",
+                 "suspended"}
 
 
 def _is_open(o: dict) -> bool:
@@ -107,11 +113,62 @@ def _accumulate(o: dict, net: dict[str, float]) -> None:
         _accumulate(child, net)
 
 
-async def app_net_positions() -> dict[str, int]:
+_OCC = re.compile(r"^([A-Z]{1,6})(\d{2})(\d{2})(\d{2})[CP]\d{8}$")
+_ET = ZoneInfo("America/New_York")
+_REGULAR_CLOSE = time(16, 0)
+# Cash-settled, European index option roots: at expiry they settle to cash and the
+# position simply disappears (no closing order). Equity/ETF options are NOT here: they
+# are physically settled into shares, so an expired equity leg must stay visible (the
+# shares are untagged and the app ledger would otherwise go quietly "flat").
+CASH_SETTLED_ROOTS = frozenset({"XSP", "SPX", "SPXW", "NDX", "NDXP", "RUT", "RUTW",
+                                "VIX", "VIXW", "DJX", "XND", "MRUT"})
+
+
+def _now() -> datetime:
+    """Wall clock for expiry checks (tests pin it)."""
+    return datetime.now(_ET)
+
+
+def _close_on(d: date) -> time:
+    """The session close for an expiry date: 13:00 ET on an early-close day, else 16:00.
+    Uses the exchange calendar the XSP strategy keeps (2026-2027); unknown dates fall
+    back to 16:00, so a half day outside it only delays the drop to 16:00."""
+    try:
+        from app.strategies.xsp_iron_fly.calendar import close_time
+        c = close_time(d)
+        return c.time() if c is not None else _REGULAR_CLOSE
+    except Exception:  # noqa: BLE001 - never let a calendar problem break the ledger
+        return _REGULAR_CLOSE
+
+
+def option_expired(symbol: str, now: datetime | None = None) -> bool:
+    """True for a CASH-SETTLED index option (``CASH_SETTLED_ROOTS``) past expiry: the
+    expiry date is before today (ET), or it is today and that day's close has passed.
+    Such a leg held to expiry settles to cash with no closing order, so without this
+    the order-fill ledger would show it held forever. Always False for stocks and for
+    physically settled equity/ETF options."""
+    m = _OCC.match(occ_unpadded(symbol or ""))
+    if not m or m.group(1) not in CASH_SETTLED_ROOTS:
+        return False
+    yy, mm, dd = (int(g) for g in m.groups()[1:])
+    try:
+        exp = date(2000 + yy, mm, dd)
+    except ValueError:
+        return False
+    now_et = (now or _now()).astimezone(_ET)
+    return exp < now_et.date() or (exp == now_et.date() and now_et.time() >= _close_on(exp))
+
+
+async def app_net_positions(*, include_expired: bool = False,
+                            now: datetime | None = None) -> dict[str, int]:
+    """App-owned net quantity per symbol from its tagged order fills. Options past
+    expiry are dropped unless ``include_expired`` (used to check a day's own fills
+    after the close)."""
     net: dict[str, float] = {}
     for o in await app_orders("all"):
         _accumulate(o, net)
-    return {k: int(round(v)) for k, v in net.items() if int(round(v)) != 0}
+    return {k: int(round(v)) for k, v in net.items()
+            if int(round(v)) != 0 and (include_expired or not option_expired(k, now))}
 
 
 async def account_positions() -> dict[str, dict]:

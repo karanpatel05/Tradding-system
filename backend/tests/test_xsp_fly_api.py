@@ -92,15 +92,15 @@ def test_kill_switch_keeps_strategy_stopped_after_restart(client, monkeypatch):
     assert KEY not in started
 
 
-def test_build_runner_wires_sim_executor_and_live_feed():
+def test_build_runner_wires_alpaca_executor_and_live_feed():
     from app.strategies.xsp_iron_fly import XspIronFlyStrategy
-    from app.strategies.xsp_iron_fly.executor import SimExecutor
+    from app.strategies.xsp_iron_fly.alpaca_executor import AlpacaFlyExecutor
     from app.strategies.xsp_iron_fly.feed import TastytradeFeed
     from app.strategies.xsp_iron_fly.params import IronFlyParams
     from app.strategies.xsp_iron_fly.runner import RealClock
     r = XspIronFlyStrategy(IronFlyParams()).build_runner()
-    assert isinstance(r.ex, SimExecutor) and isinstance(r.feed, TastytradeFeed)
-    assert isinstance(r.clock, RealClock) and r.p.mode == "sim"
+    assert isinstance(r.ex, AlpacaFlyExecutor) and isinstance(r.feed, TastytradeFeed)
+    assert isinstance(r.clock, RealClock) and r.p.mode == "alpaca_paper"
 
 
 def test_tastytrade_feed_keeps_pm_xsp_contracts_only(monkeypatch):
@@ -178,9 +178,14 @@ def test_sizing_equity_is_starting_equity_plus_realized_pnl():
         await init_db()
         async with session_scope() as s:
             await s.execute(delete(XspFlySession).where(XspFlySession.strategy_key == KEY))
-        await store.create_session(KEY, _date(2026, 11, 23), status="settled", realized_pnl=1442.0)
-        await store.create_session(KEY, _date(2026, 11, 24), status="settled", realized_pnl=-339.5)
-        await store.create_session(KEY, _date(2026, 11, 25), status="killed")   # unknown: 0
+        await store.create_session(KEY, _date(2026, 11, 23), status="settled", realized_pnl=1442.0,
+                                   mode="alpaca_paper")
+        await store.create_session(KEY, _date(2026, 11, 24), status="settled", realized_pnl=-339.5,
+                                   mode="alpaca_paper")
+        await store.create_session(KEY, _date(2026, 11, 25), status="killed",
+                                   mode="alpaca_paper")                       # unknown: 0
+        await store.create_session(KEY, _date(2026, 11, 20), status="settled", realized_pnl=999.0,
+                                   mode="sim")              # old simulator: not equity
         strat = XspIronFlyStrategy(IronFlyParams(starting_equity=5000))
         return await strat._equity(), (await strat.status_view())["equity"]
     eq, shown = asyncio.run(go())
