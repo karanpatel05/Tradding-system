@@ -232,3 +232,18 @@ def test_expected_broker_skips_legs_the_kill_switch_closed():
     sess = {"legs": legs, "fills": fills}
     assert expected_broker(sess) == {SC: -1, SP: -1}                   # abandoned out
     assert expected_broker(sess, {3}) == {SC: -1}                      # closed record out
+
+
+@pytest.mark.asyncio
+async def test_pending_cancel_counts_as_open_and_holds_the_symbol(monkeypatch):
+    """A pending_cancel order is still on the book: listed as open, and the kill switch
+    holds its symbol instead of closing on top of it."""
+    pend = {"id": "p1", "client_order_id": "tsys-p1", "status": "pending_cancel",
+            "symbol": SC, "order_class": "simple", "legs": []}
+
+    async def app_orders(status="all"):
+        return [pend]
+    monkeypatch.setattr(ledger, "app_orders", app_orders)
+    orders_open, ids = await ledger.app_open_orders()
+    assert [o["id"] for o in orders_open] == ["p1"] and "p1" in ids
+    assert [o["id"] for o in await orders._lingering(SC)] == ["p1"]
