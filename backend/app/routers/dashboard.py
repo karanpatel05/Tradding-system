@@ -103,9 +103,27 @@ async def kill_switch() -> dict:
     # TradeRecords) actually goes flat — broker flatten alone leaves paper-mode
     # positions, and the ledger row, standing.
     result = report.to_dict()
-    result["trades_closed"] = await close_open_trades()
+    result["trades_closed"] = await close_open_trades(
+        keep_index_symbols=await _index_legs_still_held())
     result["strategies_stopped"] = await _mark_strategies_stopped()
     return result
+
+
+async def _index_legs_still_held() -> set[str] | None:
+    """Cash-settled index-option symbols Alpaca still holds for the app after the
+    flatten (their marketable-limit close didn't fill): their TradeRecords stay open.
+    None when the broker can't be read or isn't configured (then every transmitted
+    index leg stays open: they may still be held at Alpaca)."""
+    from app.broker import alpaca_client as ac
+    from app.broker.ledger import app_net_positions
+    from app.broker.orders import is_index_option
+    if not ac.configured():
+        return None
+    try:
+        held = await app_net_positions()
+    except Exception:  # noqa: BLE001 - unreadable: keep them open
+        return None
+    return {sym for sym in held if is_index_option(sym)}
 
 
 async def _mark_strategies_stopped() -> list[str]:

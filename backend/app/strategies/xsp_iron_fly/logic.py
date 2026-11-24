@@ -118,35 +118,27 @@ def max_loss_per_fly(call_width: float, put_width: float, credit: float,
 class Sizing:
     quantity: int
     reason: str            # "" when quantity >= 1
-    by_capital: int
+    by_equity: int
     by_buying_power: int
-    by_daily_loss: int
-    by_max_contracts: int
 
 
-def size_flies(capital: float, buying_power: float, max_loss: float, *,
-               capital_per_fly: float, max_contracts: int,
-               max_daily_loss: float) -> Sizing:
-    """Flies = min(capital / capital_per_fly, buying_power / max_loss,
-    max_daily_loss / max_loss, max_contracts), floored. The daily-loss term keeps a
-    full max loss on the day inside the circuit breaker."""
+def size_flies(equity: float, max_loss: float, *, capital_per_fly: float,
+               max_daily_loss_per_contract: float) -> Sizing:
+    """Flies = floor(equity / capital_per_fly), but never below 1 while equity still
+    covers one fly's max loss (0 once it does not). Also floored by buying power
+    (equity / max loss). No contract ceiling: the daily-loss limit scales with size
+    instead, so a fly whose max loss exceeds the per-contract limit is not traded."""
     if max_loss <= 0:
-        return Sizing(0, "non-positive max loss (bad quotes)", 0, 0, 0, max_contracts)
-    by_cap = int(math.floor(capital / capital_per_fly + EPS)) if capital > 0 else 0
-    by_bp = int(math.floor(buying_power / max_loss + EPS)) if buying_power > 0 else 0
-    by_dl = int(math.floor(max_daily_loss / max_loss + EPS))
-    q = max(0, min(by_cap, by_bp, by_dl, max_contracts))
-    reason = ""
-    if q == 0:
-        if by_cap == 0:
-            reason = f"capital {capital:.0f} < capital_per_fly {capital_per_fly:.0f}"
-        elif by_bp == 0:
-            reason = f"buying power {buying_power:.0f} < max loss {max_loss:.0f}"
-        elif by_dl == 0:
-            reason = f"max loss {max_loss:.0f} per fly exceeds max_daily_loss {max_daily_loss:.0f}"
-        else:
-            reason = "max_contracts is 0"
-    return Sizing(q, reason, by_cap, by_bp, by_dl, max_contracts)
+        return Sizing(0, "non-positive max loss (bad quotes)", 0, 0)
+    if max_loss > max_daily_loss_per_contract + EPS:
+        return Sizing(0, (f"max loss {max_loss:.0f} per fly exceeds "
+                          f"max_daily_loss_per_contract {max_daily_loss_per_contract:.0f}"),
+                      0, 0)
+    by_bp = int(math.floor(equity / max_loss + EPS)) if equity > 0 else 0
+    if by_bp == 0:
+        return Sizing(0, f"equity {equity:.0f} < one fly's max loss {max_loss:.0f}", 0, 0)
+    by_eq = max(1, int(math.floor(equity / capital_per_fly + EPS)))
+    return Sizing(min(by_eq, by_bp), "", by_eq, by_bp)
 
 
 def entry_credit_ladder(mid_credit: float, *, step: float, max_concession: float,

@@ -18,15 +18,30 @@ logger = logging.getLogger("trading.recovery")
 
 async def local_open_positions() -> dict[str, int]:
     """Open trades actually transmitted to Alpaca (simulated ones never reach the broker),
-    keyed by unpadded OCC symbol to match the ledger."""
+    keyed by unpadded OCC symbol to match the ledger. Options past expiry are dropped,
+    exactly as the ledger drops them (a cash-settled leg has no closing order; its
+    TradeRecord closes when the strategy books the settlement)."""
+    from app.broker.ledger import option_expired
+    from app.strategies.xsp_iron_fly import store as xsp_store
+    xsp_key = "xsp_iron_fly"
     out: dict[str, int] = {}
     async with session_scope() as s:
         rows = (await s.execute(select(TradeRecord).where(
             TradeRecord.status == "open", TradeRecord.transmitted.is_(True)))).scalars().all()
         for r in rows:
+            if r.strategy_key == xsp_key:   # counted from its sessions below
+                continue
             signed = int(r.quantity) * (1 if (r.side or "").lower() in ("buy", "long") else -1)
             sym = occ_unpadded(r.symbol)
+            if option_expired(sym):
+                continue
             out[sym] = out.get(sym, 0) + signed
+    # XSP: what its unsettled Alpaca sessions' own order fills say it holds. Its leg
+    # TradeRecords only exist after the entry completes and keep the entry qty through
+    # a partial stop, so they would false-trip SAFE_MODE mid-entry or mid-stop.
+    for sym, q in (await xsp_store.broker_expected_positions(xsp_key)).items():
+        if not option_expired(sym):
+            out[sym] = out.get(sym, 0) + q
     return {k: v for k, v in out.items() if v != 0}
 
 

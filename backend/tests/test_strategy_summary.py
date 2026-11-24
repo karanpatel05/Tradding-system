@@ -90,7 +90,7 @@ def test_list_exposes_category_universe_execution_and_session_pnl(client, monkey
     assert body["session_date"] == ss.today_et().isoformat()
     xsp, qqq = by["xsp_iron_fly"], by["qqq_credit_spread"]
     assert xsp["category"].startswith("Options") and xsp["universe"] == ["XSP"]
-    assert xsp["execution"] == "Simulated fills"
+    assert xsp["execution"] == "Alpaca paper"
     assert xsp["session_pnl"] == 50.0
     # In-app on Alpaca paper: today's P&L comes from its own session row (none yet),
     # falling back to its closed ledger trades.

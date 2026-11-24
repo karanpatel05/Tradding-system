@@ -44,16 +44,17 @@ def _iso(dt: datetime | None) -> str | None:
 
 class IronFlyRunner:
     def __init__(self, key: str, params: IronFlyParams, feed, executor, clock, *,
-                 capital_fn, safe_mode_fn, alert_fn=None) -> None:
+                 equity_fn, safe_mode_fn, alert_fn=None) -> None:
         self.key = key
         self.p = params
         self.feed = feed
         self.ex = executor
         self.clock = clock
-        self.capital_fn = capital_fn
+        self.equity_fn = equity_fn          # starting equity + realized P&L
         self.safe_mode_fn = safe_mode_fn
         self.alert_fn = alert_fn
         self._contracts: dict[date, list] = {}
+        self._reject_alerted: set = set()
         self._last_miss = ""          # why the latest entry order did not fill
 
     # ------------------------------------------------------------------ utilities
@@ -81,14 +82,16 @@ class IronFlyRunner:
                 and int(l.get("qty") or 0) > int(l.get("exit_qty") or 0)]
 
     def _record_fill(self, s: dict, leg: dict, side: str, qty: int, price: float,
-                     mid: float | None, kind: str, fee: bool = True) -> None:
+                     mid: float | None, kind: str, fee: bool = True,
+                     order_id: str = "") -> None:
         slip = None
         if mid is not None:
             slip = round((price - mid) if side == "BUY" else (mid - price), 4)
         s["fills"].append({"ts": _iso(self.clock.now()), "role": leg["role"],
                            "symbol": leg["symbol"], "side": side, "qty": qty,
                            "price": price, "mid": mid, "slippage_vs_mid": slip,
-                           "kind": kind, "fee": self.p.fees_per_contract * qty if fee else 0.0})
+                           "kind": kind, "fee": self.p.fees_per_contract * qty if fee else 0.0,
+                           "order_id": order_id or None})
         if fee:
             s["fees"] = round(float(s.get("fees") or 0) + self.p.fees_per_contract * qty, 4)
 
@@ -117,7 +120,7 @@ class IronFlyRunner:
             await self._log(f"invalid parameters, not running: {errs}", level="error")
             return
         await self._log(f"XSP iron fly worker started (mode={self.p.mode}, executor="
-                        f"{self.ex.name}; fills are simulated against live NBBO)",
+                        f"{self.ex.name}; real Alpaca paper orders and fills)",
                         category="action", data={"params": _params_dict(self.p)})
         try:
             while True:
@@ -137,7 +140,7 @@ class IronFlyRunner:
                                                          tzinfo=ET))
         except asyncio.CancelledError:
             try:
-                n = await asyncio.wait_for(self.ex.cancel_all(), 5.0)
+                n = await asyncio.wait_for(self.ex.cancel_all(), 10.0)
             except BaseException:  # noqa: BLE001
                 n = "unknown"
             await self._log(f"worker stopped; working orders cancelled ({n}). Open legs "
@@ -178,12 +181,49 @@ class IronFlyRunner:
         return s
 
     # ------------------------------------------------------------------ recovery
+    def _expected_broker(self, s: dict) -> dict[str, int]:
+        return store.expected_broker(s)
+
+    async def _broker_check_on_restart(self, s: dict) -> bool:
+        """Real-order executors only: cancel anything a crash left working on today's
+        symbols, then require Alpaca's app-owned fills to match the session's. A
+        mismatch (e.g. a fill that landed after the crash) trips SAFE_MODE. True = ok."""
+        if not hasattr(self.ex, "check_positions") or s.get("mode") != "alpaca_paper":
+            return True
+        n, problem = await self.ex.cancel_working_for(s.get("legs") or [])
+        if problem:
+            await self._fatal(s, f"restart: {problem}")
+            return False
+        if n:
+            await self._log(f"restart: cancelled {n} working Alpaca order(s) on today's legs",
+                            level="warning")
+        issues = await self.ex.check_positions(self._expected_broker(s))
+        if issues:
+            await self._fatal(s, "restart: Alpaca positions differ from the session: "
+                                 + "; ".join(issues))
+            return False
+        return True
+
     async def _recover_today(self, s: dict) -> dict:
+        if s["status"] in ("entering", "open") and (s.get("mode") or "sim") != self.p.mode:
+            # Never manage a fly with a different executor than the one that opened it
+            # (a sim fly must not send closes to Alpaca, an Alpaca fly must not be
+            # "closed" by simulated fills). Leave it for a human; nothing is changed.
+            msg = (f"{s['session_date']}: open session was opened in mode "
+                   f"{s.get('mode') or 'sim'} but the strategy now runs in {self.p.mode}; "
+                   "not managing it. Switch the mode back or close it by hand.")
+            await self._log(msg, level="error")
+            await self._alert("xsp_fly_mode_mismatch", msg)
+            return {**s, "status": "mode_mismatch"}
         if s["status"] == "entering":
+            if not await self._broker_check_on_restart(s):
+                return s
             return await self._resume_entry(s)
         if s["status"] != "open":
             return s
         await self._detect_killed(s)
+        if s["status"] == "open" and not await self._broker_check_on_restart(s):
+            return s
         if s["status"] == "open":
             await self._log(f"{s['session_date']}: resuming open fly x{s['contracts']} "
                             f"(stops {[(l['role'], l.get('stop_level')) for l in s['legs'] if l['action'] == 'SELL']})",
@@ -211,8 +251,8 @@ class IronFlyRunner:
                         "not managed further today", level="warning")
 
     async def _resume_entry(self, s: dict) -> dict:
-        """A restart found the day mid-entry. Simulated orders do not survive a restart,
-        but every fill was saved as it happened, so filled legs are positions. Before the
+        """A restart found the day mid-entry. Every fill was saved as it happened (and the
+        restart check has already confirmed Alpaca agrees), so filled legs are positions. Before the
         close: unwind whatever does not pair up (excess body first) and manage the
         matched fly. At or after the close: open the filled legs as they are so they
         settle at the close print. Never re-enters."""
@@ -220,8 +260,8 @@ class IronFlyRunner:
         legs = s.get("legs") or []
         if not any(int(l.get("qty") or 0) for l in legs):
             s.update(status="failed", closed_time=self.clock.now(),
-                     reason="interrupted during entry before any fill (simulated orders "
-                            "do not survive a restart); not re-entering today")
+                     reason="interrupted during entry before any fill (any working order was "
+                            "cancelled on restart); not re-entering today")
             await store.save(s)
             await self._log(f"{d}: {s['reason']}", level="warning")
             return s
@@ -271,6 +311,29 @@ class IronFlyRunner:
 
     async def recover_stale(self, today: date) -> None:
         for s in await store.unfinished_before(self.key, today):
+            if s["status"] == "error":
+                # A day stopped by SAFE_MODE: book its settlement only once Alpaca's
+                # fills agree with the session (a human may have fixed it); else wait.
+                if not hasattr(self.ex, "check_positions") or s.get("mode") != "alpaca_paper":
+                    continue
+                if await self.safe_mode_fn():
+                    continue                   # a human hasn't cleared SAFE_MODE yet
+                legs_q = [l for l in s.get("legs") or [] if int(l.get("qty") or 0) > 0]
+                if not legs_q or any(l.get("status") in ("pending", None) for l in legs_q):
+                    # The error hit during entry: the fly was never activated (no stops,
+                    # no TradeRecords), so settling it automatically would book wrong
+                    # P&L. Leave it to a human.
+                    await self._log(f"{s['session_date']}: error during entry; not booked "
+                                    "automatically, needs a human", level="warning")
+                    continue
+                issues = await self.ex.check_positions(self._expected_broker(s))
+                if issues:
+                    await self._log(f"{s['session_date']}: error session still differs from "
+                                    f"Alpaca ({'; '.join(issues)}); needs a human",
+                                    level="warning")
+                    continue
+                s["reason"] = f"resolved after error ({s.get('reason') or ''})"
+                s["status"] = "open"
             if s["status"] == "entering":
                 await self._resume_entry(s)
             else:
@@ -348,15 +411,15 @@ class IronFlyRunner:
         if mid_c <= 0 or mid_c >= max(cw, pw):
             return None, f"implausible mid credit {mid_c:.2f} for {cw:g}/{pw:g} wings", False
         max_loss_est = L.max_loss_per_fly(cw, pw, nat_c, p.multiplier)
-        capital = float(await self.capital_fn() or 0.0)
-        sz = L.size_flies(capital, capital, max_loss_est, capital_per_fly=p.capital_per_fly,
-                          max_contracts=p.max_contracts, max_daily_loss=p.max_daily_loss)
+        equity = float(await self.equity_fn() or 0.0)
+        sz = L.size_flies(equity, max_loss_est, capital_per_fly=p.capital_per_fly,
+                          max_daily_loss_per_contract=p.max_daily_loss_per_contract)
         if sz.quantity == 0:
             return None, f"sizing: {sz.reason}", True
         return {"spot": spot.price, "spot_age": age, "body": body, "wings": wings,
                 "widths": (cw, pw), "legs": legs, "quotes": quotes, "mid_credit": mid_c,
                 "natural_credit": nat_c, "max_loss_est": max_loss_est,
-                "qty": sz.quantity, "sizing": sz.__dict__, "capital": capital,
+                "qty": sz.quantity, "sizing": sz.__dict__, "equity": equity,
                 "close": close_eff}, "", False
 
     async def _enter(self, d: date, close_dt: datetime) -> dict | None:
@@ -478,6 +541,9 @@ class IronFlyRunner:
                 limit = L.round_to_tick(mid_c - k * p.entry_reprice_step, p.tick, "down")
                 res = await self.ex.combo(s["legs"], target - filled, limit,
                                           max_age=p.max_quote_age)
+                if res.status == "unknown":     # a real order may have filled unseen
+                    await self._fatal(s, f"entry order state unknown: {res.detail}")
+                    break
                 if res.status == "rejected":
                     s["reason"] = f"combo rejected: {res.detail}"
                     break
@@ -487,7 +553,8 @@ class IronFlyRunner:
                     for l in s["legs"]:
                         px, m = res.prices[l["role"]], res.mids.get(l["role"])
                         self._add_entry(l, res.filled_qty, px, m)
-                        self._record_fill(s, l, l["action"], res.filled_qty, px, m, "entry")
+                        self._record_fill(s, l, l["action"], res.filled_qty, px, m, "entry",
+                                          order_id=res.order_id)
                     filled += res.filled_qty
                     await store.save(s)
                     await self._log(f"combo fill {res.filled_qty}/{target} at limit credit "
@@ -513,12 +580,16 @@ class IronFlyRunner:
                 if lim is not None:
                     res = await self.ex.single(leg, side, qty - got, lim,
                                                max_age=self.p.max_quote_age)
+                    if res.status == "unknown":
+                        await self._fatal(s, f"leg-in order state unknown: {res.detail}")
+                        break
                     if not res.filled_qty:
                         self._last_miss = res.detail
                     if res.filled_qty:
                         px, m = res.prices[leg["role"]], res.mids.get(leg["role"])
                         self._add_entry(leg, res.filled_qty, px, m)
-                        self._record_fill(s, leg, side, res.filled_qty, px, m, "entry")
+                        self._record_fill(s, leg, side, res.filled_qty, px, m, "entry",
+                                          order_id=res.order_id)
                         got += res.filled_qty
                         await store.save(s)     # a restart must see every fill
             if got >= qty:
@@ -582,8 +653,18 @@ class IronFlyRunner:
         s["reason"] = msg
         await store.save(s)
         await trip_safe_mode(f"XSP fly: {msg}")
-        await self._log(f"FATAL: {msg}; SAFE_MODE tripped", level="error")
-        await self._alert("safe_mode", f"XSP fly: {msg}")
+        cleanup = ""
+        if hasattr(self.ex, "cancel_working_for"):
+            # Best effort: an order behind an "unknown" result has no id, so cancel by
+            # symbol whatever app order still works on the day's legs.
+            try:
+                n, problem = await self.ex.cancel_working_for(s.get("legs") or [])
+                cleanup = (f"; working orders on the legs: cancelled {n}"
+                           + (f", PROBLEM: {problem}" if problem else ""))
+            except Exception as exc:  # noqa: BLE001 - never mask the original error
+                cleanup = f"; cancel of working orders failed: {exc!r}"
+        await self._log(f"FATAL: {msg}; SAFE_MODE tripped{cleanup}", level="error")
+        await self._alert("safe_mode", f"XSP fly: {msg}{cleanup}")
 
     # ------------------------------------------------------------------ exits
     async def _close_qty(self, s: dict, leg: dict, qty: int, kind: str,
@@ -603,13 +684,24 @@ class IronFlyRunner:
                     break
                 res = await self.ex.single(leg, side, qty - got, lim,
                                            max_age=self.p.feed_stale_alert_seconds)
+                if res.status == "unknown":     # a real order may have filled unseen
+                    await self._fatal(s, f"{kind} close for {leg['role']} state unknown: "
+                                         f"{res.detail}")
+                    break
                 if res.status == "rejected":
                     await self._log(f"{kind} close rejected for {leg['role']}: {res.detail}",
                                     level="error")
+                    key = (s.get("session_date"), leg["role"], kind)
+                    if key not in self._reject_alerted:     # an unclosed short: tell a human
+                        self._reject_alerted.add(key)
+                        await self._alert("xsp_fly_close_rejected",
+                                          f"XSP {kind} close for {leg['role']} rejected: "
+                                          f"{res.detail}")
                     break
                 if res.filled_qty:
                     px, m = res.prices[leg["role"]], res.mids.get(leg["role"])
-                    self._record_fill(s, leg, side, res.filled_qty, px, m, kind)
+                    self._record_fill(s, leg, side, res.filled_qty, px, m, kind,
+                                      order_id=res.order_id)
                     got += res.filled_qty
                     notional += px * res.filled_qty
                     continue
@@ -667,6 +759,9 @@ class IronFlyRunner:
                                                         self.clock.now())
                 if got:
                     self._add_exit(leg, got, px, by_order=True)
+                if s["status"] == "error":     # SAFE_MODE tripped: no more orders
+                    await store.save(s)
+                    return
                 if int(leg.get("exit_qty") or 0) >= int(leg["qty"]):
                     await self._finish_leg(s, leg, "closed", reason)
                     left.remove(leg)
@@ -679,10 +774,15 @@ class IronFlyRunner:
         await store.save(s)
         await self._log(f"flattened remaining legs ({reason})", category="trade")
 
+    def _daily_loss_limit(self, s: dict) -> float:
+        """$ limit for the day: per-contract limit x the flies sized at entry."""
+        return self.p.max_daily_loss_per_contract * max(1, int(s.get("contracts") or 1))
+
     async def _breach(self, s: dict, net: float) -> None:
         s["daily_loss_breached"] = True
         msg = (f"max_daily_loss breached on {s['session_date']}: P&L {net:.2f} <= "
-               f"-{self.p.max_daily_loss:.2f}; new entries halted until cleared")
+               f"-{self._daily_loss_limit(s):.2f} (${self.p.max_daily_loss_per_contract:.0f} "
+               f"x {s['contracts']} fly); new entries halted until cleared")
         await store.set_halt(msg)
         await store.save(s)
         await self._log(msg, level="error")
@@ -698,6 +798,8 @@ class IronFlyRunner:
         last_sub = None
         stale = False
         while True:
+            if s["status"] == "error":         # SAFE_MODE tripped: a human takes over
+                return
             now = self.clock.now()
             if now >= close or (flatten_at and now >= flatten_at):
                 break
@@ -735,12 +837,14 @@ class IronFlyRunner:
                 mtm = L.mark_to_market(s["legs"], marks, p.multiplier)
                 if mtm is not None:
                     net = mtm + float(s["extra_pnl"]) - float(s["fees"])
-                    if net <= -p.max_daily_loss:
+                    if net <= -self._daily_loss_limit(s):
                         await self._breach(s, net)
                         if p.flatten_on_daily_loss:
                             await self._flatten(s, "daily_loss")
                             break
             await self.clock.sleep(p.monitor_interval)
+        if s["status"] == "error":             # SAFE_MODE: no flatten, no settlement
+            return
         for leg in self._legs_open(s):
             if leg["status"] == "stopping":
                 await self._log(f"stop close for {leg['role']} incomplete at the end of "
@@ -748,6 +852,8 @@ class IronFlyRunner:
                                 "remainder is flattened or settles", level="warning")
         if flatten_at and self.clock.now() >= flatten_at and self._legs_open(s):
             await self._flatten(s, "pre_settlement")
+        if s["status"] == "error":
+            return
         await self._settle(s)
 
     # ------------------------------------------------------------------ settlement
@@ -793,6 +899,15 @@ class IronFlyRunner:
         s["closed_time"] = self.clock.now()
         states = await store.trade_states([l["trade_id"] for l in legs if l.get("trade_id")])
         s["reconciliation"] = reconcile_session(s, states)
+        if hasattr(self.ex, "check_positions") and s.get("mode") == "alpaca_paper":
+            issues = await self.ex.check_positions(self._expected_broker(s))
+            rec = s["reconciliation"]
+            rec["broker"] = {"checked": "Alpaca app-owned fills vs session order fills",
+                             "issues": issues,
+                             "note": "cash settlement posts ~21:00 ET (OPCSH/OPEXP; "
+                                     "visible the next day on paper)"}
+            rec["issues"] = rec["issues"] + [f"broker: {i}" for i in issues]
+            rec["ok"] = rec["ok"] and not issues
         await store.save(s)
         rec = s["reconciliation"]
         await self._log(
@@ -838,8 +953,7 @@ def reconcile_session(s: dict, trade_states: dict[int, dict]) -> dict:
         elif st["pnl"] is not None and abs(float(st["pnl"]) - float(l.get("pnl") or 0)) > 0.01:
             issues.append(f"{l['role']} TradeRecord pnl {st['pnl']} != leg pnl {l.get('pnl')}")
     return {"ok": not issues, "issues": issues,
-            "scope": ("internal: legs vs fill ledger vs TradeRecords (sim mode has no "
-                      "broker statement)" if s.get("mode") == "sim" else "internal")}
+            "scope": "internal: legs vs fill ledger vs TradeRecords"}
 
 
 def _params_dict(p: IronFlyParams) -> dict:

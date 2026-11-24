@@ -87,32 +87,34 @@ def test_max_loss_symmetric_and_asymmetric():
 
 
 # --- sizing ---------------------------------------------------------------------
-def _size(capital, bp, ml, **kw):
-    args = dict(capital_per_fly=5000, max_contracts=10, max_daily_loss=10_000)
+def _size(equity, ml, **kw):
+    args = dict(capital_per_fly=5000, max_daily_loss_per_contract=1000)
     args.update(kw)
-    return L.size_flies(capital, bp, ml, **args)
+    return L.size_flies(equity, ml, **args)
 
 
-def test_sizing_one_fly_per_5k():
-    assert _size(5000, 1e9, 700).quantity == 1
-    assert _size(14_999, 1e9, 700).quantity == 2
-    assert _size(4_999, 1e9, 700).quantity == 0
+def test_sizing_one_fly_per_5k_of_equity():
+    assert _size(5_000, 700).quantity == 1
+    assert _size(9_999, 700).quantity == 1
+    assert _size(10_000, 700).quantity == 2
+    assert _size(14_999, 700).quantity == 2
+    assert _size(52_000, 700).quantity == 10            # no contract ceiling
 
 
-def test_sizing_floored_by_buying_power_and_max_contracts():
-    assert _size(50_000, 1500, 700).quantity == 2
-    assert _size(50_000, 1e9, 700, max_contracts=3).quantity == 3
+def test_sizing_keeps_one_fly_below_5k_while_equity_covers_max_loss():
+    s = _size(4_200, 700)
+    assert s.quantity == 1 and s.by_equity == 1
+    s = _size(650, 700)
+    assert s.quantity == 0 and "one fly's max loss" in s.reason
 
 
-def test_sizing_capped_by_daily_loss():
-    s = _size(50_000, 1e9, 700, max_daily_loss=1500)
-    assert s.quantity == 2 and s.by_daily_loss == 2
-    s = _size(50_000, 1e9, 900, max_daily_loss=800)
-    assert s.quantity == 0 and "max_daily_loss" in s.reason
+def test_sizing_refuses_fly_beyond_per_contract_daily_loss():
+    s = _size(50_000, 1_050)
+    assert s.quantity == 0 and "max_daily_loss_per_contract" in s.reason
 
 
 def test_sizing_rejects_bad_max_loss():
-    assert _size(50_000, 1e9, 0).quantity == 0
+    assert _size(50_000, 0).quantity == 0
 
 
 def test_entry_credit_ladder_bounded_by_concession():

@@ -1,5 +1,8 @@
-"""Engine-wide SAFE_MODE flag (persisted). When on, ALL order submission is blocked
-until a human clears it. Independent of ENABLE_LIVE_ORDERS."""
+"""Engine-wide SAFE_MODE flag (persisted). When on, every order that OPENS or adds
+exposure is blocked until a human clears it. Closing orders still go out: the kill
+switch's flatten, and single-leg option closes (``orders.submit_option_order``, capped
+at the app's own quantity) so a stop never leaves a short unprotected. Independent of
+ENABLE_LIVE_ORDERS."""
 from __future__ import annotations
 
 import logging
