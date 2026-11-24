@@ -1,4 +1,5 @@
 """History read service + API: paging, go-to-date snapping, index sources, 400s."""
+from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -233,3 +234,107 @@ async def test_coarse_intraday_limit_is_clamped_to_600(tmp_path, monkeypatch, fe
     assert len(out["bars"]) == 600 and out["has_more_before"]
     small = await service.get_history("SPY", "15m", limit=1000)
     assert len(small["bars"]) == 1000  # finer intervals keep the full limit
+
+
+# --- trade-built (live_1m) minutes after the newest official bar --------------------
+OFFICIAL_CLOSE = 111.0
+LIVE_CLOSE = 222.0
+VOL = 10.0
+
+
+def _today_et(h, m):
+    d = datetime.now(ET).date()
+    return int(datetime(d.year, d.month, d.day, h, m, tzinfo=ET).timestamp() * 1000)
+
+
+def _bar(ts, close):
+    return {"time": ts, "open": close, "high": close + 1, "low": close - 1,
+            "close": close, "volume": VOL}
+
+
+@pytest.fixture
+def live_store(tmp_path, monkeypatch):
+    s = HistoryStore(str(tmp_path / "live.db"))
+    monkeypatch.setattr(service, "get_store", lambda: s)
+    return s
+
+
+def _put_official(s, symbol, times):
+    s.upsert_minutes(symbol, [_bar(t, OFFICIAL_CLOSE) for t in times])
+
+
+def _put_live(s, symbol, times):
+    with closing(s._connect()) as c, c:
+        c.executemany(
+            "INSERT OR REPLACE INTO live_1m VALUES (?,?,?,?,?,?,?,?)",
+            [(symbol, t, LIVE_CLOSE, LIVE_CLOSE + 1, LIVE_CLOSE - 1, LIVE_CLOSE, VOL, 1)
+             for t in times])
+
+
+@pytest.mark.asyncio
+async def test_live_minutes_fill_after_official(live_store):
+    _put_official(live_store, "SPY", [_today_et(10, 0), _today_et(10, 1)])
+    _put_live(live_store, "SPY", [_today_et(10, 1), _today_et(10, 2)])
+    out = await service.get_history("SPY", "1m")
+    assert [b["time"] for b in out["bars"]][-3:] == [_today_et(10, 0), _today_et(10, 1),
+                                                     _today_et(10, 2)]
+    assert out["bars"][-2]["close"] == OFFICIAL_CLOSE and out["bars"][-1]["close"] == LIVE_CLOSE
+    assert out["live_from"] == _today_et(10, 2) and out["latest"] == _today_et(10, 2)
+    assert out["has_more_after"] is False
+
+
+@pytest.mark.asyncio
+async def test_official_wins_when_both_exist(live_store):
+    _put_official(live_store, "SPY", [_today_et(10, 0)])
+    _put_live(live_store, "SPY", [_today_et(10, 0)])
+    out = await service.get_history("SPY", "1m")
+    assert out["bars"][-1]["close"] == OFFICIAL_CLOSE and out["live_from"] is None
+
+
+@pytest.mark.asyncio
+async def test_5m_bucket_spans_official_and_live(live_store):
+    _put_official(live_store, "SPY", [_today_et(10, 0), _today_et(10, 1)])
+    _put_live(live_store, "SPY", [_today_et(10, 2)])
+    out = await service.get_history("SPY", "5m")
+    assert out["bars"][-1]["time"] == _today_et(10, 0) and out["bars"][-1]["volume"] == 3 * VOL
+    assert out["live_from"] == _today_et(10, 2)
+
+
+@pytest.mark.asyncio
+async def test_live_ignored_before_today_and_without_official(live_store):
+    yesterday = _today_et(10, 0) - 86_400_000
+    _put_official(live_store, "SPY", [yesterday])
+    _put_live(live_store, "SPY", [yesterday + 60_000])  # stale live minute, not today
+    out = await service.get_history("SPY", "1m")
+    assert out["bars"][-1]["time"] == yesterday and out["live_from"] is None
+    _put_live(live_store, "QQQ", [_today_et(10, 0)])  # no official history at all
+    none = await service.get_history("QQQ", "1m")
+    assert none["bars"] == [] and none["note"] == "No local history for this symbol yet."
+
+
+@pytest.mark.asyncio
+async def test_paging_before_and_after_and_around_with_live(live_store):
+    _put_official(live_store, "SPY", [_today_et(10, 0), _today_et(10, 1)])
+    _put_live(live_store, "SPY", [_today_et(10, 2), _today_et(10, 3)])
+    older = await service.get_history("SPY", "1m", before=_today_et(10, 2))
+    assert older["bars"][-1]["time"] == _today_et(10, 1) and older["live_from"] is None
+    newer = await service.get_history("SPY", "1m", after=_today_et(10, 1))
+    assert [b["time"] for b in newer["bars"]] == [_today_et(10, 2), _today_et(10, 3)]
+    assert newer["live_from"] == _today_et(10, 2) and newer["has_more_after"] is False
+    around = await service.get_history("SPY", "1m", around=datetime.now(ET).date())
+    assert [b["time"] for b in around["bars"]][-1] == _today_et(10, 3)
+
+
+@pytest.mark.asyncio
+async def test_1d_and_1w_use_merged_today(live_store):
+    _put_official(live_store, "SPY", [_today_et(10, 0)])
+    live_store.upsert_daily("SPY", [{**_bar(_today_et(9, 30), OFFICIAL_CLOSE),
+                                     "session": datetime.now(ET).date().isoformat()}])
+    _put_live(live_store, "SPY", [_today_et(10, 1)])
+    for interval in ("1D", "1W"):
+        out = await service.get_history("SPY", interval)
+        assert out["bars"][-1]["close"] == LIVE_CLOSE
+        assert out["bars"][-1]["volume"] == 2 * VOL
+        assert out["live_from"] == _today_et(10, 1)
+    plain = await service.get_history("SPY", "1D")
+    assert len(plain["bars"]) == 1

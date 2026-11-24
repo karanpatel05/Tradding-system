@@ -149,6 +149,7 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                 "positions": positions,
                 "account": broker_account,
                 "chart_prices": chart_live.prices(conn_id),
+                "chart_bars": chart_live.bars(conn_id),
             })
             tick += 1
             await asyncio.sleep(PUSH_INTERVAL)

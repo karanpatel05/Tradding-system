@@ -127,3 +127,40 @@ async def test_stale_trades_are_not_pushed():
     live, _, _ = make(trades={"SPY": (1.0, 1000.0), "QQQ": (2.0, 1002.0)}, now=1121.0)
     await live.set_symbols("a", ["SPY", "QQQ"])
     assert live.prices("a") == {"QQQ": {"price": 2.0, "ts": 1_002_000}}  # 119 s kept, 121 s dropped
+
+
+class FakeRecorder:
+    def live_bars(self, symbol):
+        return [{"time": 60_000, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5,
+                 "volume": 3.0}]
+
+
+@pytest.mark.asyncio
+async def test_chart_bars_only_for_listed_symbols_in_rth(monkeypatch):
+    from app.history import recorder as history_recorder
+
+    live, _, state = make("regular")
+    await live.set_symbols("a", ["SPY", "AAPL"])
+    monkeypatch.setattr(history_recorder, "recorder", FakeRecorder())
+    assert live.bars("a") == {"SPY": FakeRecorder().live_bars("SPY")}
+    assert "AAPL" not in live.bars("a")
+    assert live.bars("unknown") == {}
+    state["session"] = "after_hours"
+    assert live.bars("a") == {}
+    state["session"] = "regular"
+    monkeypatch.setattr(history_recorder, "recorder", None)
+    assert live.bars("a") == {}
+
+
+@pytest.mark.asyncio
+async def test_chart_bars_never_raises(monkeypatch):
+    from app.history import recorder as history_recorder
+
+    class Boom:
+        def live_bars(self, symbol):
+            raise RuntimeError("x")
+
+    live, _, _ = make("regular")
+    await live.set_symbols("a", ["SPY"])
+    monkeypatch.setattr(history_recorder, "recorder", Boom())
+    assert live.bars("a") == {}

@@ -11,7 +11,8 @@ import time
 from datetime import date, datetime, timedelta, timezone
 
 from app.history.aggregate import (
-    ET, INTRADAY_MINUTES, bucket, et_session_start_ms, weekly_from_daily)
+    ET, INTRADAY_MINUTES, bucket, daily_from_minutes, et_session_start_ms,
+    weekly_from_daily)
 from app.history.store import get_store
 from app.history.live_bars import stock_symbols
 from app.marketdata import facade
@@ -70,7 +71,27 @@ def _chunk_days(interval: str, limit: int) -> int:
     return max(2, math.ceil(trading_days * 7 / 5) + 1)
 
 
-def _back(store, symbol, interval, end_ms, limit, earliest, latest) -> list[dict]:
+def _today_start_ms() -> int:
+    return _midnight_ms(datetime.now(ET).date())
+
+
+def _live_after(store, symbol: str, official_latest: int) -> list[dict]:
+    """Trade-built minutes of today newer than the newest official minute (ascending).
+    Official bars always win: a live minute at or before `official_latest` is never used."""
+    return store.live_minutes(symbol, max(official_latest + 1, _today_start_ms()), 2**62)
+
+
+def _minutes(store, symbol, start_ms, end_ms, official_latest: int) -> list[dict]:
+    """Official 1m bars in [start_ms, end_ms) plus today's trade-built minutes newer than
+    `official_latest`, ascending. Synchronous."""
+    out = store.minutes(symbol, start_ms, end_ms)
+    live_start = max(start_ms, official_latest + 1, _today_start_ms())
+    if live_start < end_ms:
+        out = out + store.live_minutes(symbol, live_start, end_ms)
+    return out
+
+
+def _back(store, symbol, interval, end_ms, limit, earliest, latest, official_latest) -> list[dict]:
     """Up to `limit` buckets of minutes before `end_ms` (a bucket boundary), ascending.
     Chunks start at ET midnight, so no bucket is split between two reads. `end_ms` is
     clamped to the stored range so empty time is never walked chunk by chunk.
@@ -80,38 +101,38 @@ def _back(store, symbol, interval, end_ms, limit, earliest, latest) -> list[dict
     out: list[dict] = []
     while len(out) < limit and end_ms > earliest:
         start = _midnight_ms(_et_date(end_ms - 1) - timedelta(days=step - 1))
-        out = bucket(store.minutes(symbol, start, end_ms), interval) + out
+        out = bucket(_minutes(store, symbol, start, end_ms, official_latest), interval) + out
         end_ms = start
     return out[-limit:]
 
 
-def _forward(store, symbol, interval, start_ms, limit, earliest, latest) -> list[dict]:
+def _forward(store, symbol, interval, start_ms, limit, earliest, latest, official_latest) -> list[dict]:
     """Up to `limit` buckets starting at/after `start_ms` (a bucket boundary). Synchronous."""
     step = _chunk_days(interval, limit)
     start_ms = max(start_ms, _midnight_ms(_et_date(earliest)))
     out: list[dict] = []
     while len(out) < limit and start_ms <= latest:
         end = _midnight_ms(_et_date(start_ms) + timedelta(days=step))
-        out += bucket(store.minutes(symbol, start_ms, end), interval)
+        out += bucket(_minutes(store, symbol, start_ms, end, official_latest), interval)
         start_ms = end
     return out[:limit]
 
 
-async def _stock_intraday(symbol, interval, before, after, around, limit, lo, hi):
+async def _stock_intraday(symbol, interval, before, after, around, limit, lo, hi, official_hi):
     store = get_store()
     walk = asyncio.to_thread  # each read+bucket walk runs off the event loop in one call
     n_ms = INTRADAY_MINUTES[interval] * _MINUTE_MS
     if before is not None:
-        return await walk(_back, store, symbol, interval, before, limit, lo, hi)
+        return await walk(_back, store, symbol, interval, before, limit, lo, hi, official_hi)
     if after is not None:
-        return await walk(_forward, store, symbol, interval, after + n_ms, limit, lo, hi)
+        return await walk(_forward, store, symbol, interval, after + n_ms, limit, lo, hi, official_hi)
     if around is not None:
         target = et_session_start_ms(around)
         t0 = _latest_bucket_time(target, interval)  # bucket start: 09:30 is mid-bucket at 1h/4h
-        left = await walk(_back, store, symbol, interval, t0, limit, lo, hi)
-        right = await walk(_forward, store, symbol, interval, t0, limit, lo, hi)
+        left = await walk(_back, store, symbol, interval, t0, limit, lo, hi, official_hi)
+        right = await walk(_forward, store, symbol, interval, t0, limit, lo, hi, official_hi)
         return _around_slice(left + right, target, limit)
-    return await walk(_back, store, symbol, interval, hi + 1, limit, lo, hi)
+    return await walk(_back, store, symbol, interval, hi + 1, limit, lo, hi, official_hi)
 
 
 # --- index sources ------------------------------------------------------------------
@@ -149,15 +170,30 @@ def _validate(symbol, interval, before, after, around, limit) -> str:
     return symbol
 
 
-def _result(symbol, interval, bars, earliest, latest, latest_bar_time, source, note) -> dict:
+def _result(symbol, interval, bars, earliest, latest, latest_bar_time, source, note,
+            live_from=None) -> dict:
     return {
         "symbol": symbol, "interval": interval, "bars": bars,
         "earliest": earliest, "latest": latest,
         "has_more_before": bool(bars) and earliest is not None and earliest < bars[0]["time"],
         "has_more_after": bool(bars) and latest_bar_time is not None
         and latest_bar_time > bars[-1]["time"],
-        "source": source, "note": note,
+        "source": source, "note": note, "live_from": live_from,
     }
+
+
+def _with_live_day(store, symbol, series: list[dict], live: list[dict], official_hi: int):
+    """Replace/append today's daily bar with one built from today's official + live minutes
+    (09:30-15:59 ET). Returns (series, time of the first live minute that fed it | None)."""
+    today = _today_start_ms()
+    merged = store.minutes(symbol, today, official_hi + 1) + live
+    built = daily_from_minutes(merged)
+    if not built:
+        return series, None
+    bar = built[-1]
+    fed = next((m["time"] for m in live if daily_from_minutes([m])), None)
+    rest = [b for b in series if b["time"] != bar["time"]]
+    return sorted(rest + [bar], key=lambda b: b["time"]), fed
 
 
 def _latest_bucket_time(latest: int | None, interval: str) -> int | None:
@@ -175,6 +211,7 @@ async def get_history(symbol: str, interval: str, *, before: int | None = None,
         limit = min(limit, COARSE_MAX_LIMIT)
     intraday = interval in INTRADAY_MINUTES
     is_index = symbol in INDEX_SYMBOLS
+    live_from = None
 
     if is_index and not intraday:
         got = await chart_data.get_bars(symbol, "1d")
@@ -198,11 +235,22 @@ async def get_history(symbol: str, interval: str, *, before: int | None = None,
         if lo is None:
             return _result(symbol, interval, [], None, None, None, source,
                            "No local history for this symbol yet.")
+        live = await asyncio.to_thread(_live_after, store, symbol, hi)
+        official_hi = hi
+        if live:
+            hi = max(hi, live[-1]["time"])
         if intraday:
-            bars = await _stock_intraday(symbol, interval, before, after, around, limit, lo, hi)
+            bars = await _stock_intraday(symbol, interval, before, after, around, limit,
+                                         lo, hi, official_hi)
+            span = INTRADAY_MINUTES[interval] * _MINUTE_MS
+            live_from = next((m["time"] for m in live if bars
+                              and bars[0]["time"] <= m["time"] < bars[-1]["time"] + span), None)
             return _result(symbol, interval, bars, lo, hi, _latest_bucket_time(hi, interval),
-                           source, note)
+                           source, note, live_from)
         series = await asyncio.to_thread(store.daily, symbol, 0, 2**62)
+        if live:
+            series, live_from = await asyncio.to_thread(
+                _with_live_day, store, symbol, series, live, official_hi)
         if interval == "1W":
             series = weekly_from_daily(series)
 
@@ -210,4 +258,4 @@ async def get_history(symbol: str, interval: str, *, before: int | None = None,
     bars = _select(series, before, after, around, limit)
     first = series[0]["time"] if series else None
     last = series[-1]["time"] if series else None
-    return _result(symbol, interval, bars, first, last, last, source, note)
+    return _result(symbol, interval, bars, first, last, last, source, note, live_from)

@@ -14,6 +14,8 @@ from typing import Callable
 
 from tastytrade.dxfeed import Trade
 
+from app.history import recorder as history_recorder
+from app.history.live_bars import stock_symbols
 from app.services.chart_data import ChartDataError, normalize_symbol
 from app.services.market import get_market_status
 from app.tastytrade.streamer import get_streamer
@@ -96,6 +98,31 @@ class ChartLive:
             return out
         except Exception as exc:  # noqa: BLE001
             logger.debug("chart live prices error: %s", exc)
+            return {}
+
+    def bars(self, conn_id: str) -> dict[str, list[dict]]:
+        """Trade-built forming/just-closed minutes for this connection's listed chart
+        symbols, from the recorder's memory (only in the process that records), during the
+        regular session. Never raises."""
+        symbols = self._symbols.get(conn_id)
+        if not symbols:
+            return {}
+        try:
+            if self._market_status().get("session") != "regular":
+                return {}
+            rec = history_recorder.recorder  # set after startup: read at call time
+            if rec is None:
+                return {}
+            listed = stock_symbols()
+            out: dict[str, list[dict]] = {}
+            for sym in symbols:
+                if sym in listed:
+                    got = rec.live_bars(sym)
+                    if got:
+                        out[sym] = got
+            return out
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("chart live bars error: %s", exc)
             return {}
 
 
