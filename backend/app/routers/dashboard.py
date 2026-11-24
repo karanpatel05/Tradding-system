@@ -112,12 +112,13 @@ async def kill_switch() -> dict:
 async def _index_legs_still_held() -> set[str] | None:
     """Cash-settled index-option symbols Alpaca still holds for the app after the
     flatten (their marketable-limit close didn't fill): their TradeRecords stay open.
-    None when the broker can't be read (then every transmitted index leg stays open)."""
+    None when the broker can't be read or isn't configured (then every transmitted
+    index leg stays open: they may still be held at Alpaca)."""
     from app.broker import alpaca_client as ac
     from app.broker.ledger import app_net_positions
     from app.broker.orders import is_index_option
     if not ac.configured():
-        return set()
+        return None
     try:
         held = await app_net_positions()
     except Exception:  # noqa: BLE001 - unreadable: keep them open

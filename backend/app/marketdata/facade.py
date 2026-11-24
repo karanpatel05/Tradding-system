@@ -177,19 +177,19 @@ async def option_mid(underlying: str, expiry, strike: float, right: str) -> floa
 
 
 async def option_nbbo(root: str, expiry, strike: float, right: str
-                      ) -> tuple[float | None, float | None]:
+                      ) -> tuple[float | None, float | None] | None:
     """RAW (bid, ask) for one option, without the mid sanity guard: for pricing a
-    marketable close, where a fast move must not be filtered out. (None, None) when
-    unavailable."""
+    marketable close, where a fast move must not be filtered out. None when no quote is
+    available (so callers can tell "feed down" from a real quote with no bid)."""
     e = expiry.strftime("%y%m%d") if hasattr(expiry, "strftime") else str(expiry)
     try:
         q = await asyncio.wait_for(
             _get_streamer().quote(f".{root}{e}{right.upper()}{float(strike):g}", timeout=2.0),
             _SOURCE_TIMEOUT)
     except Exception:  # noqa: BLE001 - unavailable is a miss, never a crash
-        return None, None
+        return None
     if not q:
-        return None, None
+        return None
     return q.get("bid"), q.get("ask")
 
 

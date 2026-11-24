@@ -103,7 +103,10 @@ def broker(monkeypatch):
         return 0, [], []
 
     async def quote(sym):
-        return b.quotes.get(sym, (None, None))
+        q = b.quotes.get(sym)              # None = market data unavailable
+        if isinstance(q, list):            # scripted sequence, one per call
+            return q.pop(0) if len(q) > 1 else q[0]
+        return q
 
     async def not_safe():
         return False
@@ -172,6 +175,59 @@ async def test_short_with_no_ask_is_reported_loudly(broker):
     with pytest.raises(RuntimeError) as e:
         await orders.flatten_all()
     assert "short leg has no ask" in str(e.value)
+
+
+@pytest.mark.asyncio
+async def test_short_skipped_before_closing_holds_every_long(broker, monkeypatch):
+    """A short the flatten never attempts (its stop order is still cancelling) must keep
+    every index long: selling the wings would leave a naked short."""
+    async def lingering_on_sc():
+        return 0, [], [{"symbol": SC, "status": "pending_cancel"}]
+    monkeypatch.setattr(orders, "_cancel_app_orders", lingering_on_sc)
+    with pytest.raises(RuntimeError) as e:
+        await orders.flatten_all()
+    msg = str(e.value)
+    assert f"{SC} x1 (held: resting app order not cleared)" in msg
+    assert f"{LC} x1 (held: a short leg is still open)" in msg
+    assert f"{LP} x1 (held: a short leg is still open)" in msg
+    assert not any(b["side"] == "sell" for b in broker.limit_bodies)   # no wing sold
+    assert LC in broker.held and LP in broker.held and SC in broker.held
+
+
+@pytest.mark.asyncio
+async def test_short_with_account_mismatch_holds_every_long(broker, monkeypatch):
+    async def acct():
+        return {k: {"qty": (0 if k == SP else v), "asset_class": "us_option"}
+                for k, v in broker.held.items()}
+    monkeypatch.setattr(ledger, "account_positions", acct)
+    with pytest.raises(RuntimeError) as e:
+        await orders.flatten_all()
+    msg = str(e.value)
+    assert "account position differs" in msg and f"{LP} x1 (held: a short leg" in msg
+    assert not any(b["side"] == "sell" for b in broker.limit_bodies)
+
+
+@pytest.mark.asyncio
+async def test_missing_quote_on_a_long_is_a_failure_not_left_to_settle(broker):
+    broker.quotes[LP] = None                         # feed down, not "no bid"
+    with pytest.raises(RuntimeError) as e:
+        await orders.flatten_all()
+    msg = str(e.value)
+    assert "no quote" in msg and "left to settle" not in msg and LP in broker.held
+
+
+@pytest.mark.asyncio
+async def test_missing_quote_on_a_short_is_retried_then_closed(broker):
+    broker.quotes[SC] = [None, None, (3.20, 3.30)]   # transient miss, then a quote
+    out = await orders.flatten_all()
+    assert "Flattened 4" in out and broker.held == {}
+
+
+@pytest.mark.asyncio
+async def test_kill_route_keeps_index_legs_open_when_alpaca_unconfigured(monkeypatch):
+    from app.routers import dashboard
+    monkeypatch.setattr(ac, "configured", lambda: False)
+    assert await dashboard._index_legs_still_held() is None
 
 
 @pytest.mark.asyncio

@@ -567,7 +567,8 @@ async def _cancel_app_orders() -> tuple[int, list[str], list[dict] | None]:
 # --- kill switch: marketable-limit closes for cash-settled index options -----------
 _IDX_THROUGH = 0.05        # limit this far through the touch
 _IDX_ATTEMPT = 2.0         # seconds an attempt rests before it is cancelled and repriced
-_IDX_GROUP_WAIT = 6.0      # bound per group (shorts, then longs); whole flatten <~15 s
+_IDX_GROUP_WAIT = 6.0      # retry window per group (shorts, then longs)
+_IDX_QUOTE_WAIT = 2.0      # longest wait for one quote inside that window
 _IDX_STEP = 0.25
 _TERMINAL_ORDER = {"filled", "canceled", "expired", "rejected", "done_for_day", "replaced"}
 
@@ -592,12 +593,13 @@ def _round_tick(x: float, up: bool) -> float:
     return round(n * t, 2)
 
 
-async def _index_option_quote(sym: str) -> tuple[float | None, float | None]:
+async def _index_option_quote(sym: str) -> tuple[float | None, float | None] | None:
     """(bid, ask) for an OCC index option from the market-data facade (data only; no
-    order ever goes to the data provider). Indirection point for tests."""
+    order ever goes to the data provider), or None when no quote is available (feed
+    down): "unknown", never "no bid". Indirection point for tests."""
     p = parse_occ(sym)
     if p is None:
-        return None, None
+        return None
     root, exp, right, strike = p
     from app.marketdata.facade import option_nbbo
     return await option_nbbo(root, exp, strike, right)
@@ -611,16 +613,27 @@ async def _close_index_leg(sym: str, qty: int, side: str, deadline: float) -> di
     filled, error = 0, None
     intent = f"{side}_to_close"
     while filled < qty and time.monotonic() < deadline:
-        bid, ask = await _index_option_quote(sym)
+        wait = max(0.05, min(_IDX_QUOTE_WAIT, deadline - time.monotonic()))
+        try:
+            quote = await asyncio.wait_for(_index_option_quote(sym), wait)
+        except asyncio.TimeoutError:
+            quote = None
+        if quote is None:          # no market data: unknown, so retry (never "no bid")
+            error = "no quote for the leg (market data unavailable)"
+            await asyncio.sleep(_IDX_STEP)
+            continue
+        bid, ask = quote
         if side == "sell":
-            if not bid or bid <= 0:
+            if not bid or bid <= 0:    # a real quote with no bid: worthless wing, settle
                 return {"filled": filled, "left": qty - filled, "settle": True, "error": None}
             limit = max(0.01, _round_tick(bid - _IDX_THROUGH, up=False))
         else:
             if not ask or ask <= 0:
-                return {"filled": filled, "left": qty - filled, "settle": False,
-                        "error": "short leg has no ask: cannot price a buy-to-close"}
+                error = "short leg has no ask: cannot price a buy-to-close"
+                await asyncio.sleep(_IDX_STEP)
+                continue
             limit = _round_tick(ask + _IDX_THROUGH, up=True)
+        error = None
         out = await submit_option_order(sym, side, qty - filled, limit_price=limit,
                                         position_intent=intent, reason="kill switch")
         oid = out.get("order_id")
@@ -645,12 +658,14 @@ async def _close_index_leg(sym: str, qty: int, side: str, deadline: float) -> di
                 await ac.request("DELETE", f"/v2/orders/{oid}", write=True)
             except (*_LOOKUP_ERRORS, PaperLockError):
                 pass
-            for _ in range(int(_CANCEL_WAIT / _IDX_STEP)):
+            confirm_until = time.monotonic() + _CANCEL_WAIT     # time-bounded, not counted
+            while True:
                 try:
                     o = await ac.request("GET", f"/v2/orders/{oid}")
                 except _LOOKUP_ERRORS:
                     o = None
-                if o and str(o.get("status") or "").lower() in _TERMINAL_ORDER:
+                if (o and str(o.get("status") or "").lower() in _TERMINAL_ORDER) \
+                        or time.monotonic() >= confirm_until:
                     break
                 await asyncio.sleep(_IDX_STEP)
         if not o or str(o.get("status") or "").lower() not in _TERMINAL_ORDER:
@@ -737,6 +752,11 @@ async def flatten_all() -> str:
     closed: list[str] = []
     settle_left: dict[str, int] = {}          # index longs with no bid: left to settle
     index_jobs: list[tuple[str, int, str]] = []
+    # Every index short the app holds must be CLOSED before any index long is sold,
+    # including shorts skipped below (resting order, account mismatch): selling the
+    # wings while a short is open would leave it naked.
+    idx_shorts = {s for s, q in app_net.items() if q < 0 and is_index_option(s)}
+    idx_shorts_closed: set[str] = set()
     # shorts first: buying back a spread's short leg before selling its long keeps the
     # account covered while it unwinds
     for sym, app_qty in sorted(app_net.items(), key=lambda kv: (kv[1] > 0, kv[0])):
@@ -785,6 +805,11 @@ async def flatten_all() -> str:
                   [j for j in index_jobs if j[2] == "sell"]):
         if not group:
             continue
+        if group[0][2] == "sell" and idx_shorts - idx_shorts_closed:
+            # A short is still open (skipped or not fully filled): keep its protection.
+            failures += [f"{sym} x{qty} (held: a short leg is still open)"
+                         for sym, qty, _ in group]
+            break
         deadline = time.monotonic() + _IDX_GROUP_WAIT
         results = await asyncio.gather(*[_close_index_leg(sym, qty, side, deadline)
                                          for sym, qty, side in group],
@@ -795,17 +820,12 @@ async def flatten_all() -> str:
                 continue
             if res["filled"]:
                 closed.append(f"{sym} x{res['filled']}")
+            if side == "buy" and not res["left"]:
+                idx_shorts_closed.add(sym)
             if res["settle"] and res["left"]:
                 settle_left[sym] = res["left"]
             elif res["left"]:
                 failures.append(f"{sym} x{res['left']} not closed ({res['error']})")
-        if any(isinstance(r, BaseException) or r["left"] and not r["settle"]
-               for r in results) and group[0][2] == "buy":
-            # A short is still open: don't sell its protection. Report, stop here.
-            longs = [j for j in index_jobs if j[2] == "sell"]
-            failures += [f"{sym} x{qty} (held: a short leg is still open)"
-                         for sym, qty, _ in longs]
-            break
 
     remaining = app_net
     if closed:
