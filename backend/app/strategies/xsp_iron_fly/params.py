@@ -21,13 +21,13 @@ class IronFlyParams:
     entry_time: time = time(9, 45)          # ET
     wing_width: float = 10.0                # index points
     stop_mult: float = 1.5                  # per short leg, x its entry fill
-    capital_per_fly: float = 5000.0
+    capital_per_fly: float = 5000.0         # 1 fly per this much equity
+    starting_equity: float = 5000.0         # equity = this + the strategy's realized P&L
     close_before_settlement: bool = False
     flatten_minutes_before_close: float = 2.0   # 15:58 on a 16:00 close
 
     # --- risk limits / circuit breakers ---
-    max_contracts: int = 1                  # flies per day (= max concurrent)
-    max_daily_loss: float = 1000.0          # $; also caps sizing (see logic.size_flies)
+    max_daily_loss_per_contract: float = 1000.0  # $ per fly sized that day; halts entries
     flatten_on_daily_loss: bool = False
     max_leg_spread: float = 0.15            # index points, any leg at entry
     max_quote_age: float = 5.0              # seconds, XSP spot at entry
@@ -60,10 +60,10 @@ class IronFlyParams:
             errs.append("stop_mult must be > 1")
         if self.capital_per_fly <= 0:
             errs.append("capital_per_fly must be > 0")
-        if self.max_contracts < 1:
-            errs.append("max_contracts must be >= 1")
-        if self.max_daily_loss <= 0:
-            errs.append("max_daily_loss must be > 0")
+        if self.starting_equity <= 0:
+            errs.append("starting_equity must be > 0")
+        if self.max_daily_loss_per_contract <= 0:
+            errs.append("max_daily_loss_per_contract must be > 0")
         if self.stop_trigger not in ("ask", "mark"):
             errs.append("stop_trigger must be 'ask' or 'mark'")
         if self.mode not in ("sim", "live"):
@@ -81,8 +81,8 @@ class IronFlyParams:
             stop_mult=s.xsp_fly_stop_mult,
             capital_per_fly=s.xsp_fly_capital_per_fly,
             close_before_settlement=s.xsp_fly_close_before_settlement,
-            max_contracts=s.xsp_fly_max_contracts,
-            max_daily_loss=s.xsp_fly_max_daily_loss,
+            starting_equity=s.xsp_fly_starting_equity,
+            max_daily_loss_per_contract=s.xsp_fly_max_daily_loss_per_contract,
             flatten_on_daily_loss=s.xsp_fly_flatten_on_daily_loss,
             max_leg_spread=s.xsp_fly_max_leg_spread,
             max_quote_age=s.xsp_fly_max_quote_age,

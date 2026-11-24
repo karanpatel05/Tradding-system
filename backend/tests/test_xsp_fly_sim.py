@@ -134,10 +134,10 @@ def ramp(t0: datetime, t1: datetime, a: float, b: float):
     return f
 
 
-def make(clock, feed, params=P, *, capital=5000.0, executor=None, alerts=None,
+def make(clock, feed, params=P, *, equity=5000.0, executor=None, alerts=None,
          safe=False):
     async def cap():
-        return capital
+        return equity
 
     async def sm():
         return safe
@@ -147,7 +147,7 @@ def make(clock, feed, params=P, *, capital=5000.0, executor=None, alerts=None,
             alerts.append((kind, msg))
 
     return IronFlyRunner(KEY, params, feed, executor or SimExecutor(feed, clock), clock,
-                         capital_fn=cap, safe_mode_fn=sm, alert_fn=alert)
+                         equity_fn=cap, safe_mode_fn=sm, alert_fn=alert)
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -327,9 +327,9 @@ async def test_wide_leg_spread_skips():
 
 
 @pytest.mark.asyncio
-async def test_no_capital_skips():
+async def test_equity_below_one_fly_max_loss_skips():
     clock = SimClock(at(D, 9, 0))
-    s = await make(clock, FakeFeed(clock, flat()), capital=0).run_session(D)
+    s = await make(clock, FakeFeed(clock, flat()), equity=100).run_session(D)
     assert s["status"] == "skipped" and "sizing" in s["reason"]
 
 
@@ -469,8 +469,8 @@ async def test_daily_loss_breach_can_flatten():
 async def test_combo_partial_fills_accumulate_to_target():
     clock = SimClock(at(D, 9, 0))
     feed = FakeFeed(clock, flat())
-    params = replace(P, max_contracts=2, max_daily_loss=2500)
-    s = await make(clock, feed, params, capital=10_000,
+    params = P
+    s = await make(clock, feed, params, equity=10_000,
                    executor=SimExecutor(feed, clock, max_fill_qty=1)).run_session(D)
     assert s["contracts"] == 2 and all(l["qty"] == 2 for l in s["legs"])
     assert len(entry_fills(s)) == 8
@@ -672,14 +672,14 @@ class _HangAfterFirstFill(SimExecutor):
         return await super().single(leg, side, qty, limit, **kw)
 
 
-TWO = replace(P, max_contracts=2, max_daily_loss=5000, entry_reprice_seconds=1.0)
+TWO = replace(P, max_daily_loss_per_contract=2500, entry_reprice_seconds=1.0)
 
 
 async def _interrupted_entry(clock, *, combo=True):
     feed = FakeFeed(clock, flat())
     ex = _HangAfterFirstFill(feed, clock, supports_combo=combo, max_fill_qty=1)
     task = asyncio.ensure_future(
-        make(clock, feed, TWO, capital=10_000, executor=ex).run_session(D))
+        make(clock, feed, TWO, equity=10_000, executor=ex).run_session(D))
     await asyncio.wait_for(ex.hung.wait(), 10)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -696,7 +696,7 @@ async def test_restart_mid_combo_entry_manages_the_filled_fly():
     assert [l["qty"] for l in s0["legs"]] == [1, 1, 1, 1]
     feed2 = FakeFeed(clock, flat())
     await feed2.contracts("XSP", D)
-    s = await make(clock, feed2, TWO, capital=10_000).run_session(D)
+    s = await make(clock, feed2, TWO, equity=10_000).run_session(D)
     assert s["id"] == s0["id"] and len(entry_fills(s)) == 4   # resumed, never re-entered
     assert s["contracts"] == 1 and s["net_credit"] > 0
     assert all(l["stop_level"] for l in s["legs"] if l["action"] == "SELL")
@@ -712,7 +712,7 @@ async def test_restart_mid_leg_in_unwinds_unmatched_wings():
         "short_call": 0, "short_put": 0, "long_call": 2, "long_put": 2}
     feed2 = FakeFeed(clock, flat(), needs_subscribe=True)   # fresh process: empty cache
     await feed2.contracts("XSP", D)
-    s = await make(clock, feed2, TWO, capital=10_000).run_session(D)
+    s = await make(clock, feed2, TWO, equity=10_000).run_session(D)
     assert s["status"] == "failed" and "unmatched fills unwound" in s["reason"]
     net: dict[str, int] = {}
     for f in s["fills"]:
@@ -737,7 +737,7 @@ async def test_entry_interrupted_on_a_prior_day_settles_its_fills():
     clock.t = at(nxt, 8, 0)
     feed2 = FakeFeed(clock, flat(600.2))
     await feed2.contracts("XSP", D)
-    await make(clock, feed2, TWO, capital=10_000).recover_stale(nxt)
+    await make(clock, feed2, TWO, equity=10_000).recover_stale(nxt)
     s = await store.get_session(KEY, D)
     assert s["status"] == "settled" and s["settlement_price"] == pytest.approx(600.2)
     assert s["reconciliation"]["ok"] and len(await trades()) == 4
