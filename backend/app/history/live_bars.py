@@ -28,18 +28,28 @@ class Trade(NamedTuple):
     valid: bool = True  # TimeAndSale.valid_tick
 
 
+_warned_raw: set[str] = set()   # LIVE_BAR_SYMBOLS values whose dropped entries were logged
+
+
 def stock_symbols() -> tuple[str, ...]:
+    """Normalized LIVE_BAR_SYMBOLS, re-read on every call. Dropped entries are logged once
+    per distinct raw setting value."""
+    setting = get_settings().live_bar_symbols
+    warn = setting not in _warned_raw
+    _warned_raw.add(setting)
     out: list[str] = []
-    for raw in get_settings().live_bar_symbols.split(","):
+    for raw in setting.split(","):
         if not raw.strip():
             continue
         try:
             symbol = normalize_symbol(raw)
         except ChartDataError:
-            logger.warning("LIVE_BAR_SYMBOLS: dropping invalid entry %r", raw)
+            if warn:
+                logger.warning("LIVE_BAR_SYMBOLS: dropping invalid entry %r", raw)
             continue
         if symbol in _INDEX_SYMBOLS:
-            logger.warning("LIVE_BAR_SYMBOLS: dropping index symbol %s", symbol)
+            if warn:
+                logger.warning("LIVE_BAR_SYMBOLS: dropping index symbol %s", symbol)
             continue
         if symbol not in out:
             out.append(symbol)

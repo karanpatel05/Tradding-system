@@ -1,6 +1,7 @@
 from datetime import date, datetime
 
 from app.config import get_settings
+from app.history import live_bars
 from app.history.live_bars import ET, Trade, fold, is_rth_trade, minute_of, stock_symbols
 
 HOLIDAY = date(2026, 11, 26)
@@ -19,6 +20,21 @@ def T(ts, seq, price, size, symbol="SPY", valid=True):
 def test_stock_symbols_from_setting(monkeypatch):
     monkeypatch.setattr(get_settings(), "live_bar_symbols", "spy, QQQ,SPX,qqq,bad sym,NVDA")
     assert stock_symbols() == ("SPY", "QQQ", "NVDA")
+
+
+def test_stock_symbols_warns_once_per_setting_value(monkeypatch, caplog):
+    monkeypatch.setattr(live_bars, "_warned_raw", set(), raising=False)
+    monkeypatch.setattr(get_settings(), "live_bar_symbols", "TSLA,no good,NDX")
+    with caplog.at_level("WARNING", logger="app.history.live_bars"):
+        for _ in range(3):
+            assert stock_symbols() == ("TSLA",)
+    assert len(caplog.records) == 2                  # one per dropped entry, not per call
+    caplog.clear()
+    monkeypatch.setattr(get_settings(), "live_bar_symbols", "TSLA,no good,NDX,SPY")
+    with caplog.at_level("WARNING", logger="app.history.live_bars"):
+        assert stock_symbols() == ("TSLA", "SPY")   # settings are re-read every call
+        assert stock_symbols() == ("TSLA", "SPY")
+    assert len(caplog.records) == 2                  # a new value warns again, once
 
 
 def test_rth_window():

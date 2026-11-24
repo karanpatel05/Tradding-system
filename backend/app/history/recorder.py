@@ -28,6 +28,7 @@ _RTH_OPEN = dtime(9, 30)
 _RTH_CLOSE = dtime(16, 0)
 _IDLE_WAKE = 60.0                    # outside the window, re-check at least this often
 _MAX_BACKOFF = 30.0
+_SEED_RETRY = timedelta(seconds=60)  # while seeding keeps failing, retry at most this often
 _ACCEPTED_TYPES = {"NEW", "CORRECTION"}
 _BAR_KEYS = ("time", "open", "high", "low", "close", "volume")
 _CLS = "TimeAndSale"
@@ -60,7 +61,7 @@ def _seconds_to_window(local: datetime) -> float:
 class LiveRecorder:
     def __init__(self, store: HistoryStore, streamer_factory=get_streamer,
                  now=lambda: datetime.now(UTC), flush_seconds: float = 1.0,
-                 subscribe_timeout: float = 15.0, max_buffer: int = 2_000_000):
+                 subscribe_timeout: float = 15.0, max_buffer: int = 300_000):
         self.store = store
         self._factory = streamer_factory
         self._now = now
@@ -74,6 +75,7 @@ class LiveRecorder:
         self._seeded_day: date | None = None
         self._bars_day: date | None = None
         self._seed_failures = 0
+        self._seed_retry_at: datetime | None = None
         self._flush_failures = 0
 
     # --- hot path (runs inside the streamer pump; no I/O, no awaits) ------------------
@@ -219,12 +221,15 @@ class LiveRecorder:
         if self._bars_day != local.date():
             self._bars.clear()                   # a new session
             self._bars_day = local.date()
-        if self._seeded_day != local.date():
+        if self._seeded_day != local.date() and (self._seed_retry_at is None
+                                                 or local >= self._seed_retry_at):
             try:
                 await self._seed(local.date())
                 self._seed_failures = 0
-            except Exception:  # noqa: BLE001 - record unseeded; retry next iteration
+                self._seed_retry_at = None
+            except Exception:  # noqa: BLE001 - record unseeded; retry in a minute
                 self._seed_failures += 1
+                self._seed_retry_at = local + _SEED_RETRY
                 if self._seed_failures == 1 or self._seed_failures % 60 == 0:
                     logger.warning("live recorder: seeding live bars failed (%d in a row); "
                                    "recording unseeded and retrying", self._seed_failures,

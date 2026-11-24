@@ -276,15 +276,34 @@ async def test_buffer_cap_drops_oldest_on_failed_flush(store, fake_streamer, mon
 
 async def test_seed_failure_still_records_and_retries(store, fake_streamer, monkeypatch):
     real_rebuild = store.rebuild_live
-    monkeypatch.setattr(store, "rebuild_live", _raise(OSError("db locked")))
-    rec = LiveRecorder(store, lambda: fake_streamer, now=lambda: _dt(10, 0, 30),
-                       flush_seconds=0.01)
+    calls = []
+
+    def failing(day):
+        calls.append(day)
+        raise OSError("db locked")
+
+    def counting(day):
+        calls.append(day)
+        return real_rebuild(day)
+    monkeypatch.setattr(store, "rebuild_live", failing)
+    clock = Clock(_dt(10, 0, 30))
+    rec = LiveRecorder(store, lambda: fake_streamer, now=clock, flush_seconds=0.01)
     task = asyncio.create_task(rec.run())
     await _until(lambda: set(stock_symbols()) <= fake_streamer._subscribed["TimeAndSale"])
     fake_streamer.listeners["TimeAndSale"][0](_tas("SPY", _et(10, 0, 5), 1, 100.0, 4))
     await _until(lambda: store.live_minutes("SPY", 0, 2**62) != [])
-    assert rec._seeded_day is None
-    monkeypatch.setattr(store, "rebuild_live", real_rebuild)
+    await clock.ticks(20)
+    assert rec._seeded_day is None and len(calls) == 1      # retried at most every 60 s
+    monkeypatch.setattr(store, "rebuild_live", counting)
+    clock.t = _dt(10, 1, 15)                                 # 45 s later: still waiting
+    await clock.ticks(20)
+    assert len(calls) == 1 and rec._seeded_day is None
+    clock.t = _dt(10, 1, 31)                                 # 61 s after the failure
     await _until(lambda: rec._seeded_day == DAY)
+    assert len(calls) == 2
     assert rec.live_bars("SPY")[0]["volume"] == 4.0         # recorded bar not wiped
     await _stop(task)
+
+
+async def test_max_buffer_default(store):
+    assert LiveRecorder(store)._max_buffer == 300_000
