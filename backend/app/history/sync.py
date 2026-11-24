@@ -155,6 +155,48 @@ class HistorySync:
             return True
         return False
 
+    async def _missing_rth(self, symbol: str, day: date) -> list[int]:
+        open_ms = et_session_start_ms(day)
+        end_ms = open_ms + 390 * _MINUTE_MS
+        have = {m["time"] for m in await self._store(self.store.minutes, symbol, open_ms, end_ms)}
+        return [t for t in range(open_ms, end_ms, _MINUTE_MS) if t not in have]
+
+    async def finalize_day(self, day: date) -> None:
+        """Make sure `day`'s official RTH minutes are stored, then drop that day's trades and
+        trade-built minutes. Official bars win: live data is never copied into bars_1m.
+        A failed re-fetch leaves the day undeleted so the next pass retries it."""
+        open_ms = et_session_start_ms(day)
+        start, end = _from_ms(open_ms), _from_ms(open_ms + 390 * _MINUTE_MS)
+        failed = False
+        for symbol in stock_symbols():
+            missing = await self._missing_rth(symbol, day)
+            if not missing:
+                continue
+            try:
+                bars = await self._pull(symbol, start, end, "sip")
+                await self._store(self._write_chunk, symbol, bars)
+                missing = await self._missing_rth(symbol, day)
+                note = (f"{len(missing)} minutes missing on {day.isoformat()}"
+                        if missing else None)
+            except Exception as exc:  # noqa: BLE001 - recorded; the day is retried next pass
+                failed = True
+                note = f"finalize {day.isoformat()} failed: {_short_reason(exc)}"
+                logger.warning("history finalize %s %s failed: %s", symbol, day, note)
+            if note:
+                await self._store(self.store.set_state, symbol, note=note)
+        if not failed:
+            await self._store(self.store.delete_live_day, day)
+
+    async def _finalize_due_days(self) -> None:
+        local = self._now().astimezone(ET)
+        today, after_close = local.date(), local.time() >= dtime(20, 15)
+        for d in await self._store(self.store.live_days):
+            if d < today or (d == today and after_close):
+                try:
+                    await self.finalize_day(d)
+                except Exception:  # noqa: BLE001 - retried next pass
+                    logger.exception("history: finalizing %s failed", d)
+
     async def run_once(self) -> None:
         self.errors = 0
         today = self._now().astimezone(ET).date().isoformat()
@@ -173,6 +215,7 @@ class HistorySync:
                     await self._store(self.store.set_state, symbol, status="error", note=note)
                 except Exception:  # noqa: BLE001
                     logger.exception("history: could not record error state for %s", symbol)
+        await self._finalize_due_days()
 
 
 def next_delay(now: datetime) -> float:

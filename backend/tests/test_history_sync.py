@@ -414,3 +414,93 @@ async def test_recorder_that_cannot_start_does_not_stop_the_sync(store, monkeypa
     with pytest.raises(asyncio.CancelledError):
         await task
     assert f.calls and R.recorder is None and "recorder" in caplog.text.lower()
+
+
+# ---- end-of-day finalize ------------------------------------------------------------------
+
+from app.history.live_bars import Trade as _Trade  # noqa: E402
+
+D1, D2 = date(2026, 11, 18), date(2026, 11, 19)     # consecutive trading days (Wed, Thu)
+
+
+def _et(h, m, s=0, day=D1):
+    return int(datetime(day.year, day.month, day.day, h, m, s, tzinfo=S.ET).timestamp() * 1000)
+
+
+def _fill_rth_minutes(store, symbol, day, skip=frozenset()):
+    t0 = et_session_start_ms(day)
+    store.upsert_minutes(symbol, [bar(t0 + i * MIN) for i in range(390)
+                                  if t0 + i * MIN not in skip])
+
+
+def _trade(ts):
+    return _Trade("SPY", ts, 1, 1.0, 1)
+
+
+def _eod_sync(store, fetch, now):
+    return make_sync(store, fetch, now)
+
+
+@pytest.mark.asyncio
+async def test_finalize_deletes_trades_when_day_complete(store):
+    f = FakeFetch()
+    _fill_rth_minutes(store, "SPY", D1)
+    store.insert_trades([_trade(_et(10, 0, 1))])
+    await _eod_sync(store, f, datetime(2026, 11, 19, 15, tzinfo=UTC)).finalize_day(D1)
+    assert store.live_days() == []
+    assert not [c for c in f.calls if c["symbol"] == "SPY"]
+
+
+@pytest.mark.asyncio
+async def test_finalize_refetches_missing_once_and_notes_gaps(store, monkeypatch):
+    monkeypatch.setattr(S, "stock_symbols", lambda: ("SPY",))
+    f = FakeFetch()
+    _fill_rth_minutes(store, "SPY", D1, skip={_et(11, 0)})
+    store.insert_trades([_trade(_et(10, 0, 1))])
+    await _eod_sync(store, f, datetime(2026, 11, 19, 15, tzinfo=UTC)).finalize_day(D1)
+    assert len(f.calls) == 1 and f.calls[0]["feed"] == "sip"
+    assert store.get_state("SPY")["note"] == "1 minutes missing on 2026-11-18"
+    assert store.live_days() == []
+
+
+@pytest.mark.asyncio
+async def test_finalize_fills_gap_from_official_bars_only(store, monkeypatch):
+    monkeypatch.setattr(S, "stock_symbols", lambda: ("SPY",))
+    gap = _et(11, 0)
+    f = FakeFetch({"SPY": [bar(gap, 55.0)]})
+    _fill_rth_minutes(store, "SPY", D1, skip={gap})
+    await _eod_sync(store, f, datetime(2026, 11, 19, 15, tzinfo=UTC)).finalize_day(D1)
+    assert [m["close"] for m in store.minutes("SPY", gap, gap + MIN)] == [55.0]
+    assert not (store.get_state("SPY") or {}).get("note")
+
+
+@pytest.mark.asyncio
+async def test_finalize_fetch_failure_keeps_day(store, monkeypatch):
+    monkeypatch.setattr(S, "stock_symbols", lambda: ("SPY",))
+    f = FakeFetch(raises={"SPY": RuntimeError("boom")})
+    _fill_rth_minutes(store, "SPY", D1, skip={_et(11, 0)})
+    store.insert_trades([_trade(_et(10, 0, 1))])
+    await _eod_sync(store, f, datetime(2026, 11, 19, 15, tzinfo=UTC)).finalize_day(D1)
+    assert store.live_days() == [D1]
+    assert "boom" in store.get_state("SPY")["note"]
+
+
+@pytest.mark.asyncio
+async def test_startup_finalizes_earlier_days(store):
+    store.insert_trades([_trade(_et(10, 0, 1))])
+    await _eod_sync(store, FakeFetch(), datetime(2026, 11, 19, 15, tzinfo=UTC)).run_once()
+    assert D1 not in store.live_days()
+
+
+@pytest.mark.asyncio
+async def test_today_not_finalized_before_2015(store):
+    store.insert_trades([_trade(_et(10, 0, 1, day=D2))])
+    await _eod_sync(store, FakeFetch(), datetime(2026, 11, 20, 0, tzinfo=UTC)).run_once()  # 19:00 ET
+    assert store.live_days() == [D2]
+
+
+@pytest.mark.asyncio
+async def test_today_finalized_after_2015(store):
+    store.insert_trades([_trade(_et(10, 0, 1, day=D2))])
+    await _eod_sync(store, FakeFetch(), datetime(2026, 11, 20, 1, 16, tzinfo=UTC)).run_once()  # 20:16 ET
+    assert store.live_days() == []
