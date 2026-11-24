@@ -1,6 +1,6 @@
 # Live trade recorder for the chart store — design
 
-Date: 2026-11-24 · Status: draft for approval
+Date: 2026-11-24 · Status: approved by the user 2026-11-24
 Builds on: `feat/chart-history` (spec `2026-11-20-chart-history-design.md`, unmerged).
 
 ## Why
