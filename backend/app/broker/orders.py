@@ -820,7 +820,9 @@ async def flatten_all() -> str:
                 continue
             if res["filled"]:
                 closed.append(f"{sym} x{res['filled']}")
-            if side == "buy" and not res["left"]:
+            if side == "buy" and not res["left"] and qty == abs(app_net.get(sym, 0)):
+                # closed only if ALL the app's short was bought back (a job capped by a
+                # lagging account read leaves the rest open)
                 idx_shorts_closed.add(sym)
             if res["settle"] and res["left"]:
                 settle_left[sym] = res["left"]

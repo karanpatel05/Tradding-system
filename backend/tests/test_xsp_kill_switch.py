@@ -208,6 +208,24 @@ async def test_short_with_account_mismatch_holds_every_long(broker, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_short_capped_by_a_lagging_account_read_still_holds_the_longs(broker, monkeypatch):
+    """The app is short 2 but the account read shows 1 (stale/lagging): closing that 1
+    must not count the short as closed, so the wings stay."""
+    broker.held[SC] = -2
+
+    async def acct():
+        return {k: {"qty": (-1 if k == SC else v), "asset_class": "us_option"}
+                for k, v in broker.held.items()}
+    monkeypatch.setattr(ledger, "account_positions", acct)
+    with pytest.raises(RuntimeError) as e:
+        await orders.flatten_all()
+    msg = str(e.value)
+    assert f"{SC}: account holds 1 of the app's 2" in msg
+    assert f"{LC} x1 (held: a short leg is still open)" in msg
+    assert not any(b["side"] == "sell" for b in broker.limit_bodies)
+
+
+@pytest.mark.asyncio
 async def test_missing_quote_on_a_long_is_a_failure_not_left_to_settle(broker):
     broker.quotes[LP] = None                         # feed down, not "no bid"
     with pytest.raises(RuntimeError) as e:
