@@ -179,6 +179,22 @@ deploying re-run the installer once (use `RUN_WEB_HOST=0.0.0.0` if you serve the
 RUN_WEB_HOST=0.0.0.0 ./scripts/install_autostart.sh
 ```
 
+### Live trade recorder
+
+During US regular trading hours (09:30-16:00 ET) the process with `MARKET_HISTORY_SYNC=true`
+(and only that one, since it holds the lock file) also records every DXLink trade
+(TimeAndSale) for the symbols in `LIVE_BAR_SYMBOLS` (default `SPY,QQQ,TSLA,NVDA`). Trades go
+into the `ticks` table and are rolled into trade-built 1-minute bars (`live_1m`) in the same
+database file. `GET /api/market/history?symbol=&interval=` serves those minutes after the newest
+official Alpaca bar and reports where they start in `live_from`; `/ws` snapshots carry
+`chart_bars` so the Chart screen updates between syncs.
+
+- Odd-lot trades count toward volume but never set open, high, low or close.
+- Official Alpaca bars always win: once one exists for a minute it replaces the trade-built one.
+- After 20:15 ET the day is finalized: official minutes still missing are re-fetched once, then
+  that day's `ticks` and `live_1m` rows are deleted. This replaces the earlier rule that raw
+  ticks are never saved; trades are now kept only until the end of the day.
+
 ## Strategies
 
 **QQQ First-Hour Credit Spread** (`qqq_credit_spread`) is the strategy that is live on
