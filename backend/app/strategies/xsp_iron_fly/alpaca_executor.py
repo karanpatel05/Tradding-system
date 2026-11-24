@@ -205,6 +205,10 @@ class AlpacaFlyExecutor:
             return OrderResult("unknown", detail=f"combo {oid}: order unreadable; state "
                                                  f"unknown (reconcile before trading)")
         n = filled_qty(o)
+        if status_of(o) in OPEN_STATUSES:     # cancel didn't take: it may still fill
+            return OrderResult("unknown", filled_qty=n,
+                               detail=f"combo {oid} still {status_of(o)} after cancel; "
+                                      "not sending another order")
         by_sym = {ac.occ_unpadded(x.get("symbol") or ""): x for x in o.get("legs") or []}
         prices = {}
         for l in legs:
@@ -241,6 +245,10 @@ class AlpacaFlyExecutor:
             return OrderResult("unknown", detail=f"{intent} {oid}: order unreadable; state "
                                                  f"unknown (reconcile before trading)")
         n = filled_qty(o)
+        if status_of(o) in OPEN_STATUSES:     # cancel didn't take: it may still fill
+            return OrderResult("unknown", filled_qty=n,
+                               detail=f"{intent} {oid} still {status_of(o)} after cancel; "
+                                      "not sending another order")
         fill = _f(o.get("filled_avg_price"))
         if n and fill is None:
             return OrderResult("unknown", filled_qty=n,

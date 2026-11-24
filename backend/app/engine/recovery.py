@@ -18,7 +18,10 @@ logger = logging.getLogger("trading.recovery")
 
 async def local_open_positions() -> dict[str, int]:
     """Open trades actually transmitted to Alpaca (simulated ones never reach the broker),
-    keyed by unpadded OCC symbol to match the ledger."""
+    keyed by unpadded OCC symbol to match the ledger. Options past expiry are dropped,
+    exactly as the ledger drops them (a cash-settled leg has no closing order; its
+    TradeRecord closes when the strategy books the settlement)."""
+    from app.broker.ledger import option_expired
     out: dict[str, int] = {}
     async with session_scope() as s:
         rows = (await s.execute(select(TradeRecord).where(
@@ -26,6 +29,8 @@ async def local_open_positions() -> dict[str, int]:
         for r in rows:
             signed = int(r.quantity) * (1 if (r.side or "").lower() in ("buy", "long") else -1)
             sym = occ_unpadded(r.symbol)
+            if option_expired(sym):
+                continue
             out[sym] = out.get(sym, 0) + signed
     return {k: v for k, v in out.items() if v != 0}
 

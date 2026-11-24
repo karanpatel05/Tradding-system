@@ -54,6 +54,7 @@ class IronFlyRunner:
         self.safe_mode_fn = safe_mode_fn
         self.alert_fn = alert_fn
         self._contracts: dict[date, list] = {}
+        self._reject_alerted: set = set()
         self._last_miss = ""          # why the latest entry order did not fill
 
     # ------------------------------------------------------------------ utilities
@@ -663,6 +664,12 @@ class IronFlyRunner:
                 if res.status == "rejected":
                     await self._log(f"{kind} close rejected for {leg['role']}: {res.detail}",
                                     level="error")
+                    key = (s.get("session_date"), leg["role"], kind)
+                    if key not in self._reject_alerted:     # an unclosed short: tell a human
+                        self._reject_alerted.add(key)
+                        await self._alert("xsp_fly_close_rejected",
+                                          f"XSP {kind} close for {leg['role']} rejected: "
+                                          f"{res.detail}")
                     break
                 if res.filled_qty:
                     px, m = res.prices[leg["role"]], res.mids.get(leg["role"])

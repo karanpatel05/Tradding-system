@@ -472,3 +472,83 @@ def test_alpaca_mode_activation_requires_order_routing(monkeypatch):
     assert strat.execution_label() == "Alpaca paper"
     monkeypatch.setattr(s, "apca_api_base_url", "https://api.alpaca.markets")
     assert "paper lock" in strat.activation_block_reason()
+
+
+# --- review fixes ---------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_cancel_that_does_not_take_is_unknown_not_unfilled():
+    clock = SimClock(at(D, 9, 45))
+    feed = FakeFeed(clock, flat(600.0))
+    legs = await _legs(clock, feed)
+    alp = FakeAlpaca(feed)
+    alp.bind(legs)
+    alp.open_polls = 10**6                   # never fills while polled
+
+    async def stuck_cancel(oid):             # the cancel is ignored: still working
+        return None
+    alp.cancel = stuck_cancel
+    ex = ex_for(clock, feed, alp)
+    res = await ex.combo(legs, 1, 0.5, max_age=5)
+    assert res.status == "unknown" and "after cancel" in res.detail
+    res = await ex.single(legs[0], "BUY", 1, 5.0, max_age=30)
+    assert res.status == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_rejected_stop_close_alerts_once_and_keeps_retrying():
+    clock = SimClock(at(D, 9, 0))
+    path = ramp(at(D, 10, 0), at(D, 11, 0), 600.0, 603.5)
+    feed = FakeFeed(clock, path)
+    alp = await _bound_fake(clock, feed)
+    real_submit = alp.submit
+
+    async def reject_stops(body, intent, qty):
+        if body.get("position_intent") == "buy_to_close":
+            return {"transmitted": False, "detail": "rejected by Alpaca: test"}
+        return await real_submit(body, intent, qty)
+    alp.submit = reject_stops
+    alerts = []
+    s = await _runner(clock, feed, alp, alerts=alerts).run_session(D)
+    rejected = [k for k, _ in alerts if k == "xsp_fly_close_rejected"]
+    assert len(rejected) == 1                # alerted once, not every tick
+    sc = next(l for l in s["legs"] if l["role"] == "short_call")
+    assert sc["exit_reason"] == "settlement"  # never closed: settled at the close
+
+
+@pytest.mark.asyncio
+async def test_boot_reconciliation_with_real_occ_legs_before_and_after_the_close(monkeypatch):
+    """The global startup recovery (not just the runner's own check) with real XSP OCC
+    symbols: clean while the legs are open, and still clean at 16:05 before the runner
+    has booked the settlement (both sides drop expired contracts)."""
+    from datetime import datetime as _dt
+
+    from app.config import get_settings
+    from app.engine import recovery
+    s = get_settings()
+    monkeypatch.setattr(s, "apca_api_key_id", "k")
+    monkeypatch.setattr(s, "apca_api_secret_key", "x")
+    monkeypatch.setattr(recovery, "_schedule_backfill", lambda: None)
+    syms = {"XSP261123C00600000": ("sell", -1), "XSP261123P00600000": ("sell", -1),
+            "XSP261123C00610000": ("buy", 1), "XSP261123P00590000": ("buy", 1)}
+    order = {"order_class": "mleg", "client_order_id": "tsys-x", "status": "filled",
+             "legs": [{"symbol": k, "side": side, "filled_qty": "1"}
+                      for k, (side, _) in syms.items()]}
+
+    async def app_orders(status="all"):
+        return [order]
+
+    async def account_positions():
+        return {k: {"qty": q, "avg_entry_price": 1.0} for k, (_, q) in syms.items()}
+    monkeypatch.setattr(ledger, "app_orders", app_orders)
+    monkeypatch.setattr(ledger, "account_positions", account_positions)
+    async with session_scope() as db:      # this throwaway DB holds other tests' rows
+        await db.execute(delete(TradeRecord).where(TradeRecord.transmitted.is_(True)))
+        for k, (side, _) in syms.items():
+            db.add(TradeRecord(strategy_key=KEY, symbol=k, side=side, quantity=1.0,
+                               entry_price=1.0, status="open", transmitted=True))
+    for hh, mm in ((11, 0), (16, 5)):
+        monkeypatch.setattr(ledger, "_now",
+                            lambda hh=hh, mm=mm: _dt.combine(D, time(hh, mm), tzinfo=ET))
+        assert await recovery.run_recovery() is True, (hh, mm)
+    from app.engine.safe_mode import is_safe_mode
+    assert not await is_safe_mode()
