@@ -1,4 +1,10 @@
+from contextlib import closing
+from datetime import date, datetime
+
+import pytest
+
 from app.config import get_settings
+from app.history.live_bars import ET, Trade
 from app.history.store import HistoryStore
 
 
@@ -92,3 +98,87 @@ def test_failed_daily_write_commits_no_minutes(tmp_path):
     with pytest.raises(sqlite3.OperationalError):
         s.upsert_minutes_and_daily("SPY", [_bar(60_000)], [{**_bar(60_000), "session": "1970-01-01"}])
     assert s.minutes("SPY", 0, 10**9) == []
+
+
+D1 = date(2025, 1, 6)
+D2 = date(2025, 1, 7)
+D_TODAY = date(2025, 1, 8)
+
+
+@pytest.fixture
+def store(tmp_path):
+    return HistoryStore(str(tmp_path / "h.db"))
+
+
+def T(ts, seq, price, size, symbol="SPY", valid=True):
+    return Trade(symbol, ts, seq, price, size, valid)
+
+
+def _et(h, m, s=0, ms=0, day=D_TODAY):
+    dt = datetime(day.year, day.month, day.day, h, m, s, tzinfo=ET)
+    return int(dt.timestamp()) * 1000 + ms
+
+
+def test_insert_ticks_ignores_duplicates_and_live_matches_ticks(store):
+    ts = [T(_et(10, 0, 1), 1, 100.0, 10), T(_et(10, 0, 2), 2, 101.0, 5)]
+    store.insert_trades(ts)
+    store.insert_trades(ts)  # redelivery
+    assert store.live_minutes("SPY", 0, 2**62) == [
+        {"time": _et(10, 0), "open": 100.0, "high": 101.0, "low": 100.0,
+         "close": 101.0, "volume": 15.0}]
+
+
+def test_insert_trades_returns_touched_minutes_and_handles_late_trade(store):
+    touched = store.insert_trades([T(_et(10, 0, 5), 5, 100.0, 1), T(_et(10, 1, 0), 6, 102.0, 1)])
+    assert touched == {("SPY", _et(10, 0)), ("SPY", _et(10, 1))}
+    store.insert_trades([T(_et(10, 0, 1), 1, 99.0, 1)])  # late, earlier in minute
+    bar = store.live_minutes("SPY", _et(10, 0), _et(10, 1))[0]
+    assert bar["open"] == 99.0 and bar["close"] == 100.0 and bar["volume"] == 2.0
+
+
+def test_closing_print_groups_into_1559(store):
+    store.insert_trades([T(_et(16, 0), 1, 100.0, 1)])
+    assert [b["time"] for b in store.live_minutes("SPY", 0, 2**62)] == [_et(15, 59)]
+
+
+def test_live_minute_prices_ignore_odd_lots(store):
+    store.insert_trades([T(_et(10, 0, 1), 1, 100.0, 100),
+                         T(_et(10, 0, 2), 2, 105.0, 5, valid=False),
+                         T(_et(10, 0, 3), 3, 101.0, 100)])
+    bar = store.live_minutes("SPY", 0, 2**62)[0]
+    assert bar["high"] == 101.0 and bar["close"] == 101.0 and bar["volume"] == 205.0
+
+
+def test_live_minute_all_invalid_falls_back_to_all_trades(store):
+    store.insert_trades([T(_et(10, 0, 1), 1, 100.0, 1, valid=False),
+                         T(_et(10, 0, 2), 2, 102.0, 1, valid=False)])
+    bar = store.live_minutes("SPY", 0, 2**62)[0]
+    assert (bar["open"], bar["high"], bar["low"], bar["close"]) == (100.0, 102.0, 100.0, 102.0)
+
+
+def test_live_tables_do_not_touch_bars_1m(store):
+    store.insert_trades([T(_et(10, 0, 1), 1, 100.0, 10)])
+    assert store.minutes("SPY", 0, 2**62) == []
+
+
+def test_live_days_and_delete(store):
+    store.insert_trades([T(_et(10, 0, 1, day=D1), 1, 1.0, 1),
+                         T(_et(10, 0, 1, day=D2), 1 + 1, 1.0, 1)])
+    assert store.live_days() == [D1, D2]
+    store.delete_live_day(D1)
+    assert store.live_days() == [D2]
+    with closing(store._connect()) as c:
+        assert c.execute("SELECT COUNT(*) FROM ticks").fetchone()[0] == 1
+
+
+def test_rebuild_live_from_ticks(store):
+    store.insert_trades([T(_et(10, 0, 1), 1, 100.0, 10)])
+    with closing(store._connect()) as c, c:
+        c.execute("DELETE FROM live_1m")
+    assert store.rebuild_live(D_TODAY) == 1 and len(store.live_minutes("SPY", 0, 2**62)) == 1
+
+
+def test_delete_symbol_clears_live_tables(store):
+    store.insert_trades([T(_et(10, 0, 1), 1, 100.0, 10)])
+    store.delete_symbol("SPY")
+    assert store.live_minutes("SPY", 0, 2**62) == [] and store.live_days() == []

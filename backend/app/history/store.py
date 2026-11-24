@@ -8,8 +8,10 @@ import os
 import sqlite3
 import threading
 from contextlib import closing
+from datetime import date, datetime, time as dtime, timedelta
 
 from app.config import get_settings
+from app.history.live_bars import ET, Trade, minute_of
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS bars_1m(
@@ -20,7 +22,42 @@ CREATE TABLE IF NOT EXISTS bars_1d(
     volume REAL, PRIMARY KEY(symbol, session)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS sync_state(
     symbol TEXT PRIMARY KEY, status TEXT, note TEXT, last_full_check TEXT);
+CREATE TABLE IF NOT EXISTS ticks(
+    symbol TEXT, ts_ms INTEGER, seq INTEGER, minute INTEGER, price REAL, size REAL,
+    valid INTEGER, PRIMARY KEY(symbol, seq)) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS ticks_symbol_minute ON ticks(symbol, minute);
+CREATE TABLE IF NOT EXISTS live_1m(
+    symbol TEXT, ts INTEGER, open REAL, high REAL, low REAL, close REAL, volume REAL,
+    trades INTEGER, PRIMARY KEY(symbol, ts)) WITHOUT ROWID;
 """
+# Recompute live_1m rows from ticks. OHLC come from a minute's valid=1 trades when it has
+# any, else from all its trades (first/last by ts_ms, seq); volume/trades cover ALL trades.
+# {where} filters ticks; it must only reference symbol/minute.
+_LIVE_RECOMPUTE = """
+INSERT OR REPLACE INTO live_1m
+WITH base AS (
+    SELECT symbol, minute, ts_ms, seq, price, valid,
+           SUM(size) OVER w AS vol, COUNT(*) OVER w AS n, MAX(valid) OVER w AS anyv
+    FROM ticks WHERE {where}
+    WINDOW w AS (PARTITION BY symbol, minute)),
+pr AS (
+    SELECT *,
+           ROW_NUMBER() OVER (PARTITION BY symbol, minute ORDER BY ts_ms, seq) AS rn_a,
+           ROW_NUMBER() OVER (PARTITION BY symbol, minute ORDER BY ts_ms DESC, seq DESC) AS rn_d
+    FROM base WHERE valid = 1 OR anyv = 0)
+SELECT symbol, minute,
+       MAX(CASE WHEN rn_a = 1 THEN price END), MAX(price), MIN(price),
+       MAX(CASE WHEN rn_d = 1 THEN price END), MAX(vol), MAX(n)
+FROM pr GROUP BY symbol, minute
+"""
+
+
+def _day_range(day: date) -> tuple[int, int]:
+    """[ET midnight of day, ET midnight of the next day) in epoch ms (DST-safe)."""
+    lo = datetime.combine(day, dtime(0), tzinfo=ET)
+    hi = datetime.combine(day + timedelta(days=1), dtime(0), tzinfo=ET)
+    return int(lo.timestamp()) * 1000, int(hi.timestamp()) * 1000
+
 _STATE_FIELDS = ("status", "note", "last_full_check")
 
 
@@ -98,8 +135,51 @@ class HistoryStore:
 
     def delete_symbol(self, symbol: str) -> None:
         with closing(self._connect()) as c, c:
-            for t in ("bars_1m", "bars_1d", "sync_state"):
+            for t in ("bars_1m", "bars_1d", "sync_state", "ticks", "live_1m"):
                 c.execute(f"DELETE FROM {t} WHERE symbol=?", (symbol,))
+
+    def insert_trades(self, trades: list[Trade]) -> set[tuple[str, int]]:
+        """Store trades (duplicates ignored) and recompute every touched live minute from
+        ``ticks``, all in one transaction. Returns the touched (symbol, minute) pairs."""
+        rows = [(t.symbol, t.ts_ms, t.seq, minute_of(t.ts_ms), t.price, t.size,
+                 1 if t.valid else 0) for t in trades]
+        touched = {(r[0], r[3]) for r in rows}
+        if not rows:
+            return touched
+        with closing(self._connect()) as c, c:
+            c.executemany("INSERT OR IGNORE INTO ticks VALUES (?,?,?,?,?,?,?)", rows)
+            for symbol, minute in touched:
+                c.execute(_LIVE_RECOMPUTE.format(where="symbol = ? AND minute = ?"),
+                          (symbol, minute))
+        return touched
+
+    def live_minutes(self, symbol: str, start_ms: int, end_ms: int) -> list[dict]:
+        with closing(self._connect()) as c:
+            cur = c.execute(
+                "SELECT ts, open, high, low, close, volume FROM live_1m "
+                "WHERE symbol=? AND ts>=? AND ts<? ORDER BY ts",
+                (symbol, start_ms, end_ms))
+            return [_row(r) for r in cur]
+
+    def rebuild_live(self, day: date) -> int:
+        lo, hi = _day_range(day)
+        with closing(self._connect()) as c, c:
+            c.execute("DELETE FROM live_1m WHERE ts>=? AND ts<?", (lo, hi))
+            c.execute(_LIVE_RECOMPUTE.format(where="minute >= ? AND minute < ?"), (lo, hi))
+            return c.execute("SELECT COUNT(*) FROM live_1m WHERE ts>=? AND ts<?",
+                             (lo, hi)).fetchone()[0]
+
+    def live_days(self) -> list[date]:
+        with closing(self._connect()) as c:
+            mins = c.execute("SELECT DISTINCT ts FROM live_1m UNION "
+                             "SELECT DISTINCT minute FROM ticks").fetchall()
+        return sorted({datetime.fromtimestamp(m[0] / 1000, ET).date() for m in mins})
+
+    def delete_live_day(self, day: date) -> None:
+        lo, hi = _day_range(day)
+        with closing(self._connect()) as c, c:
+            c.execute("DELETE FROM ticks WHERE minute>=? AND minute<?", (lo, hi))
+            c.execute("DELETE FROM live_1m WHERE ts>=? AND ts<?", (lo, hi))
 
     def get_state(self, symbol: str) -> dict | None:
         with closing(self._connect()) as c:
