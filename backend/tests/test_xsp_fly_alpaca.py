@@ -7,7 +7,6 @@ Run: DATABASE_URL=sqlite+aiosqlite:///./_t_xspa.db ../.venv/bin/python -m pytest
 from __future__ import annotations
 
 import asyncio
-import itertools
 from dataclasses import replace
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -23,125 +22,18 @@ from app.strategies.xsp_iron_fly import logic as L
 from app.strategies.xsp_iron_fly import store
 from app.strategies.xsp_iron_fly.alpaca_executor import AlpacaFlyExecutor, occ
 from tests.test_xsp_fly_sim import D, P, FakeFeed, SimClock, at, flat, make, ramp
+from tests import xsp_fakes
+from tests.xsp_fakes import FakeAlpaca
 
 ET = ZoneInfo("America/New_York")
 KEY = "xsp_iron_fly"
 PA = replace(P, mode="alpaca_paper")
 
 
-class FakeAlpaca:
-    """Port double. Orders fill against the feed's quotes when marketable, at the touch
-    (combo legs: shorts at the bid, wings at the ask). Knobs: ``reject`` (submit
-    refused), ``fill_cap`` (max qty per order), ``open_polls`` (polls an order stays
-    open before it can fill), ``fill_on_cancel`` (a resting order fills during the
-    cancel), ``unknown`` (submit result lost; the order did land)."""
-
-    def __init__(self, feed) -> None:
-        self.feed = feed
-        self.orders: dict[str, dict] = {}
-        self.bodies: list[dict] = []
-        self.ids = itertools.count(1)
-        self.reject: str | None = None
-        self.fill_cap: int | None = None
-        self.open_polls = 0
-        self.fill_on_cancel = False
-        self.unknown = False
-        self.fill_once = False                   # after a partial, nothing more fills
-        self.unreadable_after = None             # order ids >= this read back as None
-        self.extra: dict[str, int] = {}          # fills Alpaca has that the app didn't see
-
-    def _touch(self, occ_sym):
-        for leg in self._legs.values():
-            if occ(leg) == occ_sym:
-                q = self.feed.quote(leg["symbol"])
-                return q.bid, q.ask
-        raise KeyError(occ_sym)
-
-    def bind(self, legs):
-        self._legs = {l["symbol"]: l for l in legs}
-
-    async def submit(self, body, intent, qty):
-        self.bodies.append(body)
-        if self.reject:
-            return {"transmitted": False, "detail": f"rejected by Alpaca: {self.reject}"}
-        oid = f"o{next(self.ids)}"
-        self.orders[oid] = {"id": oid, "status": "new", "filled_qty": "0", "body": body,
-                            "polls": 0, "client_order_id": f"tsys-{oid}", "legs": []}
-        if self.unknown:
-            return {"transmitted": False, "unknown_state": True, "ref": oid}
-        return {"transmitted": True, "order_id": oid, "ref": oid}
-
-    async def find_by_ref(self, ref):
-        return self.orders.get(ref)
-
-    def _try_fill(self, o):
-        b = o["body"]
-        if self.fill_once and int(o["filled_qty"]):
-            return
-        want = int(b["qty"]) - int(o["filled_qty"])
-        n = min(want, self.fill_cap) if self.fill_cap else want
-        if b.get("order_class") == "mleg":
-            touches = {x["symbol"]: self._touch(x["symbol"]) for x in b["legs"]}
-            nat = (sum(touches[x["symbol"]][0] for x in b["legs"] if x["side"] == "sell")
-                   - sum(touches[x["symbol"]][1] for x in b["legs"] if x["side"] == "buy"))
-            if nat + 1e-9 < -float(b["limit_price"]):
-                return
-            o["legs"] = [{"symbol": x["symbol"], "side": x["side"],
-                          "filled_qty": str(int(o["filled_qty"]) + n),
-                          "filled_avg_price": str(touches[x["symbol"]][0 if x["side"] == "sell"
-                                                                       else 1])}
-                         for x in b["legs"]]
-        else:
-            bid, ask = self._touch(b["symbol"])
-            lim = float(b["limit_price"])
-            if b["side"] == "buy" and lim + 1e-9 < ask or b["side"] == "sell" and lim > bid:
-                return
-            o["filled_avg_price"] = str(ask if b["side"] == "buy" else bid)
-        o["filled_qty"] = str(int(o["filled_qty"]) + n)
-        o["status"] = "filled" if int(o["filled_qty"]) >= int(b["qty"]) else "partially_filled"
-
-    async def get_order(self, oid):
-        if self.unreadable_after and int(oid[1:]) >= self.unreadable_after:
-            return None
-        o = self.orders[oid]
-        if o["status"] in ("new", "partially_filled"):
-            o["polls"] += 1
-            if o["polls"] > self.open_polls:
-                self._try_fill(o)
-        return {k: v for k, v in o.items() if k != "body"}
-
-    async def cancel(self, oid):
-        o = self.orders[oid]
-        if o["status"] in ("new", "partially_filled"):
-            if self.fill_on_cancel:
-                cap, self.fill_cap = self.fill_cap, None
-                self._try_fill(o)
-                self.fill_cap = cap
-            if o["status"] != "filled":
-                o["status"] = "canceled"
-
-    async def positions(self, *, include_expired=False):
-        net = dict(self.extra)
-        for o in self.orders.values():
-            b = o["body"]
-            if b.get("order_class") == "mleg":
-                for x in o["legs"]:
-                    s = 1 if x["side"] == "buy" else -1
-                    net[x["symbol"]] = net.get(x["symbol"], 0) + s * int(x["filled_qty"])
-            elif int(o["filled_qty"]):
-                s = 1 if b["side"] == "buy" else -1
-                net[b["symbol"]] = net.get(b["symbol"], 0) + s * int(o["filled_qty"])
-        return {k: v for k, v in net.items() if v}
-
-    async def open_orders(self):
-        return [{"id": o["id"], "symbol": o["body"].get("symbol"),
-                 "legs": o["body"].get("legs") or []}
-                for o in self.orders.values() if o["status"] in ("new", "partially_filled")]
-
-
 @pytest_asyncio.fixture(autouse=True)
 async def _db():
     await init_db()
+    xsp_fakes.reset()
     async with session_scope() as s:
         await s.execute(delete(XspFlySession))
         await s.execute(delete(TradeRecord).where(TradeRecord.strategy_key == KEY))
@@ -243,7 +135,7 @@ async def test_fill_that_lands_during_the_cancel_is_counted():
 
 
 @pytest.mark.asyncio
-async def test_stop_close_is_single_leg_buy_to_close_on_a_nickel():
+async def test_stop_close_is_single_leg_buy_to_close_on_the_tick():
     clock = SimClock(at(D, 9, 45))
     feed = FakeFeed(clock, flat(600.0))
     legs = await _legs(clock, feed)
@@ -255,9 +147,17 @@ async def test_stop_close_is_single_leg_buy_to_close_on_a_nickel():
     b = alp.bodies[0]
     assert (b["side"], b["position_intent"], b["type"], b["time_in_force"]) == (
         "buy", "buy_to_close", "limit", "day")
-    assert round(float(b["limit_price"]) * 100) % 5 == 0          # nickel, rounded up
-    assert float(b["limit_price"]) >= q.ask + 0.03 - 1e-9
+    lim = float(b["limit_price"])
+    assert lim >= q.ask + 0.03 - 1e-9                                 # rounded up
+    if lim >= 3.0:
+        assert round(lim * 100) % 5 == 0                              # nickel from $3
     assert res.status == "filled" and res.prices["short_call"] == pytest.approx(q.ask)
+
+
+def test_option_tick_penny_under_3_nickel_above():
+    from app.strategies.xsp_iron_fly.alpaca_executor import option_tick
+    assert option_tick(0.03) == 0.01 and option_tick(2.99) == 0.01
+    assert option_tick(3.00) == 0.05 and option_tick(7.2) == 0.05
 
 
 @pytest.mark.asyncio
@@ -412,27 +312,44 @@ async def test_rejected_entry_skips_the_day_with_nothing_open():
 
 
 @pytest.mark.asyncio
-async def test_sim_opened_session_is_not_managed_in_alpaca_mode():
-    clock = SimClock(at(D, 9, 0))
+async def test_legacy_sim_session_is_never_managed_by_the_alpaca_executor():
+    """An open fly recorded by the old simulator (mode "sim") must not get orders sent
+    to Alpaca: it is left untouched with an alert."""
+    clock = SimClock(at(D, 11, 0))
     feed = FakeFeed(clock, flat(600.0))
-    await _crash_at(make(clock, feed).run_session(D), clock, at(D, 11, 0))   # sim mode
-    feed2 = FakeFeed(clock, flat(600.0))
-    await feed2.contracts("XSP", D)
-    alp = await _bound_fake(clock, feed2)
-    s = await _runner(clock, feed2, alp).run_session(D)
+    legs = await _legs(clock, feed)
+    for l in legs:
+        l.update(qty=1, status="open", entry_price=1.0)
+    await store.create_session(KEY, D, status="open", mode="sim", legs=legs,
+                               close_time=at(D, 16, 0), contracts=1)
+    alp = FakeAlpaca(feed)
+    alerts = []
+    s = await _runner(clock, feed, alp, alerts=alerts).run_session(D)
     assert s["status"] == "mode_mismatch" and alp.bodies == []
+    assert any(k == "xsp_fly_mode_mismatch" for k, _ in alerts)
     assert (await store.get_session(KEY, D))["status"] == "open"           # untouched
 
 
 # --- ledger expiry --------------------------------------------------------------
-def test_option_expired_rule():
-    t = lambda d, hh, mm: datetime.combine(d, time(hh, mm), tzinfo=ET)  # noqa: E731
+def test_option_expired_rule_cash_settled_roots_only():
+    from datetime import date as _d
+    t = lambda d, hh, mm, ss=0: datetime.combine(d, time(hh, mm, ss), tzinfo=ET)  # noqa: E731
     sym = "XSP261123C00600000"
-    assert not ledger.option_expired(sym, t(D, 15, 59))
-    assert ledger.option_expired(sym, t(D, 16, 0))
+    assert not ledger.option_expired(sym, t(D, 15, 59, 59))
+    assert ledger.option_expired(sym, t(D, 16, 0, 0))
     assert ledger.option_expired(sym, t(D + timedelta(days=1), 9, 0))
+    assert ledger.option_expired("SPXW261123P05000000", t(D, 16, 1))
+    # 23:30 ET is 04:30 UTC the next day: the ET date still decides.
+    from datetime import timezone as _tz
+    late = t(D - timedelta(days=1), 23, 30).astimezone(_tz.utc)
+    assert not ledger.option_expired(sym, late)
+    # Physically settled equity/ETF options are never dropped (assignment into shares).
+    assert not ledger.option_expired("QQQ261123P00590000", t(D + timedelta(days=3), 9, 0))
     assert not ledger.option_expired("SPY", t(D + timedelta(days=9), 9, 0))
-    assert not ledger.option_expired("QQQ261124P00590000", t(D, 16, 30))
+    # Half day (2026-11-27 closes 13:00 ET).
+    hd = _d(2026, 11, 27)
+    assert not ledger.option_expired("XSP261127C00600000", t(hd, 12, 59))
+    assert ledger.option_expired("XSP261127C00600000", t(hd, 13, 0))
 
 
 @pytest.mark.asyncio
@@ -550,5 +467,96 @@ async def test_boot_reconciliation_with_real_occ_legs_before_and_after_the_close
         monkeypatch.setattr(ledger, "_now",
                             lambda hh=hh, mm=mm: _dt.combine(D, time(hh, mm), tzinfo=ET))
         assert await recovery.run_recovery() is True, (hh, mm)
+    # After the strategy books the settlement (leg TradeRecords closed): still clean,
+    # the same evening and the next morning.
+    async with session_scope() as db:
+        for tr in (await db.execute(select(TradeRecord).where(
+                TradeRecord.strategy_key == KEY))).scalars().all():
+            tr.status = "closed"
+    for day, hh in ((D, 16), (D + timedelta(days=1), 9)):
+        monkeypatch.setattr(ledger, "_now",
+                            lambda day=day, hh=hh: _dt.combine(day, time(hh, 30), tzinfo=ET))
+        assert await recovery.run_recovery() is True, (day, hh)
     from app.engine.safe_mode import is_safe_mode
     assert not await is_safe_mode()
+
+
+
+# --- shared order path ------------------------------------------------------------
+@pytest.fixture
+def routing_on(monkeypatch):
+    from app.broker import orders
+    from app.config import get_settings
+    st = get_settings()
+    monkeypatch.setattr(st, "apca_api_key_id", "k")
+    monkeypatch.setattr(st, "apca_api_secret_key", "x")
+    monkeypatch.setattr(st, "apca_api_base_url", "https://paper-api.alpaca.markets")
+    monkeypatch.setattr(st, "enable_live_orders", True)
+    sent = []
+
+    async def fake_transmit(body, ref, what):
+        sent.append(body)
+        return {"transmitted": True, "order_id": "id1", "ref": ref}
+
+    async def not_safe():
+        return False
+
+    async def flat_ledger(**kw):
+        return {}
+    monkeypatch.setattr(orders, "_transmit", fake_transmit)
+    monkeypatch.setattr(orders, "is_safe_mode", not_safe)
+    monkeypatch.setattr(ledger, "app_net_positions", flat_ledger)
+    return sent
+
+
+@pytest.mark.asyncio
+async def test_port_sends_the_fly_through_submit_combo_order_with_a_negative_credit(routing_on):
+    """Pins the credit sign confirmed on this paper account by the 2026-11-24 test order
+    (ef205d21...): Alpaca stored limit_price "-9.5" for a SELL fly and it rested
+    unfilled, i.e. a NEGATIVE limit is the least credit accepted."""
+    from app.strategies.xsp_iron_fly.alpaca_executor import AlpacaPort
+    body = {"order_class": "mleg", "qty": "1", "type": "limit", "time_in_force": "day",
+            "limit_price": "-9.50",
+            "legs": [{"symbol": "XSP261124C00715000", "side": "sell"},
+                     {"symbol": "XSP261124P00715000", "side": "sell"},
+                     {"symbol": "XSP261124C00725000", "side": "buy"},
+                     {"symbol": "XSP261124P00705000", "side": "buy"}]}
+    out = await AlpacaPort(KEY).submit(body, "fly_open", 1)
+    assert out["transmitted"] and out["order_id"] == "id1"
+    (sent,) = routing_on
+    assert sent["order_class"] == "mleg" and sent["limit_price"] == "-9.5"
+    assert [(x["symbol"], x["side"], x["position_intent"]) for x in sent["legs"]] == [
+        ("XSP261124C00715000", "sell", "sell_to_open"),
+        ("XSP261124P00715000", "sell", "sell_to_open"),
+        ("XSP261124C00725000", "buy", "buy_to_open"),
+        ("XSP261124P00705000", "buy", "buy_to_open")]
+
+
+@pytest.mark.asyncio
+async def test_single_leg_helper_is_a_tagged_limit_and_closes_in_safe_mode(routing_on,
+                                                                          monkeypatch):
+    from app.broker import orders
+    out = await orders.submit_option_order("XSP261124C00715000", "BUY", 1, limit_price=3.456,
+                                           position_intent="buy_to_close",
+                                           strategy_key=KEY, reason="stop")
+    assert out["transmitted"]
+    b = routing_on[-1]
+    assert (b["symbol"], b["side"], b["type"], b["limit_price"], b["time_in_force"],
+            b["position_intent"]) == ("XSP261124C00715000", "buy", "limit", "3.46", "day",
+                                      "buy_to_close")
+
+    async def safe():
+        return True
+    monkeypatch.setattr(orders, "is_safe_mode", safe)
+    assert (await orders.submit_option_order(
+        "XSP261124C00715000", "BUY", 1, limit_price=3.5,
+        position_intent="buy_to_close"))["transmitted"]                 # a close passes
+    blocked = await orders.submit_option_order("XSP261124C00715000", "SELL", 1,
+                                               limit_price=3.5,
+                                               position_intent="sell_to_open")
+    assert not blocked["transmitted"] and blocked.get("safe_mode")      # an open doesn't
+    from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "enable_live_orders", False)
+    off = await orders.submit_option_order("XSP261124C00715000", "BUY", 1, limit_price=3.5,
+                                           position_intent="buy_to_close")
+    assert not off["transmitted"] and "ENABLE_LIVE_ORDERS" in off["detail"]

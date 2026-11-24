@@ -314,6 +314,52 @@ def occ_symbol_for(underlying: str, expiry, strike: float, right: str) -> str:
     return f"{underlying.upper().strip()}{ymd}{right.upper()}{k}"
 
 
+def parse_occ(symbol: str) -> tuple[str, "date", str, float] | None:
+    """(root, expiry, right, strike) from an unpadded/padded OCC symbol, else None."""
+    from datetime import date as _date
+    m = re.match(r"^([A-Z]{1,6})(\d{2})(\d{2})(\d{2})([CP])(\d{8})$", ac.occ_unpadded(symbol))
+    if not m:
+        return None
+    root, yy, mm, dd, right, k = m.groups()
+    return root, _date(2000 + int(yy), int(mm), int(dd)), right, int(k) / 1000.0
+
+
+async def submit_option_order(symbol: str, side: str, quantity: int, *, limit_price: float,
+                              position_intent: str, strategy_key: str = "",
+                              reason: str = "") -> dict:
+    """Single-leg options LIMIT DAY order (e.g. a stop's buy_to_close), on the same path as
+    every other order: ENABLE_LIVE_ORDERS gate -> paper lock -> durable intent row ->
+    tagged POST. SAFE_MODE blocks OPENING orders only: a closing order reduces risk (the
+    kill switch's flatten closes in SAFE_MODE too), and blocking a stop would leave a
+    short unprotected. Returns the _transmit dict (order_id, ref) or transmitted False."""
+    q = int(quantity)
+    if q < 1:
+        return {"transmitted": False, "detail": "quantity < 1"}
+    side = side.lower()
+    if side not in ("buy", "sell") or position_intent not in (
+            "buy_to_open", "buy_to_close", "sell_to_open", "sell_to_close") \
+            or not position_intent.startswith(side):
+        return {"transmitted": False, "detail": f"bad side/intent {side}/{position_intent}"}
+    if position_intent.endswith("_open") and await is_safe_mode():
+        return {"transmitted": False, "safe_mode": True,
+                "detail": f"blocked: SAFE_MODE ({symbol} {position_intent})"}
+    if not get_settings().enable_live_orders:
+        return {"transmitted": False, "detail": "blocked: order routing is off "
+                                                "(ENABLE_LIVE_ORDERS)"}
+    if (blocked := _paper_lock_blocked()) is not None:
+        return blocked
+    from app.engine.order_store import record_intent
+    sym = ac.occ_unpadded(symbol)
+    body = {"symbol": sym, "qty": str(q), "side": side, "type": "limit",
+            "limit_price": _px(limit_price), "time_in_force": "day",
+            "position_intent": position_intent}
+    ref = await record_intent(strategy_key, sym[:16], position_intent, q)
+    out = await _transmit(body, ref, f"OPTION {position_intent} {sym}")
+    logger.warning("[ALPACA PAPER] %s %s x%d @ %s (%s) -> %s", position_intent, sym, q,
+                   body["limit_price"], reason, out.get("detail") or out.get("order_id"))
+    return out
+
+
 async def submit_combo_order(underlying: str, legs: list[dict], *, net_price: float | None = None,
                              action: str = "BUY", reason: str = "", quantity: int = 1) -> dict:
     """Multi-leg options order (Alpaca `mleg`). Each leg = {expiry(date), strike, right,

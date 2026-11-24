@@ -82,14 +82,16 @@ class IronFlyRunner:
                 and int(l.get("qty") or 0) > int(l.get("exit_qty") or 0)]
 
     def _record_fill(self, s: dict, leg: dict, side: str, qty: int, price: float,
-                     mid: float | None, kind: str, fee: bool = True) -> None:
+                     mid: float | None, kind: str, fee: bool = True,
+                     order_id: str = "") -> None:
         slip = None
         if mid is not None:
             slip = round((price - mid) if side == "BUY" else (mid - price), 4)
         s["fills"].append({"ts": _iso(self.clock.now()), "role": leg["role"],
                            "symbol": leg["symbol"], "side": side, "qty": qty,
                            "price": price, "mid": mid, "slippage_vs_mid": slip,
-                           "kind": kind, "fee": self.p.fees_per_contract * qty if fee else 0.0})
+                           "kind": kind, "fee": self.p.fees_per_contract * qty if fee else 0.0,
+                           "order_id": order_id or None})
         if fee:
             s["fees"] = round(float(s.get("fees") or 0) + self.p.fees_per_contract * qty, 4)
 
@@ -118,9 +120,7 @@ class IronFlyRunner:
             await self._log(f"invalid parameters, not running: {errs}", level="error")
             return
         await self._log(f"XSP iron fly worker started (mode={self.p.mode}, executor="
-                        f"{self.ex.name}; " + ("fills are simulated against live NBBO)"
-                                               if self.ex.name == "sim" else
-                                               "REAL Alpaca paper orders and fills)"),
+                        f"{self.ex.name}; real Alpaca paper orders and fills)",
                         category="action", data={"params": _params_dict(self.p)})
         try:
             while True:
@@ -259,8 +259,8 @@ class IronFlyRunner:
                         "not managed further today", level="warning")
 
     async def _resume_entry(self, s: dict) -> dict:
-        """A restart found the day mid-entry. Simulated orders do not survive a restart,
-        but every fill was saved as it happened, so filled legs are positions. Before the
+        """A restart found the day mid-entry. Every fill was saved as it happened (and the
+        restart check has already confirmed Alpaca agrees), so filled legs are positions. Before the
         close: unwind whatever does not pair up (excess body first) and manage the
         matched fly. At or after the close: open the filled legs as they are so they
         settle at the close print. Never re-enters."""
@@ -268,8 +268,8 @@ class IronFlyRunner:
         legs = s.get("legs") or []
         if not any(int(l.get("qty") or 0) for l in legs):
             s.update(status="failed", closed_time=self.clock.now(),
-                     reason="interrupted during entry before any fill (simulated orders "
-                            "do not survive a restart); not re-entering today")
+                     reason="interrupted during entry before any fill (any working order was "
+                            "cancelled on restart); not re-entering today")
             await store.save(s)
             await self._log(f"{d}: {s['reason']}", level="warning")
             return s
@@ -538,7 +538,8 @@ class IronFlyRunner:
                     for l in s["legs"]:
                         px, m = res.prices[l["role"]], res.mids.get(l["role"])
                         self._add_entry(l, res.filled_qty, px, m)
-                        self._record_fill(s, l, l["action"], res.filled_qty, px, m, "entry")
+                        self._record_fill(s, l, l["action"], res.filled_qty, px, m, "entry",
+                                          order_id=res.order_id)
                     filled += res.filled_qty
                     await store.save(s)
                     await self._log(f"combo fill {res.filled_qty}/{target} at limit credit "
@@ -572,7 +573,8 @@ class IronFlyRunner:
                     if res.filled_qty:
                         px, m = res.prices[leg["role"]], res.mids.get(leg["role"])
                         self._add_entry(leg, res.filled_qty, px, m)
-                        self._record_fill(s, leg, side, res.filled_qty, px, m, "entry")
+                        self._record_fill(s, leg, side, res.filled_qty, px, m, "entry",
+                                          order_id=res.order_id)
                         got += res.filled_qty
                         await store.save(s)     # a restart must see every fill
             if got >= qty:
@@ -673,7 +675,8 @@ class IronFlyRunner:
                     break
                 if res.filled_qty:
                     px, m = res.prices[leg["role"]], res.mids.get(leg["role"])
-                    self._record_fill(s, leg, side, res.filled_qty, px, m, kind)
+                    self._record_fill(s, leg, side, res.filled_qty, px, m, kind,
+                                      order_id=res.order_id)
                     got += res.filled_qty
                     notional += px * res.filled_qty
                     continue

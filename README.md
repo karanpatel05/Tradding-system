@@ -187,37 +187,40 @@ Unlike the runner it has **no ML model**: every spread is held to the 15:50 flat
 - Sessions: `GET /api/strategies/qqq_credit_spread/sessions`. Settings: `QQQ_SPREAD_*` in
   `backend/app/config.py` (grace, re-price cadence, close times, sizing).
 
-**XSP 0DTE Iron Fly** (`xsp_iron_fly`) runs **in this app**, on simulated fills by default
-or on the Alpaca paper account. It sells a 10-point-wide XSP iron fly at 09:45 ET, gives
-each short leg its own 1.5x stop, and holds the rest to the 4:00 pm cash settlement. Code:
+**XSP 0DTE Iron Fly** (`xsp_iron_fly`) trades **on the Alpaca paper account** from this app,
+with real orders and fills; there is no simulated mode. It sells a 10-point-wide XSP iron fly
+at 09:45 ET, gives each short leg its own 1.5x stop, and holds the rest to the 4:00 pm cash
+settlement. Quotes for decisions come from Tastytrade, which never receives orders. Code:
 `backend/app/strategies/xsp_iron_fly/`.
 
-- **Modes (`XSP_FLY_MODE`).**
-  - `sim` (default): orders fill in a simulator against live Tastytrade NBBO. Nothing is
-    sent to any broker, and `ENABLE_LIVE_ORDERS` doesn't apply.
-  - `alpaca_paper`: real orders on the Alpaca paper account through the app's tagged
-    order path. Activation needs `ENABLE_LIVE_ORDERS` on, Alpaca keys, and the paper host.
-    - **Entry** is one 4-leg `mleg` DAY limit with a negative `limit_price` (the least
-      credit accepted).
-    - **Stops** are single-leg `buy_to_close` limits, rounded to $0.05. Wings are never
-      stopped.
-    - **Fills.** Index options don't accept IOC, so each order is polled for a few
-      seconds, then cancelled. Fill prices are Alpaca's own per-leg averages.
-    - **Fail-safe.** If an order's state can't be read, SAFE_MODE trips and the day is
-      left to a human.
-    - **Restart.** The app cancels any orders a crash left working on the day's legs.
-      Then it compares Alpaca's app-owned fills with the session; a mismatch trips
-      SAFE_MODE.
-    - **End of day.** Reconciliation adds the same Alpaca check. Alpaca posts the cash
-      settlement around 21:00 ET (`OPCSH`/`OPEXP`, visible the next day on paper).
-  - `live` is refused: this app never sends real-money orders, and never sends any
-    orders to Tastytrade.
-  - A fly is only ever managed in the mode that opened it. After a mode switch, an open
-    fly is left alone, with an alert.
-- **Expired options in the ledger.** The app's Alpaca ledger drops option contracts past
-  their expiry (16:00 ET on the expiry day). A leg held to cash settlement has no closing
-  order, so without this, startup reconciliation and the kill switch would see it as
-  still held.
+- **Orders.** Everything goes through the app's shared, tagged order path:
+  `orders.submit_combo_order` for the 4-leg entry, `orders.submit_option_order` for single
+  legs. Activation needs `ENABLE_LIVE_ORDERS` on, Alpaca keys, and the paper host.
+  `XSP_FLY_MODE` defaults to `alpaca_paper`; `live` is refused.
+  - **Entry** is one `mleg` DAY limit with a negative `limit_price`, which is the least
+    credit accepted. A 2026-11-24 test order on this paper account confirmed that
+    convention for XSP: Alpaca stored `-9.5`, and the order rested unfilled.
+  - **Stops** are single-leg `buy_to_close` limits, on the option's price increment
+    ($0.01 under $3, $0.05 from $3). Wings are never stopped. A rejected stop close
+    alerts once and retries every tick. In SAFE_MODE, opening orders are blocked but
+    closing orders still go out.
+  - **Fills.** Index options don't accept IOC, so each order is polled for a few
+    seconds, then cancelled and re-read. Fill prices are Alpaca's own per-leg averages,
+    and each fill records its Alpaca order id.
+  - **Fail-safe.** If an order can't be read, filled without prices, or is still working
+    after its cancel, SAFE_MODE trips and the day is left to a human.
+  - **Restart.** The app cancels orders a crash left working on the day's legs, then
+    compares Alpaca's app-owned fills with the session. A mismatch trips SAFE_MODE. It
+    never auto-applies unseen fills.
+  - **End of day.** Reconciliation adds the same Alpaca check. Alpaca posts the cash
+    settlement around 21:00 ET (`OPCSH`/`OPEXP`, visible the next day on paper).
+  - **Mode guard.** A fly recorded under another mode (e.g. the old simulator) is never
+    managed. It's left alone, with an alert.
+- **Expired options in the ledger.** The app's Alpaca ledger, and the local side of
+  startup reconciliation, drop **cash-settled index** option contracts (XSP, SPX/SPXW, NDX,
+  RUT, VIX…) past their expiry: the session close on the expiry day, 13:00 ET on half
+  days. A leg held to cash settlement has no closing order. Physically settled
+  equity/ETF options (e.g. QQQ) are never dropped, because they turn into shares.
 - **Sizing.** 1 fly per $5,000 of the strategy's own equity: `starting_equity` ($5,000)
   plus the realized P&L of all its finished sessions, net of fees. It never sizes below 1
   fly while equity still covers one fly's max loss. There is no contract cap. The
@@ -237,8 +240,7 @@ each short leg its own 1.5x stop, and holds the rest to the 4:00 pm cash settlem
 - **Daily-loss breach.** A breach sets a persisted halt that blocks later entries until it's
   cleared with `POST /api/strategies/xsp_iron_fly/clear-halt`.
   `GET /api/strategies/xsp_iron_fly/sessions` shows recent days: legs, stops, P&L and the
-  end-of-day reconciliation. In sim mode, reconciliation checks the app's own records; in
-  `alpaca_paper` mode, it also checks Alpaca's fills.
+  end-of-day reconciliation, including the check against Alpaca's fills.
 
 ## Run the full stack (Docker, hosted)
 

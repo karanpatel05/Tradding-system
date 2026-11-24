@@ -92,15 +92,15 @@ def test_kill_switch_keeps_strategy_stopped_after_restart(client, monkeypatch):
     assert KEY not in started
 
 
-def test_build_runner_wires_sim_executor_and_live_feed():
+def test_build_runner_wires_alpaca_executor_and_live_feed():
     from app.strategies.xsp_iron_fly import XspIronFlyStrategy
-    from app.strategies.xsp_iron_fly.executor import SimExecutor
+    from app.strategies.xsp_iron_fly.alpaca_executor import AlpacaFlyExecutor
     from app.strategies.xsp_iron_fly.feed import TastytradeFeed
     from app.strategies.xsp_iron_fly.params import IronFlyParams
     from app.strategies.xsp_iron_fly.runner import RealClock
     r = XspIronFlyStrategy(IronFlyParams()).build_runner()
-    assert isinstance(r.ex, SimExecutor) and isinstance(r.feed, TastytradeFeed)
-    assert isinstance(r.clock, RealClock) and r.p.mode == "sim"
+    assert isinstance(r.ex, AlpacaFlyExecutor) and isinstance(r.feed, TastytradeFeed)
+    assert isinstance(r.clock, RealClock) and r.p.mode == "alpaca_paper"
 
 
 def test_tastytrade_feed_keeps_pm_xsp_contracts_only(monkeypatch):

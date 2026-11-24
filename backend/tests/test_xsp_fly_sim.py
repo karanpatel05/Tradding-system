@@ -1,5 +1,6 @@
 """XSP iron fly runner on simulated time: a fake feed (Black-Scholes mids, scripted spot
-paths, per-symbol quote overrides) and the real SimExecutor, store and DB.
+paths, per-symbol quote overrides) and the real AlpacaFlyExecutor on a fake Alpaca
+(tests/xsp_fakes.py; one fake broker per test, shared across restarts), store and DB.
 
 These exercise the full live code path (entry, per-leg stops incl. gap-through,
 settlement, guards, breakers, restart/kill recovery, multi-session) without network.
@@ -24,7 +25,9 @@ from app.options.blackscholes import bs_price
 from app.strategies.xsp_iron_fly import calendar as cal
 from app.strategies.xsp_iron_fly import logic as L
 from app.strategies.xsp_iron_fly import store
-from app.strategies.xsp_iron_fly.executor import OrderResult, SimExecutor
+from app.strategies.xsp_iron_fly.executor import OrderResult
+from tests import xsp_fakes
+from tests.xsp_fakes import TestExec
 from app.strategies.xsp_iron_fly.feed import Contract, Quote, Spot
 from app.strategies.xsp_iron_fly.params import IronFlyParams
 from app.strategies.xsp_iron_fly.runner import IronFlyRunner, reconcile_session
@@ -146,17 +149,19 @@ def make(clock, feed, params=P, *, equity=5000.0, executor=None, alerts=None,
         if alerts is not None:
             alerts.append((kind, msg))
 
-    return IronFlyRunner(KEY, params, feed, executor or SimExecutor(feed, clock), clock,
+    return IronFlyRunner(KEY, params, feed, executor or TestExec(feed, clock), clock,
                          equity_fn=cap, safe_mode_fn=sm, alert_fn=alert)
 
 
 @pytest_asyncio.fixture(autouse=True)
 async def _db():
     await init_db()
+    xsp_fakes.reset()                    # a fresh fake Alpaca for every test
     async with session_scope() as s:
         await s.execute(delete(XspFlySession))
         await s.execute(delete(TradeRecord).where(TradeRecord.strategy_key == KEY))
-        await s.execute(delete(SystemFlag).where(SystemFlag.key == store.HALT_FLAG))
+        await s.execute(delete(SystemFlag).where(SystemFlag.key.in_((store.HALT_FLAG,
+                                                                     "safe_mode"))))
     yield
 
 
@@ -193,7 +198,7 @@ async def test_quiet_day_settles_for_most_of_the_credit():
     assert s["max_loss"] == pytest.approx((10 - s["net_credit"]) * 100, abs=0.01)
     assert s["reconciliation"]["ok"], s["reconciliation"]
     trs = await trades()
-    assert len(trs) == 4 and all(t.status == "closed" and not t.transmitted for t in trs)
+    assert len(trs) == 4 and all(t.status == "closed" and t.transmitted for t in trs)
     assert sum(t.pnl for t in trs) == pytest.approx(s["realized_pnl"], abs=0.02)
     # Entry filled at the natural (pessimistic) and slippage vs mid was logged per fill.
     assert all(f["slippage_vs_mid"] == pytest.approx(0.02) for f in entry_fills(s))
@@ -394,7 +399,7 @@ async def test_restart_mid_position_recovers_legs_and_stops():
 @pytest.mark.asyncio
 async def test_crash_during_entry_does_not_reenter():
     clock = SimClock(at(D, 10, 0))
-    await store.create_session(KEY, D, status="entering", mode="sim")
+    await store.create_session(KEY, D, status="entering", mode="alpaca_paper")
     s = await make(clock, FakeFeed(clock, flat())).run_session(D)
     assert s["status"] == "failed" and "interrupted during entry" in s["reason"]
     assert await trades() == []
@@ -471,7 +476,7 @@ async def test_combo_partial_fills_accumulate_to_target():
     feed = FakeFeed(clock, flat())
     params = P
     s = await make(clock, feed, params, equity=10_000,
-                   executor=SimExecutor(feed, clock, max_fill_qty=1)).run_session(D)
+                   executor=TestExec(feed, clock, max_fill_qty=1)).run_session(D)
     assert s["contracts"] == 2 and all(l["qty"] == 2 for l in s["legs"])
     assert len(entry_fills(s)) == 8
     assert s["reconciliation"]["ok"]
@@ -481,14 +486,14 @@ async def test_combo_partial_fills_accumulate_to_target():
 async def test_leg_in_buys_wings_before_body():
     clock = SimClock(at(D, 9, 0))
     feed = FakeFeed(clock, flat())
-    s = await make(clock, feed, executor=SimExecutor(feed, clock, supports_combo=False)).run_session(D)
+    s = await make(clock, feed, executor=TestExec(feed, clock, supports_combo=False)).run_session(D)
     order = [(f["role"], f["side"]) for f in entry_fills(s)]
     assert order[:2] == [("long_call", "BUY"), ("long_put", "BUY")]
     assert set(order[2:]) == {("short_call", "SELL"), ("short_put", "SELL")}
     assert s["status"] == "settled" and s["reconciliation"]["ok"]
 
 
-class _NoPutBody(SimExecutor):
+class _NoPutBody(TestExec):
     """The short put never fills: the leg-in must unwind everything else."""
 
     async def single(self, leg, side, qty, limit, **kw):
@@ -551,15 +556,22 @@ async def test_multi_session_paper_week_over_thanksgiving():
 
 
 # --- wiring ------------------------------------------------------------------------
-def test_registered_activatable_in_sim_and_refused_live():
+def test_registered_alpaca_only_and_refused_live(monkeypatch):
+    from app.config import get_settings
     from app.strategies import registry
     from app.strategies.xsp_iron_fly import XspIronFlyStrategy
+    st = get_settings()
+    monkeypatch.setattr(st, "apca_api_key_id", "k")
+    monkeypatch.setattr(st, "apca_api_secret_key", "x")
+    monkeypatch.setattr(st, "apca_api_base_url", "https://paper-api.alpaca.markets")
+    monkeypatch.setattr(st, "enable_live_orders", True)
     s = registry.get_strategy(KEY)
     assert isinstance(s, XspIronFlyStrategy) and s.ready and not s.external_runner
+    assert IronFlyParams().mode == "alpaca_paper"
     assert XspIronFlyStrategy(IronFlyParams()).activation_block_reason() is None
+    assert IronFlyParams(mode="sim").validate()            # there is no simulated mode
     reason = XspIronFlyStrategy(IronFlyParams(mode="live")).activation_block_reason()
     assert reason and "never sends orders to Tastytrade" in reason
-    assert len(registry.list_strategies()) == 5
 
 
 @pytest.mark.asyncio
@@ -591,7 +603,7 @@ def test_reconcile_flags_open_leg_and_unflat_ledger():
 
 
 # --- review fixes: stuck stop closes, stale quotes, interrupted entries, kill view ----
-class _StuckCallStop(SimExecutor):
+class _StuckCallStop(TestExec):
     """Nobody sells the short call back: its stop close can never fill."""
 
     async def single(self, leg, side, qty, limit, **kw):
@@ -617,18 +629,20 @@ async def test_unfilled_stop_close_does_not_blind_the_other_short():
 
 
 @pytest.mark.asyncio
-async def test_sim_executor_does_not_fill_a_stale_quote():
+async def test_executor_does_not_send_an_order_on_a_stale_quote():
     clock = SimClock(at(D, 10, 0))
     feed = FakeFeed(clock, flat())
     await feed.contracts("XSP", D)
     sym = feed.sym(D, "C", 600)
     feed.overrides[sym] = lambda t: (1.00, 1.04, at(D, 9, 59, 20))     # 40 s old
-    ex = SimExecutor(feed, clock)
-    one = {"role": "short_call", "symbol": sym}
+    ex = TestExec(feed, clock)
+    one = {"role": "short_call", "symbol": sym, "action": "SELL",
+           "occ": f"XSP {D:%y%m%d}C{600:08d}"}
     res = await ex.single(one, "BUY", 1, 1.10, max_age=30.0)
     assert res.status == "unfilled" and "stale" in res.detail
     res = await ex.combo([one], 1, 0.5, max_age=30.0)
     assert res.status == "unfilled" and "stale" in res.detail
+    assert ex.port.bodies == []                                         # nothing sent
     assert (await ex.single(one, "BUY", 1, 1.10, max_age=60.0)).filled_qty == 1
 
 
@@ -647,7 +661,7 @@ async def test_flatten_does_not_book_a_frozen_quote():
     assert s["reconciliation"]["ok"]
 
 
-class _HangAfterFirstFill(SimExecutor):
+class _HangAfterFirstFill(TestExec):
     """Fills one combo then never answers again: a process killed mid-entry."""
 
     def __init__(self, *a, **kw):

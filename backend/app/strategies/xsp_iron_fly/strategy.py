@@ -1,5 +1,5 @@
 """XSP 0DTE iron fly: the registry-facing strategy. The trading logic lives in
-``runner.IronFlyRunner``; this class wires it to the live feed, the simulated executor
+``runner.IronFlyRunner``; this class wires it to the live feed, the Alpaca paper executor
 the strategy's own equity (starting equity + realized P&L), safe mode and alerts."""
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ class XspIronFlyStrategy(BaseStrategy):
     description = (
         "Sells a 10-point-wide XSP (Mini-SPX, cash-settled, European) 0DTE iron fly at "
         "09:45 ET and holds it to the PM cash settlement, with an independent 1.5x stop on "
-        "each short leg. Paper only: fills are simulated against live Tastytrade NBBO; "
-        "no orders are sent anywhere."
+        "each short leg. Trades the Alpaca paper account with real orders and fills "
+        "(no simulated fills); quotes come from Tastytrade, which never receives orders."
     )
     rules = [
         "Once per trading day at 09:45 ET, on the 0DTE PM-settled XSP expiry (skip the day "
@@ -28,7 +28,8 @@ class XspIronFlyStrategy(BaseStrategy):
         "body call and put, buy the call 10 points above and the put 10 points below "
         "(nearest listed strike if missing; wing width recomputed).",
         "One 4-leg net-credit combo, limit from the mid and conceded 0.05 every 5 s, at most "
-        "0.30 from the mid. Without combo support: buy both wings first, then the body.",
+        "0.30 from the mid, sent to Alpaca paper as one mleg DAY limit (negative limit = "
+        "credit); each attempt is cancelled after a few seconds if unfilled.",
         "Each short leg has its own stop at 1.5x its entry fill, on the buy-to-close price "
         "(the ask). A stop closes only that leg; the other short keeps its stop; wings are "
         "never stopped; no profit target, no adjustment.",
@@ -46,7 +47,7 @@ class XspIronFlyStrategy(BaseStrategy):
     selection_criteria = "Fixed underlying: XSP 0DTE (PM-settled)."
     backtest_note = ("No in-app backtest: the app's backtester is equity-only and there is "
                      "no historical XSP option quote data here. Validate with the "
-                     "simulated paper sessions (GET /api/strategies/xsp_iron_fly/sessions).")
+                     "Alpaca paper sessions (GET /api/strategies/xsp_iron_fly/sessions).")
 
     def __init__(self, params: IronFlyParams | None = None) -> None:
         self._params = params
@@ -62,7 +63,7 @@ class XspIronFlyStrategy(BaseStrategy):
         return "1m"
 
     def execution_label(self) -> str:
-        return "Alpaca paper" if self.params.mode == "alpaca_paper" else "Simulated fills"
+        return "Alpaca paper"
 
     # The session row (one per day, 4 leg TradeRecords) is the source of truth for
     # the Strategies screen, not a count of ledger rows.
@@ -89,26 +90,23 @@ class XspIronFlyStrategy(BaseStrategy):
         if p.mode == "alpaca_paper":
             from app.strategies.xsp_iron_fly.alpaca_executor import AlpacaPort
             why = AlpacaPort(self.key).routing_block()
-            return (f"Alpaca paper mode can't place orders: {why}. Fix it or set "
-                    "XSP_FLY_MODE=sim.") if why else None
-        if p.mode != "sim":
+            return (f"XSP trades on Alpaca paper and can't place orders: {why}."
+                    if why else None)
+        if p.mode != "alpaca_paper":
             return (f"Live mode is refused: {LiveExecutorUnavailable.REASON}. "
-                    "Set XSP_FLY_MODE=sim or alpaca_paper.")
+                    "Set XSP_FLY_MODE=alpaca_paper.")
         return None
 
     def build_runner(self):
         from app.engine.safe_mode import is_safe_mode
         from app.services.alerts import send_alert
-        from app.strategies.xsp_iron_fly.executor import SimExecutor
         from app.strategies.xsp_iron_fly.feed import TastytradeFeed
         from app.strategies.xsp_iron_fly.runner import IronFlyRunner, RealClock
 
         p = self.params
         feed = TastytradeFeed()
         clock = RealClock()
-        if p.mode == "sim":
-            executor = SimExecutor(feed, clock)
-        elif p.mode == "alpaca_paper":
+        if p.mode == "alpaca_paper":
             from app.strategies.xsp_iron_fly.alpaca_executor import (AlpacaFlyExecutor,
                                                                      AlpacaPort)
             executor = AlpacaFlyExecutor(AlpacaPort(self.key), feed, clock)

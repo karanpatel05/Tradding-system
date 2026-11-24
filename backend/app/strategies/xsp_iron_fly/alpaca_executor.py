@@ -29,7 +29,10 @@ logger = logging.getLogger("trading.xsp_fly.alpaca")
 
 OPEN_STATUSES = {"new", "accepted", "pending_new", "partially_filled", "held",
                  "accepted_for_bidding", "pending_cancel", "pending_replace", "calculated"}
-SINGLE_TICK = 0.05     # single-leg limits rounded to a nickel: never rejected for increment
+def option_tick(price: float) -> float:
+    """Single-leg price increment for XSP options: $0.01 under $3.00, $0.05 from $3.00
+    (Cboe penny-pilot style). A limit off-increment would be rejected."""
+    return 0.01 if price < 3.0 - 1e-9 else 0.05
 
 
 def _f(v) -> float | None:
@@ -66,17 +69,33 @@ class AlpacaPort:
         return None
 
     async def submit(self, body: dict, intent: str, qty: int) -> dict:
-        from app.broker.orders import _transmit
-        from app.engine.order_store import record_intent
-        from app.engine.safe_mode import is_safe_mode
-        if await is_safe_mode():
-            return {"transmitted": False, "safe_mode": True, "detail": "blocked: SAFE_MODE"}
+        """Send an order the executor described, through the app's shared order path:
+        mleg -> ``orders.submit_combo_order`` (per-leg intents from the app ledger,
+        signed limit), single leg -> ``orders.submit_option_order``. Both apply SAFE_MODE,
+        the ENABLE_LIVE_ORDERS gate, the paper lock, the intent row and the tsys- tag."""
+        from app.broker import orders
         if (why := self.routing_block()) is not None:
             return {"transmitted": False, "detail": f"blocked: {why}"}
-        ref = await record_intent(self.key, "XSP", intent, int(qty))
-        out = await _transmit(body, ref, f"XSP fly {intent} x{qty}")
-        logger.warning("[ALPACA PAPER] XSP %s x%s %s -> %s", intent, qty,
-                       body.get("limit_price"), out)
+        if body.get("order_class") == "mleg":
+            legs, root = [], None
+            for x in body["legs"]:
+                parsed = orders.parse_occ(x["symbol"])
+                if parsed is None:
+                    return {"transmitted": False, "detail": f"bad OCC {x['symbol']}"}
+                root, exp, right, strike = parsed
+                legs.append({"expiry": exp, "strike": strike, "right": right,
+                             "action": "SELL" if x["side"] == "sell" else "BUY"})
+            limit = float(body["limit_price"])
+            out = await orders.submit_combo_order(
+                root, legs, net_price=abs(limit), action="SELL" if limit < 0 else "BUY",
+                reason=f"{self.key} {intent}", quantity=int(qty))
+        else:
+            out = await orders.submit_option_order(
+                body["symbol"], body["side"], int(qty), limit_price=float(body["limit_price"]),
+                position_intent=body["position_intent"], strategy_key=self.key,
+                reason=intent)
+        if out.get("paper"):        # the gate turned off between checks: nothing was sent
+            out = {**out, "transmitted": False}
         return out
 
     async def find_by_ref(self, ref: str) -> dict | None:
@@ -222,7 +241,7 @@ class AlpacaFlyExecutor:
         status = "filled" if n >= qty else ("partial" if n else "unfilled")
         return OrderResult(status, n, prices, mids,
                            f"alpaca combo {oid} {status_of(o)} {n}/{qty} at limit "
-                           f"{body['limit_price']}")
+                           f"{body['limit_price']}", order_id=oid)
 
     async def single(self, leg: dict, side: str, qty: int, limit: float, *,
                      max_age: float | None = None) -> OrderResult:
@@ -230,7 +249,9 @@ class AlpacaFlyExecutor:
         if isinstance(mids, str):
             return OrderResult("unfilled", detail=mids)
         opening = side == leg["action"]
-        px = L.round_to_tick(limit, SINGLE_TICK, "up" if side == "BUY" else "down")
+        px = L.round_to_tick(limit, option_tick(limit), "up" if side == "BUY" else "down")
+        if side == "SELL":
+            px = max(px, 0.01)
         if px <= 0:
             return OrderResult("unfilled", detail=f"no valid {side} limit ({limit})")
         intent = f"{'buy' if side == 'BUY' else 'sell'}_to_{'open' if opening else 'close'}"
@@ -256,7 +277,8 @@ class AlpacaFlyExecutor:
         status = "filled" if n >= qty else ("partial" if n else "unfilled")
         return OrderResult(status, n, {leg["role"]: abs(fill)} if n else {}, mids,
                            f"alpaca {intent} {oid} {status_of(o)} {n}/{qty} @ "
-                           f"{fill if fill is not None else '-'} (limit {px:.2f})")
+                           f"{fill if fill is not None else '-'} (limit {px:.2f})",
+                           order_id=oid)
 
     async def cancel_all(self) -> int:
         """Cancel every order this executor left working (normally none)."""

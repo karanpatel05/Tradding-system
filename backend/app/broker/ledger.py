@@ -110,9 +110,15 @@ def _accumulate(o: dict, net: dict[str, float]) -> None:
         _accumulate(child, net)
 
 
-_OCC_EXPIRY = re.compile(r"^[A-Z]{1,6}(\d{2})(\d{2})(\d{2})[CP]\d{8}$")
+_OCC = re.compile(r"^([A-Z]{1,6})(\d{2})(\d{2})(\d{2})[CP]\d{8}$")
 _ET = ZoneInfo("America/New_York")
-_EXPIRY_CUTOFF = time(16, 0)    # 0DTE PM-settled index and equity options stop at 16:00 ET
+_REGULAR_CLOSE = time(16, 0)
+# Cash-settled, European index option roots: at expiry they settle to cash and the
+# position simply disappears (no closing order). Equity/ETF options are NOT here: they
+# are physically settled into shares, so an expired equity leg must stay visible (the
+# shares are untagged and the app ledger would otherwise go quietly "flat").
+CASH_SETTLED_ROOTS = frozenset({"XSP", "SPX", "SPXW", "NDX", "NDXP", "RUT", "RUTW",
+                                "VIX", "VIXW", "DJX", "XND", "MRUT"})
 
 
 def _now() -> datetime:
@@ -120,21 +126,34 @@ def _now() -> datetime:
     return datetime.now(_ET)
 
 
+def _close_on(d: date) -> time:
+    """The session close for an expiry date: 13:00 ET on an early-close day, else 16:00.
+    Uses the exchange calendar the XSP strategy keeps (2026-2027); unknown dates fall
+    back to 16:00, so a half day outside it only delays the drop to 16:00."""
+    try:
+        from app.strategies.xsp_iron_fly.calendar import close_time
+        c = close_time(d)
+        return c.time() if c is not None else _REGULAR_CLOSE
+    except Exception:  # noqa: BLE001 - never let a calendar problem break the ledger
+        return _REGULAR_CLOSE
+
+
 def option_expired(symbol: str, now: datetime | None = None) -> bool:
-    """True for an option OCC symbol whose expiry has passed: the expiry date is before
-    today (ET), or it is today and the 16:00 ET close has passed. A contract held to
-    expiry (cash-settled index options, worthless equity options) gets no closing order,
-    so without this the order-fill ledger would show it as held forever."""
-    m = _OCC_EXPIRY.match(occ_unpadded(symbol or ""))
-    if not m:
-        return False                                  # stocks/ETFs: never expire
-    yy, mm, dd = (int(g) for g in m.groups())
+    """True for a CASH-SETTLED index option (``CASH_SETTLED_ROOTS``) past expiry: the
+    expiry date is before today (ET), or it is today and that day's close has passed.
+    Such a leg held to expiry settles to cash with no closing order, so without this
+    the order-fill ledger would show it held forever. Always False for stocks and for
+    physically settled equity/ETF options."""
+    m = _OCC.match(occ_unpadded(symbol or ""))
+    if not m or m.group(1) not in CASH_SETTLED_ROOTS:
+        return False
+    yy, mm, dd = (int(g) for g in m.groups()[1:])
     try:
         exp = date(2000 + yy, mm, dd)
     except ValueError:
         return False
     now_et = (now or _now()).astimezone(_ET)
-    return exp < now_et.date() or (exp == now_et.date() and now_et.time() >= _EXPIRY_CUTOFF)
+    return exp < now_et.date() or (exp == now_et.date() and now_et.time() >= _close_on(exp))
 
 
 async def app_net_positions(*, include_expired: bool = False,
