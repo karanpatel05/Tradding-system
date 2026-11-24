@@ -86,6 +86,8 @@ class Settings(BaseSettings):
     # MARKET_HISTORY_SYNC=true writes the file; the API only reads it.
     market_history_path: str = str(_BASE_DIR / "market_history.db")
     market_history_sync: bool = False
+    # Stocks whose live Tastytrade trades are recorded into 1-minute bars (LIVE_BAR_SYMBOLS).
+    live_bar_symbols: str = "SPY,QQQ,TSLA,NVDA"
 
     # When set (the web/hosted run mode sets FRONTEND_DIST), the API also serves the built
     # React app from this directory at "/" with SPA fallback. Empty in dev (Vite serves UI).

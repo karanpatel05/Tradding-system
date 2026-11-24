@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from app.history.aggregate import daily_from_minutes, et_session_start_ms
 from app.history.alpaca_bars import AlpacaDataError, RateLimiter, fetch_minutes
+from app.history.live_bars import stock_symbols
 from app.history.store import HistoryStore, get_store
 from app.services.market import _is_trading_day
 
@@ -19,7 +20,6 @@ logger = logging.getLogger(__name__)
 
 UTC = timezone.utc
 ET = ZoneInfo("America/New_York")
-STOCK_SYMBOLS = ("SPY", "QQQ", "TSLA", "NVDA")
 HISTORY_START = datetime(2022, 1, 3, 14, 30, tzinfo=UTC)
 
 _MINUTE_MS = 60_000
@@ -157,7 +157,7 @@ class HistorySync:
     async def run_once(self) -> None:
         self.errors = 0
         today = self._now().astimezone(ET).date().isoformat()
-        for symbol in STOCK_SYMBOLS:
+        for symbol in stock_symbols():
             try:
                 state = await self._store(self.store.get_state, symbol) or {}
                 if state.get("last_full_check") != today:
@@ -237,7 +237,7 @@ async def run_forever(sync: HistorySync) -> None:
 def history_status() -> dict:
     store = get_store()
     out: dict = {}
-    for symbol in STOCK_SYMBOLS:
+    for symbol in stock_symbols():
         lo, hi = store.bounds(symbol)
         state = store.get_state(symbol) or {}
         out[symbol] = {"earliest": lo, "latest": hi,

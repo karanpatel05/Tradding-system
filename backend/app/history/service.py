@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta, timezone
 from app.history.aggregate import (
     ET, INTRADAY_MINUTES, bucket, et_session_start_ms, weekly_from_daily)
 from app.history.store import get_store
-from app.history.sync import STOCK_SYMBOLS
+from app.history.live_bars import stock_symbols
 from app.marketdata import facade
 from app.services import chart_data
 
@@ -138,7 +138,7 @@ def _validate(symbol, interval, before, after, around, limit) -> str:
         symbol = chart_data.normalize_symbol(symbol)
     except chart_data.ChartDataError as exc:
         raise HistoryRequestError(str(exc)) from exc
-    if symbol not in STOCK_SYMBOLS + INDEX_SYMBOLS:
+    if symbol not in stock_symbols() + INDEX_SYMBOLS:
         raise HistoryRequestError(f"No history for symbol {symbol!r}")
     if interval not in HISTORY_INTERVALS:
         raise HistoryRequestError(f"Unsupported interval: {interval!r}")
