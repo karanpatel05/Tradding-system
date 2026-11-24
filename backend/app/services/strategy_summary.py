@@ -112,6 +112,72 @@ def session_record(sessions: list[dict]) -> dict | None:
     }
 
 
+def daily_from_sessions(sessions: list[dict]) -> dict[str, dict]:
+    """One row per session_date from a strategy's own session store. A day carries
+    a P&L only when it counts as a session (see ``session_record``); skipped, missed,
+    open or killed days keep their status with ``pnl`` None."""
+    out: dict[str, dict] = {}
+    for s in sessions:
+        d = str(s.get("session_date") or "")[:10]
+        if not d:
+            continue
+        pnl = round(float(s["realized_pnl"]), 2) if _counts_as_session(s) else None
+        out[d] = {"date": d, "pnl": pnl, "status": s.get("status") or "unknown"}
+    return out
+
+
+def daily_from_trades(trades) -> dict[str, dict]:
+    """One row per New York exit date from closed trade-ledger rows."""
+    daily: dict[date, float] = defaultdict(float)
+    for t in trades:
+        d = et_date(t.exit_time)
+        if t.status == "closed" and t.pnl is not None and d is not None:
+            daily[d] += t.pnl
+    return {d.isoformat(): {"date": d.isoformat(), "pnl": round(v, 2), "status": "closed"}
+            for d, v in daily.items()}
+
+
+def pnl_calendar(days: dict[str, dict], year: int, today: date,
+                 today_pnl: float | None = None) -> dict:
+    """Year, month and day realized P&L for one strategy.
+
+    ``today_pnl`` is today's realized P&L so far (e.g. a stopped leg of a fly that is
+    still open). It fills today's row when the session itself has no P&L yet, so the
+    day, month and year figures agree with the Strategies list's Today column."""
+    days = dict(days)
+    t = today.isoformat()
+    if today_pnl is not None and (days.get(t) or {}).get("pnl") is None:
+        if round(today_pnl, 2) != 0 or t in days:
+            row = dict(days.get(t) or {"date": t, "status": "open"})
+            row.update(pnl=round(today_pnl, 2), partial=True)
+            days[t] = row
+
+    def total(prefix: str) -> float:
+        return round(sum(r["pnl"] for d, r in days.items()
+                         if d.startswith(prefix) and r.get("pnl") is not None), 2)
+
+    in_year = sorted((r for d, r in days.items() if d.startswith(f"{year:04d}-")),
+                     key=lambda r: r["date"])
+    priced = [r for r in in_year if r.get("pnl") is not None]
+    months = []
+    for m in range(1, 13):
+        rows = [r for r in priced if int(r["date"][5:7]) == m]
+        months.append({"month": m, "pnl": round(sum(r["pnl"] for r in rows), 2),
+                       "sessions": len(rows), "wins": sum(1 for r in rows if r["pnl"] > 0)})
+    return {
+        "year": year,
+        "years": sorted({int(d[:4]) for d in days} | {today.year}),
+        "total": round(sum(r["pnl"] for r in priced), 2),
+        "sessions": len(priced),
+        "wins": sum(1 for r in priced if r["pnl"] > 0),
+        "months": months,
+        "days": in_year,
+        "today": (days.get(t) or {}).get("pnl"),
+        "month_to_date": total(f"{today.year:04d}-{today.month:02d}-"),
+        "year_to_date": total(f"{today.year:04d}-"),
+    }
+
+
 def backtest_snapshot(result: dict | None) -> dict | None:
     """Snapshot from a stored backtest result (the longest timeframe it has)."""
     if not result or not result.get("timeframes"):

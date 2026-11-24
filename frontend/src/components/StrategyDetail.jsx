@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { api } from "../api.js";
+import StrategyPnl from "./StrategyPnl.jsx";
 import {
   usd,
   signedUsd,
@@ -180,6 +181,8 @@ export default function StrategyDetail({ keyName, summary, onBack }) {
                 </p>
               )}
             </section>
+
+            <StrategyPnl keyName={keyName} />
 
             <section className="card sd-rules" aria-label="How it trades">
               <h2>How it trades</h2>

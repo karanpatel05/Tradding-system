@@ -242,7 +242,9 @@ export default function StrategiesTab({ focusKey, onFocusHandled }) {
                   <th>Strategy</th>
                   <th className="col-universe">Universe</th>
                   <th className="num">Allocation</th>
-                  <th className="num">Session P&amp;L</th>
+                  <th className="num">Today</th>
+                  <th className="num col-month">Month</th>
+                  <th className="num">Year</th>
                   <th>Status</th>
                   <th aria-label="Action" />
                 </tr>
@@ -273,6 +275,8 @@ export default function StrategiesTab({ focusKey, onFocusHandled }) {
                       >
                         {signedUsd(s.session_pnl)}
                       </td>
+                      <td className={"num col-month " + tone(s.month_pnl)}>{signedUsd(s.month_pnl)}</td>
+                      <td className={"num " + tone(s.year_pnl)}>{signedUsd(s.year_pnl)}</td>
                       <td><StatusMark s={s} /></td>
                       <td className="strat-action" onClick={(e) => e.stopPropagation()}>
                         {canToggle(s) ? (

@@ -11,7 +11,7 @@ import asyncio
 import json
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -99,9 +99,48 @@ async def _closed_trades_since(days: int):
         )).scalars().all()
 
 
+async def _today_pnl(strat, today, recent) -> float | None:
+    """Realized P&L today: the strategy's own session figure when it has one, else
+    its closed ledger trades that exited today (New York date)."""
+    from app.services.strategy_summary import session_pnl
+
+    pnl = await strat.session_pnl_today(today)
+    if pnl is None:
+        pnl = session_pnl([t for t in recent if t.strategy_key == strat.key], today)
+    return pnl
+
+
+async def _daily_rows(strat) -> tuple[dict[str, dict], str]:
+    """Day-by-day realized P&L rows and where they came from ("sessions"/"ledger")."""
+    from sqlalchemy import select
+
+    from app.db.models import TradeRecord
+    from app.services.strategy_summary import daily_from_sessions, daily_from_trades
+
+    rows = await strat.session_rows()
+    if rows is not None:
+        return daily_from_sessions(rows), "sessions"
+    async with session_scope() as session:
+        trades = (await session.execute(
+            select(TradeRecord).where(TradeRecord.strategy_key == strat.key,
+                                      TradeRecord.status == "closed")
+        )).scalars().all()
+    return daily_from_trades(trades), "ledger"
+
+
+async def _calendar(strat, year: int, today, recent) -> dict:
+    from app.services.strategy_summary import pnl_calendar
+
+    days, source = await _daily_rows(strat)
+    # Ledger rows already include today's closed trades; a session row may not have
+    # its P&L yet while the position is open, so today's partial figure fills it.
+    tp = await _today_pnl(strat, today, recent) if source == "sessions" else None
+    return {**pnl_calendar(days, year, today, tp), "source": source}
+
+
 @router.get("")
 async def list_all() -> dict:
-    from app.services.strategy_summary import session_pnl, today_et
+    from app.services.strategy_summary import today_et
 
     today = today_et()
     recent = await _closed_trades_since(2)
@@ -109,18 +148,21 @@ async def list_all() -> dict:
     async with session_scope() as session:
         for strat in list_strategies():
             st = await session.get(StrategyState, strat.key)
-            # Realized P&L today from the app's trade ledger. External runners keep
-            # their own records, so the app cannot report theirs (None, shown as "—").
-            pnl = None
+            # Realized P&L today, this month and this year from the app's records.
+            # External runners keep their own records, so the app cannot report
+            # theirs (None, shown as "—").
+            pnl = month_pnl = year_pnl = None
             if strat.ready and not strat.external_runner:
                 # A summary error must never blank the whole list (and its controls).
                 try:
-                    pnl = await strat.session_pnl_today(today)
-                    if pnl is None:
-                        pnl = session_pnl([t for t in recent if t.strategy_key == strat.key], today)
+                    pnl = await _today_pnl(strat, today, recent)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Session P&L unavailable for %s: %s", strat.key, exc)
-                    pnl = None
+                try:
+                    cal = await _calendar(strat, today.year, today, recent)
+                    month_pnl, year_pnl = cal["month_to_date"], cal["year_to_date"]
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Month/year P&L unavailable for %s: %s", strat.key, exc)
             out.append({
                 "key": strat.key,
                 "name": strat.name,
@@ -136,6 +178,8 @@ async def list_all() -> dict:
                 "description": strat.description if strat.ready else None,
                 "execution": strat.execution_label() if strat.ready else None,
                 "session_pnl": pnl,
+                "month_pnl": month_pnl,
+                "year_pnl": year_pnl,
             })
     return {"strategies": out, "session_date": today.isoformat()}
 
@@ -169,6 +213,21 @@ async def record(key: str) -> dict:
             select(TradeRecord).where(TradeRecord.strategy_key == key, TradeRecord.status == "closed")
         )).scalars().all()
     return paper_record(trades) or {"source": "none"}
+
+
+@router.get("/{key}/pnl")
+async def pnl(key: str, year: int | None = Query(default=None, ge=2000, le=2100)) -> dict:
+    """Realized P&L by year, month and day for one strategy (New York dates), from
+    the strategy's own session store or else its closed trade-ledger rows. Read-only;
+    external runners keep their own records ("external")."""
+    from app.services.strategy_summary import today_et
+
+    strat = _require_ready(key)
+    if strat.external_runner:
+        return {"source": "external",
+                "note": "Results are kept by the external runner, not this app."}
+    today = today_et()
+    return await _calendar(strat, year or today.year, today, await _closed_trades_since(2))
 
 
 @router.get("/{key}")

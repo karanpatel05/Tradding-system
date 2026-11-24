@@ -72,6 +72,10 @@ class XspIronFlyStrategy(BaseStrategy):
         from app.strategies.xsp_iron_fly import store
         return session_record(await store.recent_sessions(self.key, 1000))
 
+    async def session_rows(self) -> list[dict] | None:
+        from app.strategies.xsp_iron_fly import store
+        return await store.recent_sessions(self.key, 5000)
+
     async def session_pnl_today(self, today) -> float | None:
         """Today's session realized_pnl (exact: includes unwind P&L and fees that no
         TradeRecord carries). While the fly is still open it is not set yet, and the
