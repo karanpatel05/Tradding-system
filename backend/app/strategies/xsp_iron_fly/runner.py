@@ -744,7 +744,7 @@ class IronFlyRunner:
             reason = L.stop_held_reason(
                 q.bid, q.ask, q.age(now), leg["stop_level"], p.stop_trigger,
                 max_age=p.stop_max_quote_age, max_spread_abs=p.stop_max_spread_abs,
-                max_spread_pct=p.stop_max_spread_pct)
+                max_spread_pct=p.stop_max_spread_pct, near_fraction=p.stop_held_near_fraction)
         if reason is None:
             self._held_since.pop(key, None)
             self._held_alerted.discard(key)
@@ -894,11 +894,20 @@ class IronFlyRunner:
                         await self._stop_leg(s, leg, q)
                     else:
                         confirm_soon = True
-            age = None if newest is None else (self.clock.now() - newest).total_seconds()
-            if age is None or age > p.feed_stale_alert_seconds:
+            # Feed liveness: option legs send events only on change, so a quiet position
+            # isn't an outage. The feed counts as alive while EITHER the newest option
+            # quote OR the XSP underlying's trades (which tick every second in the session)
+            # are fresh; both silent = a real outage, and the stops are blind.
+            now = self.clock.now()
+            age = None if newest is None else (now - newest).total_seconds()
+            spot = self.feed.spot(p.ticker)
+            spot_age = None if spot is None else spot.age(now)
+            live = [a for a in (age, spot_age) if a is not None]
+            if not live or min(live) > p.feed_stale_alert_seconds:
                 if not stale:
                     stale = True
-                    msg = f"option quotes stale (age {age}s); stops are blind until data resumes"
+                    msg = (f"market data stale (option quotes {age}s, {p.ticker} {spot_age}s); "
+                           "stops are blind until data resumes")
                     await self._log(msg, level="warning")
                     await self._alert("xsp_fly_stale", msg)
             elif stale:
