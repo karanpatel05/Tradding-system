@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api.js";
-import { aggregate, normalizeBars } from "./chartMath.js";
+import { aggregate, carryNewer, foldPrice, normalizeBars } from "./chartMath.js";
 import { getBars } from "./chartData.js";
 
 // Chart intervals mapped to the candle interval the feed serves and how many of
@@ -58,31 +58,33 @@ export function useBars(symbol, interval, background = false) {
   return state;
 }
 
-// Watchlist quotes. Keeps the last live quotes (marked stale) when a refresh fails;
-// falls back to the labelled sample sessions only when nothing live has loaded.
+// Watchlist and chart-pane quotes. Keeps the last live quotes (marked stale) when a refresh fails;
+// falls back to the labelled sample sessions only when nothing live has loaded. Polls every 5 s in
+// the regular session (the chart folds these prices into its newest candle), 15 s otherwise.
 export function useQuotes(symbols) {
   const list = symbols.join(",");
-  const [state, setState] = useState({ quotes: {}, live: false, stale: false, note: null });
+  const [state, setState] = useState({ quotes: {}, live: false, stale: false, note: null, session: null });
   useEffect(() => {
-    let alive = true, lastLive = null;
+    let alive = true, lastLive = null, timer = null, session = null;
     const sample = () => Object.fromEntries(list.split(",").map(s => {
       const days = getBars(s, "1D");
       const price = days.at(-1).close, close = days.at(-2).close;
       return [s, { price, close, change_pct: (price / close - 1) * 100 }];
     }));
     const fail = note => setState(lastLive
-      ? { quotes: lastLive, live: true, stale: true, note }
-      : { quotes: sample(), live: false, stale: false, note });
+      ? { quotes: lastLive, live: true, stale: true, note, session: null }
+      : { quotes: sample(), live: false, stale: false, note, session: null });
     const run = () => api.marketQuotes(list.split(","))
       .then(r => {
         if (!alive) return;
-        if (r.data_available) { lastLive = r.quotes; setState({ quotes: r.quotes, live: true, stale: false, note: null }); }
+        session = r.session || null;
+        if (r.data_available) { lastLive = r.quotes; setState({ quotes: r.quotes, live: true, stale: false, note: null, session }); }
         else fail(r.note);
       })
-      .catch(e => alive && fail(e.message));
+      .catch(e => alive && fail(e.message))
+      .finally(() => { if (alive) timer = setTimeout(run, session === "regular" ? 5000 : 15000); });
     run();
-    const id = setInterval(run, 15000);
-    return () => { alive = false; clearInterval(id); };
+    return () => { alive = false; clearTimeout(timer); };
   }, [list]);
   return state;
 }
@@ -100,4 +102,19 @@ export function usePositions() {
     return () => { alive = false; clearInterval(id); };
   }, []);
   return state;
+}
+
+// The pane's candles with live quotes folded into the newest one. `quote` is null outside the
+// regular session or when quotes are stale, which leaves the candles exactly as fetched. Folded
+// candles newer than a fresh candle fetch carry over until the server has built them.
+export function useLiveCandle(bars, quote, interval) {
+  const ref = useRef({ base: null, folded: null, interval: null });
+  return useMemo(() => {
+    const L = ref.current;
+    if (!bars) { ref.current = { base: null, folded: null, interval }; return bars; }
+    let cur = L.interval !== interval ? bars : L.base === bars ? L.folded : carryNewer(bars, L.folded);
+    if (quote && Number.isFinite(quote.price)) cur = foldPrice(cur, quote.price, Date.now(), interval);
+    ref.current = { base: bars, folded: cur, interval };
+    return cur;
+  }, [bars, quote, interval]);
 }

@@ -177,3 +177,34 @@ export function sessionStats(bars) {
     vwap: volume ? value / volume : null,
   };
 }
+
+// Fold one live price into the newest candle. Pure: returns `bars` itself when nothing changes.
+// 1m/5m/15m open a new candle at each boundary; 30m/1h only update the last candle while the
+// price is inside it, and 1D only while it is the same ET session (their candles come from
+// coarser data, so a new one waits for the next candle refresh). Volume is left to that refresh.
+const FOLD_STEP = { "1m": 60e3, "5m": 300e3, "15m": 900e3 };
+const SPAN = { "30m": 1800e3, "1h": 3600e3 };
+export function foldPrice(bars, price, tsMs, interval) {
+  const last = bars?.at(-1);
+  if (!last || !Number.isFinite(price) || !Number.isFinite(tsMs) || tsMs < last.time) return bars;
+  const step = FOLD_STEP[interval];
+  const inside = step ? tsMs < last.time + step
+    : SPAN[interval] ? tsMs < last.time + SPAN[interval]
+    : interval === "1D" ? sessionOf(tsMs) === last.session : false;
+  if (inside) {
+    if (last.close === price && last.high >= price && last.low <= price) return bars;
+    return [...bars.slice(0, -1), { ...last, close: price, high: Math.max(last.high, price), low: Math.min(last.low, price) }];
+  }
+  if (!step) return bars;
+  const time = Math.floor(tsMs / step) * step;
+  return [...bars, { time, session: sessionOf(time), open: price, high: price, low: price, close: price, volume: 0, value: 0 }];
+}
+
+// After a candle refresh: the refreshed candles win, and folded candles newer than the newest
+// refreshed one are kept (the server has not built those minutes yet).
+export function carryNewer(refreshed, folded) {
+  const last = refreshed?.at(-1);
+  if (!last || !folded) return refreshed;
+  const keep = folded.filter(b => b.time > last.time);
+  return keep.length ? [...refreshed, ...keep] : refreshed;
+}

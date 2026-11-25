@@ -1,5 +1,5 @@
 // Plain-node test (no runner configured). Run: node frontend/src/components/charts/chartMath.test.mjs
-import { aggregate, bollinger, crossovers, donchian, ema, heikinAshi, makeScale, normalizeBars, rsi, sessionOf, sessionStats, sma, sourceValues } from "./chartMath.js";
+import { aggregate, bollinger, foldPrice, carryNewer, crossovers, donchian, ema, heikinAshi, makeScale, normalizeBars, rsi, sessionOf, sessionStats, sma, sourceValues } from "./chartMath.js";
 import { applyStudy, studyValues } from "./chartData.js";
 
 const eq = (a, b, msg) => {
@@ -116,3 +116,28 @@ eq(applyStudy(pane2, { id: "zz", type: "RSI", period: 21 })[1].period, 21, "sing
 eq(applyStudy(pane2, { id: "zz", type: "RSI", period: 21 })[1].id, "r", "replaced study keeps the pane's id");
 
 console.log("chartMath: all tests passed");
+
+// Live quotes fold into the newest candle between candle refreshes (regular session only — the
+// caller gates on the server's session). Intraday 1m/5m/15m open a new candle at each boundary;
+// 30m/1h/1D only update the last candle (their buckets are built from coarser data).
+{
+  const t0 = Date.UTC(2026, 10, 25, 15, 0);                 // 10:00 ET
+  const base = [{ time: t0, session: "2026-11-25", open: 100, high: 101, low: 99, close: 100, volume: 50, value: 5000 }];
+  const up = foldPrice(base, 102, t0 + 30e3, "1m");
+  eq(up.length, 1, "price inside the minute updates the last candle");
+  eq(up[0].close, 102, "close follows the live price"); eq(up[0].high, 102, "high extends"); eq(up[0].volume, 50, "volume untouched");
+  const next = foldPrice(up, 98, t0 + 61e3, "1m");
+  eq(next.length, 2, "a price in the next minute opens a new candle");
+  eq(next[1].time, t0 + 60e3, "new candle starts on the minute"); eq(next[1].open, 98, "new candle opens at the live price");
+  eq(next[1].session, "2026-11-25", "new candle carries its ET session");
+  eq(foldPrice(next, 99, t0 + 30e3, "1m"), next, "a price older than the last candle changes nothing");
+  eq(foldPrice(base, NaN, t0 + 30e3, "1m"), base, "a missing price changes nothing");
+  eq(foldPrice(base, 103, t0 + 4 * 3600e3, "1h"), base, "1h never opens its own candle past the bucket");
+  eq(foldPrice(base, 103, t0 + 10 * 60e3, "1D")[0].close, 103, "1D updates today's candle");
+  eq(foldPrice(base, 103, t0 + 86400e3, "1D"), base, "1D ignores a price from another session");
+  const refetched = [base[0]];
+  const carried = carryNewer(refetched, next);
+  eq(carried.length, 2, "folded candles newer than the re-fetched ones are kept");
+  eq(carryNewer([...refetched, { ...next[1], close: 97 }], next).at(-1).close, 97, "a re-fetched candle wins over a folded one");
+}
+console.log("foldPrice ok");

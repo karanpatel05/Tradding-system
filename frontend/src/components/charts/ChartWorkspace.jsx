@@ -5,7 +5,7 @@ import PaneResize from "./PaneResize.jsx";
 import PriceChart from "./PriceChart.jsx";
 import { applyStudy, intervals, symbols } from "./chartData.js";
 import { sessionStats } from "./chartMath.js";
-import { useBars, usePositions, useQuotes } from "./marketData.js";
+import { useBars, useLiveCandle, usePositions, useQuotes } from "./marketData.js";
 import { conditionLabel, rearm, useAlertEngine, useAlerts } from "./alerts.js";
 import { SYMBOL_PATTERN, describe } from "./controls/catalog.js";
 import SymbolSearch from "./controls/SymbolSearch.jsx";
@@ -83,9 +83,10 @@ async function copyChartImage(svg, name) {
   return "Clipboard unavailable here, so the chart image was downloaded";
 }
 
-function ChartPane({index, pane, selected, tool, positions, settings, onSettings, alerts, resetToken, onActivate, patch,
+function ChartPane({index, pane, selected, tool, positions, settings, onSettings, alerts, resetToken, liveQuote, onActivate, patch,
   drawingProps, selectedDrawing, onDrawingChange, onDrawingDelete, onDrawingCopy, onDrawingAlert, onEditStudy, onSearch, onContextMenu}) {
-  const {bars, live, stale, note} = useBars(pane.symbol, pane.interval, !selected);
+  const {bars: fetched, live, stale, note} = useBars(pane.symbol, pane.interval, !selected);
+  const bars = useLiveCandle(fetched, live && !stale ? liveQuote : null, pane.interval);
   return <article className={"cx-pane "+(selected?"selected":"")} data-pane={index} tabIndex="0" aria-label={"Chart "+(index+1)+" "+pane.symbol}
     onFocus={onActivate} onPointerDown={e=>{onActivate(); if(e.target.closest("svg.cx-plot") && !e.target.closest("[data-drawing]")) drawingProps.onSelect(null);}}>
     <div className="cx-controls"><button className="cx-sym-btn" aria-label={"Change symbol for chart "+(index+1)} onClick={onSearch}>{pane.symbol} <span>▾</span></button>
@@ -211,8 +212,12 @@ export default function ChartWorkspace({account, accountError, onOpenBuilder}) {
   const ids=Array.from({length:s.count},(_,i)=>start+i);
   const activeData=useBars(active.symbol, active.interval);
   const [alerts,setAlerts]=useAlerts();
-  const quoteSymbols=[...new Set([...s.watchlist, ...alerts.filter(a=>a.active).map(a=>a.symbol)])];
+  const quoteSymbols=[...new Set([...s.watchlist, ...ids.map(i=>s.panes[i].symbol), ...alerts.filter(a=>a.active).map(a=>a.symbol)])];
   const quotes=useQuotes(quoteSymbols.length?quoteSymbols:["QQQ"]);
+  // Live quote for a symbol, only in the regular session and while quotes are fresh: chart panes
+  // and the side panel fold it into their newest candle so both show the same live price.
+  const liveQuoteFor=sym=>quotes.live && !quotes.stale && quotes.session==="regular" ? quotes.quotes[sym] || null : null;
+  const activeBars=useLiveCandle(activeData.bars, activeData.live && !activeData.stale ? liveQuoteFor(active.symbol) : null, active.interval);
   const {positions, note:positionsNote}=usePositions();
   const notify=text=>{const id=Date.now()+Math.random(); setToasts(t=>[...t,{id,text}]); setTimeout(()=>setToasts(t=>t.filter(x=>x.id!==id)),8000);};
   useAlertEngine(alerts, setAlerts, quotes, (a, muted)=>notify(`${a.symbol} alert · ${a.message} · last ${fmt(a.price)}${muted?" (sound blocked by the browser until you click the page)":""}`));
@@ -228,7 +233,7 @@ export default function ChartWorkspace({account, accountError, onOpenBuilder}) {
   const pickSymbol = (i, symbol) => { patch(i,{symbol}); set(old=>({...old, recent:[symbol, ...old.recent.filter(x=>x!==symbol)].slice(0,8)})); setSelected(null); };
   const addWatch = symbol => set(old=>old.watchlist.includes(symbol)?old:({...old, watchlist:[...old.watchlist, symbol]}));
   const chooseTool = name => { setTool(name); if(DRAWING_NAMES.includes(name)) set(old=>({...old,lastTool:name})); if(name!=="Pan" && name!=="Crosshair"){setLocked(false);setHidden(false);} };
-  const lastPrice = () => activeData.bars?.at(-1)?.close ?? null;
+  const lastPrice = () => activeBars?.at(-1)?.close ?? null;
   const resetPane = i => setResets(r=>({...r,[i]:(r[i]||0)+1}));
   const drawingsOf = p => symbolDrawings(p);
   const saveDrawings = (i, items) => { const p=s.panes[i]; patch(i,{drawings:{...p.drawings,[p.symbol]:items}}); };
@@ -287,6 +292,7 @@ export default function ChartWorkspace({account, accountError, onOpenBuilder}) {
         const updateSel = changes => saveDrawings(i, drawingsOf(p).map(d=>d.id===selected?{...d,...changes}:d));
         return <ChartPane key={i} index={i} pane={p} selected={s.active===i} tool={tool} positions={positions} settings={s.settings} onSettings={setSettings}
           alerts={alerts.filter(a=>a.symbol===p.symbol && (a.active || a.status==="Triggered"))} resetToken={resets[i]}
+          liveQuote={liveQuoteFor(p.symbol)}
           onActivate={()=>set(old=>old.active===i?old:{...old,active:i})} patch={changes=>patch(i,changes)}
           onSearch={()=>setSearch({target:i, query:""})} onEditStudy={id=>setEditStudy({pane:i,id})}
           onContextMenu={info=>setCtx({...info, pane:i})}
@@ -305,7 +311,7 @@ export default function ChartWorkspace({account, accountError, onOpenBuilder}) {
         alerts={alerts} onRearm={id=>setAlerts(list=>list.map(a=>a.id===id?rearm(a):a))}
         onRemoveAlert={id=>setAlerts(list=>list.filter(a=>a.id!==id))}/>}</div>
     {s.side && <SidePanel active={active} watchlist={s.watchlist} onPick={symbol=>pickSymbol(s.active, symbol)} onAdd={()=>setSearch({target:"watch", query:""})}
-      onRemove={symbol=>set(old=>({...old, watchlist:old.watchlist.filter(x=>x!==symbol)}))} quotes={quotes} bars={activeData.bars} live={live}/>}</div>
+      onRemove={symbol=>set(old=>({...old, watchlist:old.watchlist.filter(x=>x!==symbol)}))} quotes={quotes} bars={activeBars} live={live}/>}</div>
     <footer className="cx-status">Eastern time · {live?"Candles from Tastytrade, refreshed automatically":"Sample market data"} · Alt T/H/F draw · Alt A alert · Alt R reset · type to search</footer>
 
     <SymbolSearch open={!!search} onClose={()=>setSearch(null)} initialQuery={search?.query || ""} recent={s.recent}
