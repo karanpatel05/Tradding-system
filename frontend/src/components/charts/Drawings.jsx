@@ -30,7 +30,7 @@ export default function Drawings({pane,tool,bars,start,length,x,y,axisX,height,i
   const drawing=tool!=="Pan" && tool!=="Crosshair";
   function point(e) {
     const box=e.currentTarget.ownerSVGElement.getBoundingClientRect();
-    const i=Math.min(length-1,Math.max(0,Math.floor((e.clientX-box.left)*length/axisX)));
+    const i=Math.min(length-1,bars.length-1-start,Math.max(0,Math.floor((e.clientX-box.left)*length/axisX)));   // blank future slots snap to the newest candle
     const bar=bars[start+i];
     let price=invert(Math.max(0,Math.min(height,e.clientY-box.top)));
     if(magnet) price=[bar.open,bar.high,bar.low,bar.close].reduce((a,b)=>Math.abs(price-a)<Math.abs(price-b)?a:b);

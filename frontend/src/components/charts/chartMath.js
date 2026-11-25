@@ -208,3 +208,24 @@ export function carryNewer(refreshed, folded) {
   const keep = folded.filter(b => b.time > last.time);
   return keep.length ? [...refreshed, ...keep] : refreshed;
 }
+
+// Horizontal wheel/trackpad scroll in whole candles. Candles moved follow the distance scrolled
+// (pixels ÷ candle width), and the fractional remainder carries to the next event, so a swipe
+// made of many small events moves the chart as far as the fingers moved. Positive deltaX scrolls
+// toward newer candles. deltaMode 1 = lines (16 px each), 2 = pages (one plot width).
+export function wheelBars(carry, deltaX, deltaMode, plotWidth, length) {
+  const px = deltaX * (deltaMode === 1 ? 16 : deltaMode === 2 ? plotWidth : 1);
+  const total = carry + px * length / Math.max(1, plotWidth);
+  const bars = Math.trunc(total + Math.sign(total) * 1e-9);   // absorb float drift (15.9999… → 16)
+  return { bars, carry: total - bars };
+}
+
+// The visible window of `length` candle slots. `offset` counts candles back from the newest one;
+// a negative offset scrolls past it, leaving blank slots on the right for future candles, at most
+// half the view (newest candle centred). Returns the clamped offset and bar indices [start, end).
+export function viewWindow(total, length, offset) {
+  const minOffset = -Math.floor(length / 2);
+  const clamped = Math.max(minOffset, Math.min(Math.max(0, total - length), Math.round(offset) || 0));
+  const start = Math.max(0, total - clamped - length);
+  return { start, end: Math.min(total, total - clamped), offset: clamped, minOffset };
+}
