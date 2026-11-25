@@ -47,6 +47,15 @@ class IronFlyParams:
     stop_trigger: str = "ask"               # "ask" (buy-to-close price) | "mark"
     close_retry_seconds: float = 1.0
     feed_stale_alert_seconds: float = 30.0
+    # Stop trigger quote guard (2026-11-25 stub-quote stop): a stop acts only on a fresh,
+    # two-sided, sane quote, confirmed by a second qualifying quote >= stop_confirm_seconds
+    # later; the stop close limit is capped near the mid and steps up per attempt.
+    stop_max_quote_age: float = 5.0         # seconds
+    stop_max_spread_abs: float = 0.50       # index points
+    stop_max_spread_pct: float = 0.25       # of the mid
+    stop_confirm_seconds: float = 1.0
+    stop_close_cap_abs: float = 0.30
+    stop_close_cap_pct: float = 0.10
     settlement_delay_seconds: float = 60.0  # wait after the close before reading the print
     settlement_timeout_minutes: float = 60.0
 

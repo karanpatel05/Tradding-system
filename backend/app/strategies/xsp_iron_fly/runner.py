@@ -54,6 +54,10 @@ class IronFlyRunner:
         self.safe_mode_fn = safe_mode_fn
         self.alert_fn = alert_fn
         self._contracts: dict[date, list] = {}
+        # (session_date, role) -> clock time a short leg was first seen past its stop on
+        # a usable quote; the stop fires only if it is still past on a check >= the
+        # confirm window later (a one-tick stub/spike never fires).
+        self._stop_seen: dict[tuple, datetime] = {}
         self._reject_alerted: set = set()
         self._last_miss = ""          # why the latest entry order did not fill
 
@@ -678,7 +682,17 @@ class IronFlyRunner:
         while got < qty:
             q = self.feed.quote(leg["symbol"])
             if q is not None and L.quote_valid(q.bid, q.ask):
-                lim = L.marketable_limit(side, q.bid, q.ask, self.p.limit_through, self.p.tick)
+                if kind == "stop" and q.bid > 0:
+                    # capped near the mid, stepping up per unfilled attempt: never pay a
+                    # stub offer outright (2026-11-25: a 9.99 ask -> 10.05 limit)
+                    lim = L.stop_close_limit(q.bid, q.ask, through=self.p.limit_through,
+                                             tick=self.p.tick,
+                                             attempt=int(leg.get("stop_attempts") or 0),
+                                             cap_abs=self.p.stop_close_cap_abs,
+                                             cap_pct=self.p.stop_close_cap_pct)
+                else:
+                    lim = L.marketable_limit(side, q.bid, q.ask, self.p.limit_through,
+                                             self.p.tick)
                 if lim is None:
                     no_bid = True
                     break
@@ -731,6 +745,8 @@ class IronFlyRunner:
         got, px, _ = await self._close_qty(s, leg, remaining, "stop", self.clock.now())
         if got:
             self._add_exit(leg, got, px, by_order=True)
+        if int(leg.get("exit_qty") or 0) < int(leg["qty"]):
+            leg["stop_attempts"] = int(leg.get("stop_attempts") or 0) + 1   # step the cap up
         if int(leg.get("exit_qty") or 0) >= int(leg["qty"]):
             await self._finish_leg(s, leg, "stopped", "stop")
             px = float(leg["exit_price"])
@@ -798,6 +814,7 @@ class IronFlyRunner:
         last_sub = None
         stale = False
         while True:
+            confirm_soon = False
             if s["status"] == "error":         # SAFE_MODE tripped: a human takes over
                 return
             now = self.clock.now()
@@ -820,9 +837,24 @@ class IronFlyRunner:
                         marks[leg["role"]] = L.mid(q.bid, q.ask)
                 if leg["status"] == "stopping":
                     await self._stop_leg(s, leg)        # retry the unfilled stop close
-                elif (q is not None and leg["action"] == "SELL" and leg["status"] == "open"
-                        and L.stop_triggered(q.bid, q.ask, leg["stop_level"], p.stop_trigger)):
-                    await self._stop_leg(s, leg, q)
+                elif leg["action"] == "SELL" and leg["status"] == "open":
+                    key = (s.get("session_date"), leg["role"])
+                    past = q is not None and L.stop_check(
+                        q.bid, q.ask, q.age(self.clock.now()), leg["stop_level"],
+                        p.stop_trigger, max_age=p.stop_max_quote_age,
+                        max_spread_abs=p.stop_max_spread_abs,
+                        max_spread_pct=p.stop_max_spread_pct)[0]
+                    if not past:
+                        self._stop_seen.pop(key, None)
+                    elif key not in self._stop_seen:
+                        self._stop_seen[key] = self.clock.now()   # confirm on a later check
+                        confirm_soon = True
+                    elif ((self.clock.now() - self._stop_seen[key]).total_seconds()
+                          >= p.stop_confirm_seconds - 1e-9):
+                        self._stop_seen.pop(key, None)
+                        await self._stop_leg(s, leg, q)
+                    else:
+                        confirm_soon = True
             age = None if newest is None else (self.clock.now() - newest).total_seconds()
             if age is None or age > p.feed_stale_alert_seconds:
                 if not stale:
@@ -842,7 +874,8 @@ class IronFlyRunner:
                         if p.flatten_on_daily_loss:
                             await self._flatten(s, "daily_loss")
                             break
-            await self.clock.sleep(p.monitor_interval)
+            await self.clock.sleep(min(p.monitor_interval, p.stop_confirm_seconds)
+                                   if confirm_soon else p.monitor_interval)
         if s["status"] == "error":             # SAFE_MODE: no flatten, no settlement
             return
         for leg in self._legs_open(s):

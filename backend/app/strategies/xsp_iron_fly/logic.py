@@ -169,6 +169,42 @@ def stop_price(bid: float | None, ask: float | None, trigger: str) -> float | No
     return ask if trigger == "ask" else mid(bid, ask)
 
 
+def stop_check(bid: float | None, ask: float | None, age: float | None, level: float,
+               trigger: str = "ask", *, max_age: float, max_spread_abs: float,
+               max_spread_pct: float) -> tuple[bool, str]:
+    """(past_stop, reason) for one short-leg quote, ignoring quotes a stop must not act on.
+
+    - stale (no receive time, or older than ``max_age``) or one-sided (no bid / bid <= 0,
+      no ask, crossed) -> never past the stop;
+    - trigger "mark": the mid is compared with the level;
+    - trigger "ask": the ask is compared when the spread is sane (<= max(max_spread_abs,
+      max_spread_pct x mid)); on a wider quote only the MID counts, so a stub offer can't
+      fire the stop (2026-11-25: bid 4.52 / ask 9.99 vs stop 7.875) while a real gap
+      with a wide market (mid itself past the stop) still fires.
+    A caller must still confirm on a second, later quote before acting."""
+    if age is None or age > max_age:
+        return False, "stale"
+    if bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
+        return False, "one-sided"
+    m = mid(bid, ask)
+    if trigger == "mark":
+        return m >= level - EPS, "mark"
+    if ask - bid <= max(max_spread_abs, max_spread_pct * m) + EPS:
+        return ask >= level - EPS, "ask"
+    return m >= level - EPS, "wide: mid"
+
+
+def stop_close_limit(bid: float, ask: float, *, through: float, tick: float, attempt: int,
+                     cap_abs: float = 0.30, cap_pct: float = 0.10) -> float:
+    """Buy-to-close limit for a stop: min(ask + through, mid + cap x (attempt + 1)) with
+    cap = max(cap_abs, cap_pct x mid), rounded up to the tick. Each unfilled attempt steps
+    the limit up toward the touch, so a stub offer is never paid on the first try."""
+    full = round_to_tick(ask + through, tick, "up")
+    m = mid(bid, ask)
+    capped = round_to_tick(m + max(cap_abs, cap_pct * m) * (attempt + 1), tick, "up")
+    return min(full, capped)
+
+
 def stop_triggered(bid: float | None, ask: float | None, level: float,
                    trigger: str = "ask") -> bool:
     """True when the short's buy-to-close price is at or above its stop level. A gap
