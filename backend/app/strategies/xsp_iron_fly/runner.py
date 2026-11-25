@@ -689,7 +689,9 @@ class IronFlyRunner:
                                              tick=self.p.tick,
                                              attempt=int(leg.get("stop_attempts") or 0),
                                              cap_abs=self.p.stop_close_cap_abs,
-                                             cap_pct=self.p.stop_close_cap_pct)
+                                             cap_pct=self.p.stop_close_cap_pct,
+                                             max_spread_abs=self.p.stop_max_spread_abs,
+                                             max_spread_pct=self.p.stop_max_spread_pct)
                 else:
                     lim = L.marketable_limit(side, q.bid, q.ask, self.p.limit_through,
                                              self.p.tick)

@@ -178,9 +178,10 @@ def stop_check(bid: float | None, ask: float | None, age: float | None, level: f
       no ask, crossed) -> never past the stop;
     - trigger "mark": the mid is compared with the level;
     - trigger "ask": the ask is compared when the spread is sane (<= max(max_spread_abs,
-      max_spread_pct x mid)); on a wider quote only the MID counts, so a stub offer can't
-      fire the stop (2026-11-25: bid 4.52 / ask 9.99 vs stop 7.875) while a real gap
-      with a wide market (mid itself past the stop) still fires.
+      max_spread_pct x mid)); on a wider quote only the BID counts. A stub offer inflates
+      both the ask and the mid (2026-11-25: bid 4.52 / ask 9.99 vs stop 7.875 at 09:46,
+      and bid 4.54 / ask 10.00 x 1/2 contracts vs stop 5.70 at 12:08, whose mid 7.27 WAS
+      past the stop), but not the bid; a real gap through the stop lifts the bid too.
     A caller must still confirm on a second, later quote before acting."""
     if age is None or age > max_age:
         return False, "stale"
@@ -191,17 +192,20 @@ def stop_check(bid: float | None, ask: float | None, age: float | None, level: f
         return m >= level - EPS, "mark"
     if ask - bid <= max(max_spread_abs, max_spread_pct * m) + EPS:
         return ask >= level - EPS, "ask"
-    return m >= level - EPS, "wide: mid"
+    return bid >= level - EPS, "wide: bid"
 
 
 def stop_close_limit(bid: float, ask: float, *, through: float, tick: float, attempt: int,
-                     cap_abs: float = 0.30, cap_pct: float = 0.10) -> float:
-    """Buy-to-close limit for a stop: min(ask + through, mid + cap x (attempt + 1)) with
-    cap = max(cap_abs, cap_pct x mid), rounded up to the tick. Each unfilled attempt steps
-    the limit up toward the touch, so a stub offer is never paid on the first try."""
+                     cap_abs: float = 0.30, cap_pct: float = 0.10,
+                     max_spread_abs: float = 0.50, max_spread_pct: float = 0.25) -> float:
+    """Buy-to-close limit for a stop: min(ask + through, base + cap x (attempt + 1)) with
+    cap = max(cap_abs, cap_pct x base), rounded up to the tick. base = the mid on a sane
+    spread, the BID on a stub-wide one (a stub ask inflates the mid). Each unfilled attempt
+    steps the limit up toward the touch, so a stub offer is never paid on the first try."""
     full = round_to_tick(ask + through, tick, "up")
     m = mid(bid, ask)
-    capped = round_to_tick(m + max(cap_abs, cap_pct * m) * (attempt + 1), tick, "up")
+    base = m if ask - bid <= max(max_spread_abs, max_spread_pct * m) + EPS else bid
+    capped = round_to_tick(base + max(cap_abs, cap_pct * base) * (attempt + 1), tick, "up")
     return min(full, capped)
 
 
