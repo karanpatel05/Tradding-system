@@ -61,6 +61,9 @@ class IronFlyRunner:
         # Held-stop alert (alerting only): (session_date, role) -> when the guard started
         # holding that short's stop back; and which episodes already alerted.
         self._held_since: dict[tuple, datetime] = {}
+        # option symbol -> (receive time of its newest quote, XSP price when first seen):
+        # how far the index has moved since a (possibly quiet) leg last quoted.
+        self._spot_at_quote: dict[str, tuple] = {}
         self._held_alerted: set[tuple] = set()
         self._reject_alerted: set = set()
         self._last_miss = ""          # why the latest entry order did not fill
@@ -731,7 +734,16 @@ class IronFlyRunner:
         await self.ex.cancel_all()
         return got, (notional / got if got else 0.0), no_bid
 
-    async def _watch_held_stop(self, s: dict, leg: dict, q, key: tuple) -> None:
+    def _moved_since_quote(self, symbol: str | None, spot_now) -> bool:
+        """True when XSP has moved more than feed_quiet_max_move since ``symbol``'s newest
+        quote arrived (unknown -> False)."""
+        seen = self._spot_at_quote.get(symbol) if symbol else None
+        if seen is None or spot_now is None or not seen[1]:
+            return False
+        return abs(spot_now.price - seen[1]) / seen[1] > self.p.feed_quiet_max_move
+
+    async def _watch_held_stop(self, s: dict, leg: dict, q, key: tuple,
+                               underlying_moved: bool = False) -> None:
         """Alert ONCE per episode when the stop guard has held this short's stop back for
         >= stop_held_alert_seconds (stale / one-sided quote, or the mid or raw ask at or
         above the stop on a quote the guard won't act on). Re-arms when it clears.
@@ -744,7 +756,8 @@ class IronFlyRunner:
             reason = L.stop_held_reason(
                 q.bid, q.ask, q.age(now), leg["stop_level"], p.stop_trigger,
                 max_age=p.stop_max_quote_age, max_spread_abs=p.stop_max_spread_abs,
-                max_spread_pct=p.stop_max_spread_pct, near_fraction=p.stop_held_near_fraction)
+                max_spread_pct=p.stop_max_spread_pct, near_fraction=p.stop_held_near_fraction,
+                underlying_moved=underlying_moved)
         if reason is None:
             self._held_since.pop(key, None)
             self._held_alerted.discard(key)
@@ -866,11 +879,17 @@ class IronFlyRunner:
                 last_sub = now
             marks: dict[str, float] = {}
             newest = None
+            newest_sym = None
+            spot_now = self.feed.spot(p.ticker)
             for leg in open_legs:
                 q = self.feed.quote(leg["symbol"])
                 if q is not None:
                     if q.ts is not None and (newest is None or q.ts > newest):
-                        newest = q.ts
+                        newest, newest_sym = q.ts, leg["symbol"]
+                    seen = self._spot_at_quote.get(leg["symbol"])
+                    if (q.ts is not None and spot_now is not None
+                            and (seen is None or seen[0] != q.ts)):
+                        self._spot_at_quote[leg["symbol"]] = (q.ts, spot_now.price)
                     if L.quote_valid(q.bid, q.ask):
                         marks[leg["role"]] = L.mid(q.bid, q.ask)
                 if leg["status"] == "stopping":
@@ -882,7 +901,8 @@ class IronFlyRunner:
                         p.stop_trigger, max_age=p.stop_max_quote_age,
                         max_spread_abs=p.stop_max_spread_abs,
                         max_spread_pct=p.stop_max_spread_pct)[0]
-                    await self._watch_held_stop(s, leg, q, key)
+                    await self._watch_held_stop(s, leg, q, key,
+                                                self._moved_since_quote(leg["symbol"], spot_now))
                     if not past:
                         self._stop_seen.pop(key, None)
                     elif key not in self._stop_seen:
@@ -900,10 +920,15 @@ class IronFlyRunner:
             # are fresh; both silent = a real outage, and the stops are blind.
             now = self.clock.now()
             age = None if newest is None else (now - newest).total_seconds()
-            spot = self.feed.spot(p.ticker)
-            spot_age = None if spot is None else spot.age(now)
-            live = [a for a in (age, spot_age) if a is not None]
-            if not live or min(live) > p.feed_stale_alert_seconds:
+            spot_age = None if spot_now is None else spot_now.age(now)
+            quotes_fresh = age is not None and age <= p.feed_stale_alert_seconds
+            # XSP trades prove the feed is alive only while the index hasn't moved since
+            # the newest option quote: quiet legs in a quiet market are fine, but option
+            # quotes that stay frozen through a move mean they are dead (option-only
+            # outage, e.g. a lost subscription), so the stops are blind.
+            spot_vouches = (spot_age is not None and spot_age <= p.feed_stale_alert_seconds
+                            and not self._moved_since_quote(newest_sym, spot_now))
+            if not (quotes_fresh or spot_vouches):
                 if not stale:
                     stale = True
                     msg = (f"market data stale (option quotes {age}s, {p.ticker} {spot_age}s); "

@@ -58,6 +58,7 @@ class IronFlyParams:
     stop_close_cap_pct: float = 0.10
     stop_held_alert_seconds: float = 30.0   # alert once when a stop is held back this long
     stop_held_near_fraction: float = 0.80   # stale-quote alert only if last price >= 80% of stop
+    feed_quiet_max_move: float = 0.0025     # XSP move (fraction) since a quote = "not quiet"
     settlement_delay_seconds: float = 60.0  # wait after the close before reading the print
     settlement_timeout_minutes: float = 60.0
 

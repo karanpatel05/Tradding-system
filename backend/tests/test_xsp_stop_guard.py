@@ -271,6 +271,11 @@ def test_held_reason_stale_only_near_the_stop():
     assert L.stop_held_reason(4.40, 4.50, 40.0, 5.00, "ask", **G) == "stale quote"   # 90%
     assert L.stop_held_reason(0.05, 0.10, 40.0, 5.00, "ask", **G) is None            # 2%
     assert L.stop_held_reason(None, None, None, 5.00, "ask", **G) == "stale quote"   # blind
+    # one-sided: a worthless far-OTM short (0.00/0.04) is quiet; a stub (0.00/9.99) alerts
+    assert L.stop_held_reason(0.0, 0.04, 0.5, 5.00, "ask", **G) is None
+    assert L.stop_held_reason(0.0, 9.99, 0.5, 5.00, "ask", **G) == "one-sided quote"
+    assert L.stop_held_reason(0.0, 0.04, 0.5, 5.00, "ask", underlying_moved=True,
+                              **G) == "one-sided quote"
 
 
 @pytest.mark.asyncio
@@ -332,3 +337,66 @@ async def test_held_alert_re_arms_after_the_condition_clears():
     s = await make(clock, feed, alerts=alerts).run_session(D)
     assert len(_held(alerts)) == 2                                    # one per episode
     assert leg(s, "short_call").get("stop_triggered_at") is None
+
+
+# --- option-only outage: XSP keeps trading (and moving) while option quotes are dead -----
+def _move(t0, t1, a, b):
+    """Spot flat at a until t0, ramps to b by t1, then holds."""
+    def f(t):
+        if t <= t0:
+            return a
+        if t >= t1:
+            return b
+        return a + (b - a) * (t - t0).total_seconds() / (t1 - t0).total_seconds()
+    return f
+
+
+@pytest.mark.asyncio
+async def test_option_only_outage_during_a_move_still_alerts_blind_stops():
+    clock = SimClock(at(D, 9, 0))
+    t0 = at(D, 13, 25)
+    feed = QuietLegsFeed(clock, _move(t0, t0 + timedelta(minutes=2), 600.0, 603.0),
+                         t0=t0, t1=at(D, 13, 30))       # XSP +0.5%, option quotes frozen
+    alerts = []
+    await make(clock, feed, alerts=alerts).run_session(D)
+    assert len(_stale(alerts)) == 1
+
+
+class OneLegDeadFeed(FakeFeed):
+    """From t0 only the short PUT's quote is frozen (a dropped subscription); every other
+    leg keeps ticking, and XSP moves."""
+
+    def __init__(self, *a, t0, t1, **k):
+        super().__init__(*a, **k)
+        self.t0, self.t1, self.frozen = t0, t1, None
+
+    def quote(self, symbol):
+        now = self.clock.now()
+        if symbol == self.sym(D, "P", 600) and self.t0 <= now < self.t1:
+            if self.frozen is None:
+                q = super().quote(symbol)
+                self.frozen = Quote(q.bid, q.ask, self.t0)
+            return self.frozen
+        return super().quote(symbol)
+
+
+@pytest.mark.asyncio
+async def test_one_dead_leg_far_from_its_stop_alerts_when_xsp_moves():
+    clock = SimClock(at(D, 9, 0))
+    t0 = at(D, 13, 25)
+    # XSP down 0.5%: the frozen short put looks far below its stop, but its real price moved
+    feed = OneLegDeadFeed(clock, _move(t0, t0 + timedelta(minutes=2), 600.0, 597.0),
+                          t0=t0, t1=at(D, 13, 30))
+    alerts = []
+    await make(clock, feed, alerts=alerts).run_session(D)
+    msgs = _held(alerts)
+    assert len(msgs) == 1 and "short_put" in msgs[0] and "moved" in msgs[0]
+
+
+@pytest.mark.asyncio
+async def test_one_dead_leg_in_a_quiet_market_does_not_alert():
+    clock = SimClock(at(D, 9, 0))
+    feed = OneLegDeadFeed(clock, flat(600.0), t0=at(D, 13, 25), t1=at(D, 13, 30))
+    alerts = []
+    await make(clock, feed, alerts=alerts).run_session(D)
+    assert _held(alerts) == [] and _stale(alerts) == []
