@@ -58,6 +58,10 @@ class IronFlyRunner:
         # a usable quote; the stop fires only if it is still past on a check >= the
         # confirm window later (a one-tick stub/spike never fires).
         self._stop_seen: dict[tuple, datetime] = {}
+        # Held-stop alert (alerting only): (session_date, role) -> when the guard started
+        # holding that short's stop back; and which episodes already alerted.
+        self._held_since: dict[tuple, datetime] = {}
+        self._held_alerted: set[tuple] = set()
         self._reject_alerted: set = set()
         self._last_miss = ""          # why the latest entry order did not fill
 
@@ -727,6 +731,35 @@ class IronFlyRunner:
         await self.ex.cancel_all()
         return got, (notional / got if got else 0.0), no_bid
 
+    async def _watch_held_stop(self, s: dict, leg: dict, q, key: tuple) -> None:
+        """Alert ONCE per episode when the stop guard has held this short's stop back for
+        >= stop_held_alert_seconds (stale / one-sided quote, or the mid or raw ask at or
+        above the stop on a quote the guard won't act on). Re-arms when it clears.
+        Alerting only: never changes a stop decision or an order."""
+        p = self.p
+        now = self.clock.now()
+        if q is None:
+            reason = "no quote"
+        else:
+            reason = L.stop_held_reason(
+                q.bid, q.ask, q.age(now), leg["stop_level"], p.stop_trigger,
+                max_age=p.stop_max_quote_age, max_spread_abs=p.stop_max_spread_abs,
+                max_spread_pct=p.stop_max_spread_pct)
+        if reason is None:
+            self._held_since.pop(key, None)
+            self._held_alerted.discard(key)
+            return
+        since = self._held_since.setdefault(key, now)
+        if key in self._held_alerted or (now - since).total_seconds() < p.stop_held_alert_seconds:
+            return
+        self._held_alerted.add(key)
+        quote = "none" if q is None else f"{q.bid}/{q.ask} (age {q.age(now)}s)"
+        msg = (f"stop for {leg['role']} {leg['symbol']} held back for "
+               f"{(now - since).total_seconds():.0f}s: {reason}; quote {quote}, stop "
+               f"{leg['stop_level']:.2f}. Check the leg; the guard is not acting on it.")
+        await self._log(msg, level="warning")
+        await self._alert("xsp_fly_stop_held", f"XSP fly: {msg}")
+
     async def _stop_leg(self, s: dict, leg: dict, trigger_quote=None) -> None:
         """Mark the leg 'stopping' (persisted first), then make ONE buy-to-close attempt.
         _manage calls this again every tick while the leg stays 'stopping', so a close
@@ -734,6 +767,9 @@ class IronFlyRunner:
         Whatever is still open at the close is flattened or settles."""
         first = leg["status"] != "stopping"
         if first:
+            held_key = (s.get("session_date"), leg["role"])     # stopped: held alert re-arms
+            self._held_since.pop(held_key, None)
+            self._held_alerted.discard(held_key)
             leg["status"] = "stopping"
             leg["stop_triggered_at"] = _iso(self.clock.now())
             if trigger_quote is not None:
@@ -846,6 +882,7 @@ class IronFlyRunner:
                         p.stop_trigger, max_age=p.stop_max_quote_age,
                         max_spread_abs=p.stop_max_spread_abs,
                         max_spread_pct=p.stop_max_spread_pct)[0]
+                    await self._watch_held_stop(s, leg, q, key)
                     if not past:
                         self._stop_seen.pop(key, None)
                     elif key not in self._stop_seen:

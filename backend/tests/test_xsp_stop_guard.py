@@ -154,3 +154,100 @@ async def test_a_real_gap_still_fires_within_a_few_seconds():
     assert sc["status"] == "stopped"
     fired = datetime.fromisoformat(sc["stop_triggered_at"])
     assert fired - gap_at <= timedelta(seconds=P.monitor_interval + 1.5)
+
+
+# --- held-stop alert: the guard is holding a stop back while the leg may be past it -------
+HELD = "xsp_fly_stop_held"
+
+
+def test_todays_three_replays_unchanged():
+    assert L.stop_check(4.52, 9.99, 0.5, 7.875, "ask", **GUARD)[0] is False     # 09:46 stub
+    assert L.stop_check(4.54, 10.00, 0.5, 5.70, "ask", **GUARD)[0] is False     # 12:08 stub
+    assert L.stop_check(5.35, 5.89, 0.5, 5.595, "ask", **GUARD)[0] is True      # 10:19 real
+
+
+def test_held_reason_pure():
+    assert L.stop_held_reason(4.54, 10.00, 0.5, 5.70, "ask", **GUARD) is not None  # mid past
+    assert L.stop_held_reason(9.00, 9.10, 20.0, 5.70, "ask", **GUARD) == "stale quote"
+    assert L.stop_held_reason(0.0, 9.99, 0.5, 5.70, "ask", **GUARD) == "one-sided quote"
+    assert L.stop_held_reason(4.40, 4.50, 0.5, 5.70, "ask", **GUARD) is None      # fine
+    assert L.stop_held_reason(5.80, 5.90, 0.5, 5.70, "ask", **GUARD) is None      # fires
+
+
+def _held(alerts):
+    return [m for k, m in alerts if k == HELD]
+
+
+@pytest.mark.asyncio
+async def test_per_leg_stale_quote_alerts_once_while_other_legs_tick():
+    clock = SimClock(at(D, 9, 0))
+    feed = FakeFeed(clock, flat(600.0))
+    t0 = at(D, 10, 0)
+    feed.overrides[feed.sym(D, "C", 600)] = (
+        lambda t: (1.00, 1.04, t0) if t0 <= t < t0 + timedelta(minutes=5) else None)
+    alerts = []
+    s = await make(clock, feed, alerts=alerts).run_session(D)
+    msgs = _held(alerts)
+    assert len(msgs) == 1 and "short_call" in msgs[0] and "stale" in msgs[0]
+    assert leg(s, "short_call").get("stop_triggered_at") is None       # no stop decision
+
+
+@pytest.mark.asyncio
+async def test_wide_quote_with_mid_past_stop_alerts_once_and_never_stops():
+    clock = SimClock(at(D, 9, 0))
+    feed = MiddayStubFeed(clock, flat(600.0), t0=at(D, 10, 0), t1=at(D, 10, 5))
+    alerts = []
+    s = await make(clock, feed, alerts=alerts).run_session(D)
+    msgs = _held(alerts)
+    assert len(msgs) == 1 and "short_call" in msgs[0]                 # no duplicates
+    assert leg(s, "short_call").get("stop_triggered_at") is None
+
+
+@pytest.mark.asyncio
+async def test_short_wide_hold_under_30s_does_not_alert():
+    clock = SimClock(at(D, 9, 0))
+    feed = MiddayStubFeed(clock, flat(600.0), t0=at(D, 10, 0),
+                          t1=at(D, 10, 0) + timedelta(seconds=10))
+    alerts = []
+    await make(clock, feed, alerts=alerts).run_session(D)
+    assert _held(alerts) == []
+
+
+@pytest.mark.asyncio
+async def test_one_sided_quote_alerts():
+    clock = SimClock(at(D, 9, 0))
+    feed = FakeFeed(clock, flat(600.0))
+    t0 = at(D, 10, 0)
+    feed.overrides[feed.sym(D, "C", 600)] = (
+        lambda t: (0.0, 9.99) if t0 <= t < t0 + timedelta(minutes=2) else None)
+    alerts = []
+    s = await make(clock, feed, alerts=alerts).run_session(D)
+    msgs = _held(alerts)
+    assert len(msgs) == 1 and "one-sided" in msgs[0]
+    assert leg(s, "short_call").get("stop_triggered_at") is None
+
+
+class TwoStubFeed(MiddayStubFeed):
+    def __init__(self, *a, windows, **k):
+        super().__init__(*a, t0=windows[0][0], t1=windows[0][1], **k)
+        self.windows = windows
+
+    def quote(self, symbol):
+        now = self.clock.now()
+        for w0, w1 in self.windows:
+            if w0 <= now < w1:
+                self.t0, self.t1 = w0, w1
+                return super().quote(symbol)
+        self.t0 = self.t1 = now            # outside every window: a normal quote
+        return super().quote(symbol)
+
+
+@pytest.mark.asyncio
+async def test_held_alert_re_arms_after_the_condition_clears():
+    clock = SimClock(at(D, 9, 0))
+    w = [(at(D, 10, 0), at(D, 10, 2)), (at(D, 11, 0), at(D, 11, 2))]
+    feed = TwoStubFeed(clock, flat(600.0), windows=w)
+    alerts = []
+    s = await make(clock, feed, alerts=alerts).run_session(D)
+    assert len(_held(alerts)) == 2                                    # one per episode
+    assert leg(s, "short_call").get("stop_triggered_at") is None

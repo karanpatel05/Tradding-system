@@ -195,6 +195,26 @@ def stop_check(bid: float | None, ask: float | None, age: float | None, level: f
     return bid >= level - EPS, "wide: bid"
 
 
+def stop_held_reason(bid: float | None, ask: float | None, age: float | None, level: float,
+                     trigger: str = "ask", *, max_age: float, max_spread_abs: float,
+                     max_spread_pct: float) -> str | None:
+    """Why the stop guard is holding a stop back while the leg MAY be past it, or None.
+    Alerting only (it never changes a stop decision): a stale or one-sided quote (the
+    stop is blind), or a quote the guard won't act on whose mid or raw ask is at or above
+    the stop. None when the quote is sane and below the stop, or when the stop fires."""
+    if age is None or age > max_age:
+        return "stale quote"
+    if bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
+        return "one-sided quote"
+    past, why = stop_check(bid, ask, age, level, trigger, max_age=max_age,
+                           max_spread_abs=max_spread_abs, max_spread_pct=max_spread_pct)
+    if past:
+        return None
+    if mid(bid, ask) >= level - EPS or ask >= level - EPS:
+        return f"guard holding ({why}): mid {mid(bid, ask):.2f} / ask {ask:.2f} >= stop"
+    return None
+
+
 def stop_close_limit(bid: float, ask: float, *, through: float, tick: float, attempt: int,
                      cap_abs: float = 0.30, cap_pct: float = 0.10,
                      max_spread_abs: float = 0.50, max_spread_pct: float = 0.25) -> float:

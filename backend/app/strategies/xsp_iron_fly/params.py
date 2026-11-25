@@ -56,6 +56,7 @@ class IronFlyParams:
     stop_confirm_seconds: float = 1.0
     stop_close_cap_abs: float = 0.30
     stop_close_cap_pct: float = 0.10
+    stop_held_alert_seconds: float = 30.0   # alert once when a stop is held back this long
     settlement_delay_seconds: float = 60.0  # wait after the close before reading the print
     settlement_timeout_minutes: float = 60.0
 
