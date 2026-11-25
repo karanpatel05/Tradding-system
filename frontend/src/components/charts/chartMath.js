@@ -177,3 +177,14 @@ export function sessionStats(bars) {
     vwap: volume ? value / volume : null,
   };
 }
+
+// Horizontal wheel/trackpad scroll in whole candles. Candles moved follow the distance scrolled
+// (pixels ÷ candle width), and the fractional remainder carries to the next event, so a swipe
+// made of many small events moves the chart as far as the fingers moved. Positive deltaX scrolls
+// toward newer candles. deltaMode 1 = lines (16 px each), 2 = pages (one plot width).
+export function wheelBars(carry, deltaX, deltaMode, plotWidth, length) {
+  const px = deltaX * (deltaMode === 1 ? 16 : deltaMode === 2 ? plotWidth : 1);
+  const total = carry + px * length / Math.max(1, plotWidth);
+  const bars = Math.trunc(total + Math.sign(total) * 1e-9);   // absorb float drift (15.9999… → 16)
+  return { bars, carry: total - bars };
+}

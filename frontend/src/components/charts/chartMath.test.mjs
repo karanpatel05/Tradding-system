@@ -1,5 +1,5 @@
 // Plain-node test (no runner configured). Run: node frontend/src/components/charts/chartMath.test.mjs
-import { aggregate, bollinger, crossovers, donchian, ema, heikinAshi, makeScale, normalizeBars, rsi, sessionOf, sessionStats, sma, sourceValues } from "./chartMath.js";
+import { aggregate, bollinger, wheelBars, crossovers, donchian, ema, heikinAshi, makeScale, normalizeBars, rsi, sessionOf, sessionStats, sma, sourceValues } from "./chartMath.js";
 import { applyStudy, studyValues } from "./chartData.js";
 
 const eq = (a, b, msg) => {
@@ -116,3 +116,18 @@ eq(applyStudy(pane2, { id: "zz", type: "RSI", period: 21 })[1].period, 21, "sing
 eq(applyStudy(pane2, { id: "zz", type: "RSI", period: 21 })[1].id, "r", "replaced study keeps the pane's id");
 
 console.log("chartMath: all tests passed");
+
+// Trackpad scroll follows the fingers: candles moved = pixels / candle width, fractions carried
+// between events. A Mac swipe fires dozens of small events; a fixed step per event flung the chart
+// to its edges (a gentle swipe toward the right pinned it to the newest candle).
+{
+  let carry = 0, moved = 0;
+  for (let i = 0; i < 30; i++) { const r = wheelBars(carry, 4, 0, 600, 80); carry = r.carry; moved += r.bars; }
+  eq(moved, 16, "120 px of swipe at 7.5 px per candle moves 16 candles, not 210");
+  let c = 0, m = 0;
+  for (let i = 0; i < 3; i++) { const r = wheelBars(c, -2.5, 0, 600, 80); c = r.carry; m += r.bars; }
+  eq(m, -1, "small deltas accumulate and keep their direction");
+  eq(wheelBars(0, 1, 1, 600, 80).bars, 2, "line-mode deltas count as 16 px per line");
+  eq(wheelBars(0, 0, 0, 600, 80).bars, 0, "no horizontal movement moves nothing");
+}
+console.log("wheelBars ok");

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Drawings from "./Drawings.jsx";
-import { crossovers, heikinAshi, makeScale, rsi } from "./chartMath.js";
+import { crossovers, heikinAshi, makeScale, rsi, wheelBars } from "./chartMath.js";
 import { PRICE_STUDIES, studyLabel, studyLines } from "./chartData.js";
 import { clearHover, publishHover, useHoverTime } from "./syncStore.js";
 import { sessionCloseAfter } from "./alerts.js";
@@ -93,6 +93,8 @@ export default function PriceChart({pane, paneId, bars, tool, drawingProps, onRe
     });
     setHover(null);
   }
+  const wheelCarry = useRef(0);   // sub-candle trackpad distance carried between wheel events
+  const viewLength = useRef(length); viewLength.current = length;
   const scroll = dir => setView(old=>({...old,offset:limit(old.offset+dir*Math.max(1,Math.round(old.length/5)),0,total-old.length)}));
   useEffect(() => {
     const svg = plot.current;
@@ -101,7 +103,9 @@ export default function PriceChart({pane, paneId, bars, tool, drawingProps, onRe
       const rect = svg.getBoundingClientRect();
       const anchor = limit((event.clientX-rect.left)/(Math.max(30,rect.width-axisW)),0,1);
       if (Math.abs(event.deltaX)>Math.abs(event.deltaY)) {
-        setView(old=>({...old,offset:limit(old.offset-Math.sign(event.deltaX)*Math.max(1,Math.round(old.length/12)),0,total-old.length)}));
+        const {bars, carry} = wheelBars(wheelCarry.current, event.deltaX, event.deltaMode, Math.max(30,rect.width-axisW), viewLength.current);
+        wheelCarry.current = carry;
+        if (bars) setView(old=>({...old,offset:limit(old.offset-bars,0,total-old.length)}));
       } else if (event.deltaY) {
         zoom(event.deltaY>0?1.15:1/1.15,anchor);
       }
