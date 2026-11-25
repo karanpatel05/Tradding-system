@@ -1,5 +1,5 @@
 // Plain-node test (no runner configured). Run: node frontend/src/components/charts/chartMath.test.mjs
-import { aggregate, bollinger, wheelBars, crossovers, donchian, ema, heikinAshi, makeScale, normalizeBars, rsi, sessionOf, sessionStats, sma, sourceValues } from "./chartMath.js";
+import { aggregate, bollinger, wheelBars, viewWindow, crossovers, donchian, ema, heikinAshi, makeScale, normalizeBars, rsi, sessionOf, sessionStats, sma, sourceValues } from "./chartMath.js";
 import { applyStudy, studyValues } from "./chartData.js";
 
 const eq = (a, b, msg) => {
@@ -131,3 +131,17 @@ console.log("chartMath: all tests passed");
   eq(wheelBars(0, 0, 0, 600, 80).bars, 0, "no horizontal movement moves nothing");
 }
 console.log("wheelBars ok");
+
+// Scrolling past the newest candle leaves blank "future" slots on the right, up to half the view,
+// so the latest candle can sit in the centre. Offset counts candles back from the newest.
+{
+  const at = (o) => viewWindow(500, 80, o);
+  eq(JSON.stringify(at(0)), JSON.stringify({ start: 420, end: 500, offset: 0, minOffset: -40 }), "offset 0: newest candle at the right edge");
+  eq(JSON.stringify(at(-10)), JSON.stringify({ start: 430, end: 500, offset: -10, minOffset: -40 }), "negative offset: 10 blank slots on the right");
+  eq(at(-100).offset, -40, "blank space is capped at half the view (latest candle centred)");
+  eq(at(-100).start, 460, "at the cap, the last 40 candles fill the left half");
+  eq(at(10_000).offset, 420, "scrolling back stops at the oldest candle");
+  eq(at(10_000).start, 0, "oldest window starts at the first candle");
+  eq(viewWindow(30, 30, -7).minOffset, -15, "short history: cap is still half the view");
+}
+console.log("viewWindow ok");

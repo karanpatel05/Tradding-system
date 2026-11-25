@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Drawings from "./Drawings.jsx";
-import { crossovers, heikinAshi, makeScale, rsi, wheelBars } from "./chartMath.js";
+import { crossovers, heikinAshi, makeScale, rsi, viewWindow, wheelBars } from "./chartMath.js";
 import { PRICE_STUDIES, studyLabel, studyLines } from "./chartData.js";
 import { clearHover, publishHover, useHoverTime } from "./syncStore.js";
 import { sessionCloseAfter } from "./alerts.js";
@@ -51,9 +51,8 @@ export default function PriceChart({pane, paneId, bars, tool, drawingProps, onRe
   const total = bars.length;
   const [view, setView] = useState({length: Math.min(80,total), offset:0});
   const length = limit(view.length, Math.min(10,total), total);
-  const offset = limit(view.offset, 0, total-length);
-  const end = total - offset;
-  const start = end - length;
+  const {start, end, offset, minOffset} = viewWindow(total, length, view.offset);
+  const clampOffset = (o, len) => viewWindow(total, len, o).offset;
   const plot = useRef(null);
   const [size,setSize] = useState({width:580,height:240});
   useEffect(()=>{
@@ -88,14 +87,14 @@ export default function PriceChart({pane, paneId, bars, tool, drawingProps, onRe
   function zoom(factor, anchor) {
     setView(old => {
       const next = limit(Math.round(old.length * factor), Math.min(10,total), Math.min(400,total));
-      const offset = limit(Math.round(old.offset + (old.length-next)*(1-anchor)),0,total-next);
+      const offset = clampOffset(old.offset + (old.length-next)*(1-anchor), next);
       return {length:next,offset};
     });
     setHover(null);
   }
   const wheelCarry = useRef(0);   // sub-candle trackpad distance carried between wheel events
   const viewLength = useRef(length); viewLength.current = length;
-  const scroll = dir => setView(old=>({...old,offset:limit(old.offset+dir*Math.max(1,Math.round(old.length/5)),0,total-old.length)}));
+  const scroll = dir => setView(old=>({...old,offset:clampOffset(old.offset+dir*Math.max(1,Math.round(old.length/5)), old.length)}));
   useEffect(() => {
     const svg = plot.current;
     function wheel(event) {
@@ -105,7 +104,7 @@ export default function PriceChart({pane, paneId, bars, tool, drawingProps, onRe
       if (Math.abs(event.deltaX)>Math.abs(event.deltaY)) {
         const {bars, carry} = wheelBars(wheelCarry.current, event.deltaX, event.deltaMode, Math.max(30,rect.width-axisW), viewLength.current);
         wheelCarry.current = carry;
-        if (bars) setView(old=>({...old,offset:limit(old.offset-bars,0,total-old.length)}));
+        if (bars) setView(old=>({...old,offset:clampOffset(old.offset-bars, old.length)}));
       } else if (event.deltaY) {
         zoom(event.deltaY>0?1.15:1/1.15,anchor);
       }
@@ -138,7 +137,7 @@ export default function PriceChart({pane, paneId, bars, tool, drawingProps, onRe
   const low=Math.max(1e-6, center-((max-min)/2+pad)*scale), high=center+((max-min)/2+pad)*scale;
   const sc = makeScale({low, high, top:priceTop, height:priceHeight, mode:S.scale, base:visible[0]?.close});
   const y = sc.y;
-  const step = axisX/visible.length;
+  const step = axisX/length;   // one slot per candle at this zoom; slots past the newest stay blank
   const x = i => (i+0.5)*step;
   const volume = studies.find(s => s.visible && s.type === "Volume");
   const maxVolume = Math.max(1,...visible.map(b=>b.volume));
@@ -214,11 +213,11 @@ export default function PriceChart({pane, paneId, bars, tool, drawingProps, onRe
         if(d.axis==="price"){ setScale(limit(d.scale*Math.exp((e.clientY-d.y)/140),0.08,16)); return; }
         if(d.axis==="time"){
           const next=limit(Math.round(d.length*Math.exp((d.x-e.clientX)/180)),Math.min(total,10),Math.min(total,400));
-          setView({length:next,offset:Math.min(d.offset,total-next)});
+          setView({length:next,offset:clampOffset(d.offset,next)});
           return;
         }
         const shift=Math.round((e.clientX-d.x)*length/(Math.max(30,rect.width-axisW)));
-        setView({length,offset:limit(d.offset+shift,0,total-length)});
+        setView({length,offset:clampOffset(d.offset+shift,length)});
         setPriceShift(d.priceShift+(e.clientY-d.y)*d.range/(priceHeight));
         setHover(null);
         return;
@@ -305,7 +304,7 @@ export default function PriceChart({pane, paneId, bars, tool, drawingProps, onRe
       <button aria-label="Zoom in (overlay)" title="Zoom in" disabled={length<=Math.min(10,total)} onClick={()=>zoom(.8,.5)}>+</button>
       <span className="cx-nav-sep"/>
       <button aria-label="Scroll back" title="Scroll back" disabled={offset>=total-length} onClick={()=>scroll(1)}>‹</button>
-      <button aria-label="Scroll forward" title="Scroll forward" disabled={offset===0} onClick={()=>scroll(-1)}>›</button>
+      <button aria-label="Scroll forward" title="Scroll forward" disabled={offset<=minOffset} onClick={()=>scroll(-1)}>›</button>
       <button aria-label="Reset view" title="Reset view (Alt R)" onClick={resetView}>↺</button>
     </div>
     {offset>0 && <button className="cx-latest" style={{bottom:size.height-plotBottom+10}} onClick={()=>setView(v=>({...v,offset:0}))}>Go to latest »</button>}
