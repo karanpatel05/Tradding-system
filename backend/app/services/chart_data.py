@@ -16,6 +16,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from app.marketdata.facade import bars as facade_bars, stock_quotes as facade_stock_quotes
+from app.services.market import get_market_status
 
 logger = logging.getLogger("trading.chart_data")
 
@@ -122,5 +123,7 @@ async def get_quotes(raw_symbols: str) -> dict:
         out[s] = {"price": price, "close": close, "bid": q.get("bid"), "ask": q.get("ask"),
                   "change_pct": change}
     available = any(v["price"] is not None for v in out.values())
-    return {"quotes": out, "data_available": available,
+    # The chart folds these prices into its newest candle only in the regular session; the
+    # server's session knows NYSE holidays, so the browser never opens candles on a closed day.
+    return {"quotes": out, "data_available": available, "session": get_market_status()["session"],
             "note": None if available else "No quote data (feed not connected or market closed)."}

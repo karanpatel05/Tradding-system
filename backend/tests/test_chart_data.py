@@ -125,3 +125,22 @@ async def test_empty_result_is_not_cached(monkeypatch):
     first = await chart_data.get_bars("QQQ", "5m", now=100.0)
     second = await chart_data.get_bars("QQQ", "5m", now=101.0)
     assert first["bars"] == [] and len(second["bars"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_quotes_report_market_session(monkeypatch):
+    """The chart folds live quotes into its newest candle only during the regular session,
+    so the quotes response carries the server's session (it knows NYSE holidays)."""
+    async def quotes(symbols, timeout=2.5):
+        return {"QQQ": {"price": 505.0, "close": 500.0}}
+
+    monkeypatch.setattr(chart_data, "facade_stock_quotes", quotes)
+    monkeypatch.setattr(chart_data, "get_market_status", lambda: {"session": "regular"})
+    assert (await chart_data.get_quotes("QQQ"))["session"] == "regular"
+
+    async def down(symbols, timeout=2.5):
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(chart_data, "facade_stock_quotes", down)
+    monkeypatch.setattr(chart_data, "get_market_status", lambda: {"session": "closed"})
+    assert (await chart_data.get_quotes("QQQ"))["session"] == "closed"
