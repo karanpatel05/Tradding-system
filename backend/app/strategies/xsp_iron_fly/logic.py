@@ -169,6 +169,66 @@ def stop_price(bid: float | None, ask: float | None, trigger: str) -> float | No
     return ask if trigger == "ask" else mid(bid, ask)
 
 
+def stop_check(bid: float | None, ask: float | None, age: float | None, level: float,
+               trigger: str = "ask", *, max_age: float, max_spread_abs: float,
+               max_spread_pct: float) -> tuple[bool, str]:
+    """(past_stop, reason) for one short-leg quote, ignoring quotes a stop must not act on.
+
+    - stale (no receive time, or older than ``max_age``) or one-sided (no bid / bid <= 0,
+      no ask, crossed) -> never past the stop;
+    - trigger "mark": the mid is compared with the level;
+    - trigger "ask": the ask is compared when the spread is sane (<= max(max_spread_abs,
+      max_spread_pct x mid)); on a wider quote only the BID counts. A stub offer inflates
+      both the ask and the mid (2026-11-25: bid 4.52 / ask 9.99 vs stop 7.875 at 09:46,
+      and bid 4.54 / ask 10.00 x 1/2 contracts vs stop 5.70 at 12:08, whose mid 7.27 WAS
+      past the stop), but not the bid; a real gap through the stop lifts the bid too.
+    A caller must still confirm on a second, later quote before acting."""
+    if age is None or age > max_age:
+        return False, "stale"
+    if bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
+        return False, "one-sided"
+    m = mid(bid, ask)
+    if trigger == "mark":
+        return m >= level - EPS, "mark"
+    if ask - bid <= max(max_spread_abs, max_spread_pct * m) + EPS:
+        return ask >= level - EPS, "ask"
+    return bid >= level - EPS, "wide: bid"
+
+
+def stop_held_reason(bid: float | None, ask: float | None, age: float | None, level: float,
+                     trigger: str = "ask", *, max_age: float, max_spread_abs: float,
+                     max_spread_pct: float) -> str | None:
+    """Why the stop guard is holding a stop back while the leg MAY be past it, or None.
+    Alerting only (it never changes a stop decision): a stale or one-sided quote (the
+    stop is blind), or a quote the guard won't act on whose mid or raw ask is at or above
+    the stop. None when the quote is sane and below the stop, or when the stop fires."""
+    if age is None or age > max_age:
+        return "stale quote"
+    if bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
+        return "one-sided quote"
+    past, why = stop_check(bid, ask, age, level, trigger, max_age=max_age,
+                           max_spread_abs=max_spread_abs, max_spread_pct=max_spread_pct)
+    if past:
+        return None
+    if mid(bid, ask) >= level - EPS or ask >= level - EPS:
+        return f"guard holding ({why}): mid {mid(bid, ask):.2f} / ask {ask:.2f} >= stop"
+    return None
+
+
+def stop_close_limit(bid: float, ask: float, *, through: float, tick: float, attempt: int,
+                     cap_abs: float = 0.30, cap_pct: float = 0.10,
+                     max_spread_abs: float = 0.50, max_spread_pct: float = 0.25) -> float:
+    """Buy-to-close limit for a stop: min(ask + through, base + cap x (attempt + 1)) with
+    cap = max(cap_abs, cap_pct x base), rounded up to the tick. base = the mid on a sane
+    spread, the BID on a stub-wide one (a stub ask inflates the mid). Each unfilled attempt
+    steps the limit up toward the touch, so a stub offer is never paid on the first try."""
+    full = round_to_tick(ask + through, tick, "up")
+    m = mid(bid, ask)
+    base = m if ask - bid <= max(max_spread_abs, max_spread_pct * m) + EPS else bid
+    capped = round_to_tick(base + max(cap_abs, cap_pct * base) * (attempt + 1), tick, "up")
+    return min(full, capped)
+
+
 def stop_triggered(bid: float | None, ask: float | None, level: float,
                    trigger: str = "ask") -> bool:
     """True when the short's buy-to-close price is at or above its stop level. A gap
