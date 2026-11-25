@@ -197,14 +197,29 @@ def stop_check(bid: float | None, ask: float | None, age: float | None, level: f
 
 def stop_held_reason(bid: float | None, ask: float | None, age: float | None, level: float,
                      trigger: str = "ask", *, max_age: float, max_spread_abs: float,
-                     max_spread_pct: float) -> str | None:
+                     max_spread_pct: float, near_fraction: float = 0.80,
+                     underlying_moved: bool = False) -> str | None:
     """Why the stop guard is holding a stop back while the leg MAY be past it, or None.
     Alerting only (it never changes a stop decision): a stale or one-sided quote (the
     stop is blind), or a quote the guard won't act on whose mid or raw ask is at or above
     the stop. None when the quote is sane and below the stop, or when the stop fires."""
     if age is None or age > max_age:
-        return "stale quote"
+        # DXLink sends a quote only when it changes, so a quiet leg looks stale. Alert only
+        # when its last known price was near the stop (>= near_fraction x stop); with no
+        # usable last price at all the stop is blind, so alert.
+        last = [x for x in (ask, mid(bid, ask) if bid is not None and ask is not None
+                            else None) if x is not None and x > 0]
+        if not last or max(last) >= near_fraction * level - EPS:
+            return "stale quote"
+        if underlying_moved:       # its last price is frozen while the index has moved
+            return "stale quote while the underlying moved"
+        return None
     if bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
+        # a worthless far-OTM short quotes 0.00 bid / a few cents: not a risk. Alert only
+        # when its offer is near the stop (a stub like 0.00/9.99) or the index has moved.
+        if (ask is not None and 0 < ask < near_fraction * level - EPS
+                and not underlying_moved):
+            return None
         return "one-sided quote"
     past, why = stop_check(bid, ask, age, level, trigger, max_age=max_age,
                            max_spread_abs=max_spread_abs, max_spread_pct=max_spread_pct)
