@@ -204,6 +204,12 @@ names. SPY sizing uses its own starting equity and realized SPY paper P&L.
 - Pausing SPY stops new entries and keeps the existing session under management.
   `GET /api/strategies/spy_iron_fly/sessions` returns its sessions and halt state.
   The authenticated `POST /api/strategies/spy_iron_fly/clear-halt` clears its daily-loss flag.
+- The default SPY backtest uses a $0.01 full spread and values remaining legs at expiration.
+  The trading system fetches historical Alpaca bars through the previous New York trading day
+  and publishes `backend/data_cache/spy_iron_fly/daily_backtest.csv`. To refresh manually,
+  run `../.venv/bin/python -m scripts.refresh_spy_backtest` from `backend/`.
+  For the installed macOS service, `python3 scripts/install_spy_backtest_refresh.py` schedules
+  the refresh at 06:15 local time every day and catches up at login or after sleep.
 - From `backend/`, run
   `python -m scripts.run_spy_fly_backtest fetch --start YYYY-MM-DD --end YYYY-MM-DD`
   to download historical SPY market data, then use `run` with the same dates to replay it.

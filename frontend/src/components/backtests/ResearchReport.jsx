@@ -47,14 +47,19 @@ export function ResearchPeriodReport({ report }) {
   }, [sessions]);
   return (
     <div className="replay-report research-report">
+      <p className="sd-card-meta">
+        From <time dateTime={report.start}>{sessionDate.format(new Date(report.start + "T12:00:00Z"))}</time> through{" "}
+        <time dateTime={report.end}>{sessionDate.format(new Date(report.end + "T12:00:00Z"))}</time>.
+        {" "}Updates daily through the previous trading day.
+      </p>
       <p className="research-method">
-        The SPY0DTEIronFly study uses one fly with $10 wings and a 1.5× stop per short leg.
+        The strategy opens one SPY iron fly with $10 wings and a 1.5× stop per short leg.
         Fills use a $0.01 full bid–ask spread ($0.005 per side) and a $0.035 fee per contract.
         Open legs are valued at intrinsic value at expiration.
       </p>
       <dl className="replay-metrics">
         <div><dt>Net P&amp;L</dt><dd className={tone(summary.total_pnl)}>{signedUsd(summary.total_pnl)}</dd></div>
-        <div><dt>Win rate</dt><dd>{summary.win_rate_pct.toFixed(2)}%</dd></div>
+        <div><dt>Win rate</dt><dd>{summary.win_rate_pct == null ? "—" : `${summary.win_rate_pct.toFixed(2)}%`}</dd></div>
         <div><dt>Max drawdown</dt><dd className={tone(summary.max_drawdown)}>{signedUsd(summary.max_drawdown)}</dd></div>
         <div><dt>Winning trades</dt><dd>{summary.wins} <small>of {summary.trades}</small></dd></div>
       </dl>
