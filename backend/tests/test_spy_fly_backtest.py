@@ -47,11 +47,13 @@ def test_as_of_print_window_and_contract_identity():
     assert series.latest(ENTRY + timedelta(seconds=7), 5)[0] == 2.0
     assert body_at(749.5) == 750
     record = fixture_day()
-    feed = SpyPrintFeed(record, IronFlyParams.for_spy(), ReplayClock(ENTRY), 0.05)
+    feed = SpyPrintFeed(record, IronFlyParams.for_spy(), ReplayClock(ENTRY))
     assert feed.spot("SPY").price == 749.5 and feed.spot("XSP") is None
+    quote = feed.quote("SPY261117C00750000")
+    assert (quote.bid, quote.ask) == pytest.approx((1.995, 2.005))
     record["contracts"]["XSP261117C00750000"] = record["contracts"].pop("SPY261117C00750000")
     with pytest.raises(ValueError, match="identity"):
-        SpyPrintFeed(record, IronFlyParams.for_spy(), ReplayClock(ENTRY), 0.05)
+        SpyPrintFeed(record, IronFlyParams.for_spy(), ReplayClock(ENTRY))
 
 
 def test_unresolved_sessions_do_not_inflate_win_rate_or_report_zero():
@@ -87,7 +89,7 @@ def test_fetch_uses_completed_spot_bar_and_eligible_single_leg_trades():
         record = fetch_day(client, DAY, CLOSE_START + timedelta(minutes=30), IronFlyParams.for_spy())
     ticks = record["contracts"]["SPY261117C00750000"]["prints"]
     assert ticks == [[stamp("2026-11-17T14:44:59Z") + 1, 2]]
-    feed = SpyPrintFeed(record, IronFlyParams.for_spy(), ReplayClock(ENTRY), 0.05)
+    feed = SpyPrintFeed(record, IronFlyParams.for_spy(), ReplayClock(ENTRY))
     assert feed.spot("SPY").price == 749.5
 
 
@@ -108,14 +110,14 @@ def test_offline_replay_and_saved_report_isolation(tmp_path, monkeypatch):
     assert backtest_reports.list_reports(KEY)[0]["start"] == str(DAY)
     report = backtest_reports.get_report(KEY, "alpaca-prints")
     assert report["params"]["ticker"] == "SPY" and report["params"]["flatten_minutes_before_close"] == 30
-    for width, scenario in report["by_width"].items():
-        row = scenario["sessions"][0]
-        assert row["status"] == "closed" and row["body"] == 750
-        assert row["contracts"] == 1 and row["fees"] == 8.0
-        # Two short legs each gain $0.50; the $0.25 wing losses, modeled bid/ask
-        # on both sides of each leg, and eight $1 fees reduce that realized gain.
-        assert row["pnl"] == pytest.approx(50 - 4 * float(width) * 100 - 8)
-        assert scenario["aggregate"]["total_pnl"] == row["pnl"]
+    assert set(report["by_width"]) == {"0.01"}
+    scenario = report["by_width"]["0.01"]
+    row = scenario["sessions"][0]
+    assert row["status"] == "closed" and row["body"] == 750
+    assert row["contracts"] == 1 and row["fees"] == 8.0
+    # $50 at print prices, less $4 to cross all four spreads round trip and $8 in fees.
+    assert row["pnl"] == pytest.approx(38)
+    assert scenario["aggregate"]["total_pnl"] == row["pnl"]
     assert not backtest_reports.has_reports("xsp_iron_fly")
     report["params"]["ticker"] = "XSP"
     (report_dir / "results_5m.json").write_text(json.dumps(report))

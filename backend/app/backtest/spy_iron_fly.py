@@ -12,6 +12,7 @@ from app.strategies.xsp_iron_fly.feed import Contract, Quote, Spot
 ET = ZoneInfo("America/New_York")
 REPLAY_DATABASE = "sqlite+aiosqlite:///:memory:"
 KEY = "spy_iron_fly"
+SPREAD_WIDTH = 0.01  # Full bid/ask spread per option leg, in premium dollars.
 
 
 def body_at(price):
@@ -64,12 +65,12 @@ class ReplayClock:
 
 
 class SpyPrintFeed:
-    def __init__(self, record, params, clock, width):
+    def __init__(self, record, params, clock):
         self.day = date.fromisoformat(record["date"])
         if (record.get("ticker"), record.get("source"), params.ticker) != ("SPY", SPY_SOURCE, "SPY"):
             raise ValueError(f"SPY replay provenance mismatch for {self.day}")
         self.spots = PrintSeries(record["spot"], self.day)
-        self.clock, self.max_age, self.width = clock, params.max_quote_age, width
+        self.clock, self.max_age = clock, params.max_quote_age
         expected = option_symbols(self.day, {body_at(p) for p in self.spots.prices}, params.wing_width)
         if set(expected) != set(record["contracts"]):
             raise ValueError(f"SPY contract identity or expiration mismatch for {self.day}")
@@ -100,7 +101,7 @@ class SpyPrintFeed:
         if latest is None:
             return None
         price, stamp = latest
-        return Quote(max(0.0, price - self.width / 2), price + self.width / 2, stamp)
+        return Quote(max(0.0, price - SPREAD_WIDTH / 2), price + SPREAD_WIDTH / 2, stamp)
 
     async def settlement_price(self, *_):
         raise AssertionError("A SPY replay cannot cash-settle options")
@@ -257,33 +258,29 @@ async def replay(records, params):
     async def no_safe_mode():
         return False
 
-    widths = (0.05, 0.10)
-    session_rows = {width: [] for width in widths}
+    rows = []
     days = []
     for record in records:
         day = date.fromisoformat(record["date"])
         days.append(day.isoformat())
-        for width in widths:
-            # A fresh private memory DB for this scenario and date isolates the
-            # independent daily sizing, earlier unresolved sessions and risk flags.
-            await engine.dispose()
-            await init_db()
-            clock = ReplayClock(datetime.combine(day, params.entry_time, ET))
-            feed = SpyPrintFeed(record, params, clock, width)
-            executor = AlpacaFlyExecutor(BacktestPort(feed), feed, clock)
-            runner = IronFlyRunner(KEY, params, feed, executor, clock,
-                                   equity_fn=starting_equity, safe_mode_fn=no_safe_mode)
-            session = await runner.run_session(day)
-            if session is None:
-                raise ValueError(f"No scheduled SPY session on {day}")
-            session_rows[width].append(session_row(session))
-    scenarios = {str(width): {"aggregate": aggregate(rows), "sessions": rows}
-                 for width, rows in session_rows.items()}
+        # Each day has independent sizing, positions and risk flags.
+        await engine.dispose()
+        await init_db()
+        clock = ReplayClock(datetime.combine(day, params.entry_time, ET))
+        feed = SpyPrintFeed(record, params, clock)
+        executor = AlpacaFlyExecutor(BacktestPort(feed), feed, clock)
+        runner = IronFlyRunner(KEY, params, feed, executor, clock,
+                               equity_fn=starting_equity, safe_mode_fn=no_safe_mode)
+        session = await runner.run_session(day)
+        if session is None:
+            raise ValueError(f"No scheduled SPY session on {day}")
+        rows.append(session_row(session))
     await engine.dispose()
-    return {"basis": "SPY SIP entry spot and timestamped SPY 0DTE option trades; modeled bid/ask width, "
+    return {"basis": "SPY SIP entry spot and timestamped SPY 0DTE option trades with a modeled "
+                     f"${SPREAD_WIDTH:.2f} bid/ask spread per leg, "
                      "marketable-limit fills and $5,000 independent daily sizing. Closing orders start "
                      "30 minutes before the equity close. Unresolved positions have no final P&L.",
             "bars_minutes": 5, "days": days,
             "params": _params_dict(params) | {"ticker": "SPY", "replay_source": SPY_SOURCE,
                                               "replay_daily_capital": 5000},
-            "by_width": scenarios}
+            "by_width": {str(SPREAD_WIDTH): {"aggregate": aggregate(rows), "sessions": rows}}}
