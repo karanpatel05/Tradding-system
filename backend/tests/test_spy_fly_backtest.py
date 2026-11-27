@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 
+import httpx
 import pytest
 
 from app.backtest.spy_iron_fly import (ET, PrintSeries, ReplayClock, SpyPrintFeed, aggregate,
@@ -60,6 +61,34 @@ def test_unresolved_sessions_do_not_inflate_win_rate_or_report_zero():
     assert all(sums[k] is None for k in ("win_rate", "max_drawdown", "total_pnl", "fees", "best_day"))
     rows.append({"date": "2026-11-18", "status": "closed", "pnl": 100.0, "fees": 8.0})
     assert aggregate(rows)["total_pnl"] == 100.0 and aggregate(rows)["fees"] == 8.0
+
+
+def test_fetch_uses_completed_spot_bar_and_eligible_single_leg_trades():
+    from scripts.run_spy_fly_backtest import fetch_day, stamp
+
+    def history(request):
+        path = request.url.path
+        if path == "/v2/stocks/bars":
+            assert request.url.params["start"] == request.url.params["end"] == "2026-11-17T09:40:00-05:00"
+            return httpx.Response(200, json={"bars": {"SPY": [{"t": "2026-11-17T14:40:00Z", "c": 749.5}]}})
+        if path == "/v2/stocks/trades":
+            return httpx.Response(200, json={"trades": {"SPY": [
+                {"t": "2026-11-17T14:45:05Z", "p": 751, "c": [" "]},
+                {"t": "2026-11-17T14:45:06Z", "p": 900, "c": ["Z"]}]}})
+        assert path == "/v1beta1/options/trades"
+        symbols = set(request.url.params["symbols"].split(","))
+        assert symbols == set(option_symbols(DAY, {750, 751}, 10))
+        return httpx.Response(200, json={"trades": {"SPY261117C00750000": [
+            {"t": "2026-11-17T14:44:59.000000123Z", "p": 2, "c": "I"},
+            {"t": "2026-11-17T14:45:00Z", "p": 10, "c": "f"},
+            {"t": "2026-11-17T14:45:01Z", "p": 20, "c": "A"}]}})
+
+    with httpx.Client(base_url="https://test.invalid", transport=httpx.MockTransport(history)) as client:
+        record = fetch_day(client, DAY, CLOSE_START + timedelta(minutes=30), IronFlyParams.for_spy())
+    ticks = record["contracts"]["SPY261117C00750000"]["prints"]
+    assert ticks == [[stamp("2026-11-17T14:44:59Z") + 1, 2]]
+    feed = SpyPrintFeed(record, IronFlyParams.for_spy(), ReplayClock(ENTRY), 0.05)
+    assert feed.spot("SPY").price == 749.5
 
 
 def test_offline_replay_and_saved_report_isolation(tmp_path, monkeypatch):
