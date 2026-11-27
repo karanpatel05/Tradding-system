@@ -1,8 +1,9 @@
-"""Exchange session calendar for the XSP fly (NYSE/Cboe equity-index hours).
+"""US equity session calendar for the SPY and XSP iron flies.
 
 Fails CLOSED: a year that is not configured here is not a trading day, so the strategy
-skips rather than guessing. Verified against pandas_market_calendars (XNYS) for
-2026-2027. The 0DTE contract's own ``stops_trading_at`` is cross-checked at entry and
+skips rather than guessing. Historical holidays and early closes follow the NYSE
+Group calendar, including the January 9, 2025 national day of mourning.
+The 0DTE contract's own ``stops_trading_at`` is cross-checked at entry and
 the earlier of the two closes wins.
 """
 from __future__ import annotations
@@ -15,6 +16,12 @@ REGULAR_CLOSE = time(16, 0)
 EARLY_CLOSE = time(13, 0)
 
 HOLIDAYS = {
+    2024: {date(2024, 1, 1), date(2024, 1, 15), date(2024, 2, 19), date(2024, 3, 29),
+           date(2024, 5, 27), date(2024, 6, 19), date(2024, 7, 4), date(2024, 9, 2),
+           date(2024, 11, 28), date(2024, 12, 25)},
+    2025: {date(2025, 1, 1), date(2025, 1, 9), date(2025, 1, 20), date(2025, 2, 17),
+           date(2025, 4, 18), date(2025, 5, 26), date(2025, 6, 19), date(2025, 7, 4),
+           date(2025, 9, 1), date(2025, 11, 27), date(2025, 12, 25)},
     2026: {date(2026, 1, 1), date(2026, 1, 19), date(2026, 2, 16), date(2026, 4, 3),
            date(2026, 5, 25), date(2026, 6, 19), date(2026, 7, 3), date(2026, 9, 7),
            date(2026, 11, 26), date(2026, 12, 25)},
@@ -23,6 +30,8 @@ HOLIDAYS = {
            date(2027, 11, 25), date(2027, 12, 24)},
 }
 EARLY_CLOSES = {
+    2024: {date(2024, 7, 3), date(2024, 11, 29), date(2024, 12, 24)},
+    2025: {date(2025, 7, 3), date(2025, 11, 28), date(2025, 12, 24)},
     2026: {date(2026, 11, 27), date(2026, 12, 24)},
     2027: {date(2027, 11, 26)},
 }
