@@ -46,8 +46,11 @@ const NAV_LABELS = {
 
 export default function App() {
   const [auth, setAuth] = useState(null); // null = loading
-  const [tab, setTab] = useState("Dashboard");
-  const [focusKey, setFocusKey] = useState(null); // strategy to open from the dashboard
+  const [strategyFocus, setStrategyFocus] = useState(() => {
+    const key = new URLSearchParams(window.location.search).get("backtest");
+    return key && /^[a-z0-9_]+$/.test(key) ? { key, view: "backtests" } : null;
+  });
+  const [tab, setTab] = useState(strategyFocus ? "Strategies" : "Dashboard");
   const [builderSymbol, setBuilderSymbol] = useState(null); // set by the chart's "Open in options builder"
   const [connecting, setConnecting] = useState(false);
   const [acct, setAcct] = useState(null);
@@ -115,9 +118,6 @@ export default function App() {
     return <div className="boot">Loading…</div>;
   }
 
-  // No hard gate: the app always lands on the Dashboard. Connecting the broker
-  // happens in the API tab; unauthenticated views degrade gracefully (no live
-  // feed, placeholder market data) until credentials are saved there.
   // Connect directly from the sidebar. Only fall back to the API tab if the
   // connection fails, so the user can read the error detail there.
   const connect = async () => {
@@ -252,15 +252,15 @@ export default function App() {
                 auth={auth}
                 onConnections={() => setTab("API")}
                 onOpenStrategy={(key) => {
-                  setFocusKey(key);
+                  setStrategyFocus({ key, view: "overview" });
                   setTab("Strategies");
                 }}
               />
             )}
             {tab === "Strategies" && (
               <StrategiesTab
-                focusKey={focusKey}
-                onFocusHandled={() => setFocusKey(null)}
+                focus={strategyFocus}
+                onFocusHandled={() => setStrategyFocus(null)}
               />
             )}
             {tab === "Journal" && <CalendarTab />}
