@@ -139,6 +139,8 @@ class BacktestPort:
             t = {x["symbol"]: self._touch(x["symbol"]) for x in b["legs"]}
             if any(v is None for v in t.values()):
                 return
+            if any(t[x["symbol"]][0] <= 0 for x in b["legs"] if x["side"] == "sell"):
+                return
             nat = (sum(t[x["symbol"]][0] for x in b["legs"] if x["side"] == "sell")
                    - sum(t[x["symbol"]][1] for x in b["legs"] if x["side"] == "buy"))
             if nat + 1e-9 < -float(b["limit_price"]):
@@ -192,20 +194,25 @@ class BacktestPort:
 def session_row(session):
     reason = session.get("reason") or ""
     status = session["status"]
+    legs = session.get("legs") or []
     if status == "closed" and session.get("realized_pnl") is not None:
         outcome = "closed"
-    elif status == "skipped" and not session.get("legs"):
+    elif status == "skipped" and not legs:
         outcome = "skipped"
     else:
         outcome = "unresolved"
         if "close unconfirmed at expiry" in reason:
-            reason = "The replay could not confirm every closing fill from SPY option prints before expiry."
+            pending = [f"{leg['role'].replace('_', ' ')} {leg['strike']:g}{leg['right']}" for leg in legs
+                       if leg.get("qty", 0) > leg.get("exit_qty", 0)]
+            reason = "Missing closing fills before expiry"
+            if pending:
+                reason += f" ({', '.join(pending)})"
     return {"date": session["session_date"].isoformat(), "status": outcome, "reason": reason,
             "data_gap": outcome == "skipped" and any(
                 clue in reason.lower() for clue in ("quote", "spot", "no 0dte", "data not ready")),
-            "contracts": max((leg.get("qty", 0) for leg in session.get("legs", [])), default=0),
-            "body": session.get("body_strike"),
-            "stops": [leg["role"] for leg in session.get("legs", []) if leg.get("exit_reason") == "stop"],
+            "contracts": max((leg.get("qty", 0) for leg in legs), default=0),
+            "body": session.get("body_strike"), "net_credit": session.get("net_credit"),
+            "stops": [leg["role"] for leg in legs if leg.get("exit_reason") == "stop"],
             "pnl": session.get("realized_pnl") if outcome == "closed" else None,
             "fees": session.get("fees") or 0.0}
 
@@ -235,9 +242,7 @@ def aggregate(rows):
 
 
 async def replay(records, params):
-    from sqlalchemy import delete
-    from app.db.base import engine, init_db, session_scope
-    from app.db.models import SystemFlag, TradeRecord, XspFlySession
+    from app.db.base import engine, init_db
     from app.strategies.xsp_iron_fly.alpaca_executor import AlpacaFlyExecutor
     from app.strategies.xsp_iron_fly.runner import IronFlyRunner, _params_dict
 
@@ -246,24 +251,23 @@ async def replay(records, params):
     if (params.ticker != "SPY" or not params.close_before_settlement
             or params.flatten_minutes_before_close != 30 or params.validate()):
         raise ValueError("A SPY replay requires a valid SPY configuration and a 30-minute pre-close exit")
-    await init_db()
-
     async def starting_equity():
         return 5000.0
 
     async def no_safe_mode():
         return False
 
-    scenarios = {}
-    for width in (0.05, 0.10):
-        rows = []
-        for record in records:
-            # Each historic day starts flat with independent sizing and risk flags.
-            # All three tables belong to this CLI process's private in-memory engine.
-            async with session_scope() as db:
-                for table in (TradeRecord, XspFlySession, SystemFlag):
-                    await db.execute(delete(table))
-            day = date.fromisoformat(record["date"])
+    widths = (0.05, 0.10)
+    session_rows = {width: [] for width in widths}
+    days = []
+    for record in records:
+        day = date.fromisoformat(record["date"])
+        days.append(day.isoformat())
+        for width in widths:
+            # A fresh private memory DB for this scenario and date isolates the
+            # independent daily sizing, earlier unresolved sessions and risk flags.
+            await engine.dispose()
+            await init_db()
             clock = ReplayClock(datetime.combine(day, params.entry_time, ET))
             feed = SpyPrintFeed(record, params, clock, width)
             executor = AlpacaFlyExecutor(BacktestPort(feed), feed, clock)
@@ -272,13 +276,14 @@ async def replay(records, params):
             session = await runner.run_session(day)
             if session is None:
                 raise ValueError(f"No scheduled SPY session on {day}")
-            rows.append(session_row(session))
-        scenarios[str(width)] = {"aggregate": aggregate(rows), "sessions": rows}
+            session_rows[width].append(session_row(session))
+    scenarios = {str(width): {"aggregate": aggregate(rows), "sessions": rows}
+                 for width, rows in session_rows.items()}
     await engine.dispose()
     return {"basis": "SPY SIP entry spot and timestamped SPY 0DTE option trades; modeled bid/ask width, "
                      "marketable-limit fills and $5,000 independent daily sizing. Closing orders start "
                      "30 minutes before the equity close. Unresolved positions have no final P&L.",
-            "bars_minutes": 5, "days": [r["date"] for r in records],
+            "bars_minutes": 5, "days": days,
             "params": _params_dict(params) | {"ticker": "SPY", "replay_source": SPY_SOURCE,
                                               "replay_daily_capital": 5000},
             "by_width": scenarios}

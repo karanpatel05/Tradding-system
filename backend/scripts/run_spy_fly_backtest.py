@@ -7,6 +7,7 @@ import argparse
 import asyncio
 from datetime import date, datetime, time, timedelta
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -135,16 +136,18 @@ def main():
                 print(f"{day}: {len(record['contracts'])} SPY contracts", flush=True)
         return
     from app.backtest.spy_iron_fly import replay
-    records = []
-    for day in days:
-        path = root / "days" / f"{day}.json"
-        if not path.is_file():
-            parser.error(f"Missing {day} history. Fetch the date range first.")
-        record = json.loads(path.read_bytes())
-        if record.get("date") != day.isoformat():
-            parser.error(f"Cached day does not match filename: {day}")
-        records.append(record)
-    result = asyncio.run(replay(records, params))
+    def records():
+        for day in days:
+            path = root / "days" / f"{day}.json"
+            if not path.is_file():
+                parser.error(f"Missing {day} history. Fetch the date range first.")
+            record = json.loads(path.read_bytes())
+            if record.get("date") != day.isoformat():
+                parser.error(f"Cached day does not match filename: {day}")
+            yield record
+
+    logging.getLogger("trading.xsp_fly").setLevel(logging.ERROR)
+    result = asyncio.run(replay(records(), params))
     write_json(root / "results_5m.json", result)
     for width, scenario in result["by_width"].items():
         print(f"{width}: {scenario['aggregate']}", flush=True)

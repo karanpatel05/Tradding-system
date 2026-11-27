@@ -47,7 +47,7 @@ function PerformanceCurve({ rows }) {
   );
 }
 
-function SessionResults({ rows, hasUnresolved }) {
+function SessionResults({ rows, incomplete, hasUnresolved }) {
   const [filter, setFilter] = useState("all");
   const [page, setPage] = useState(0);
   const newestFirst = useMemo(() => [...rows].reverse(), [rows]);
@@ -77,7 +77,7 @@ function SessionResults({ rows, hasUnresolved }) {
             <table className="table">
               <thead><tr>
                 <th scope="col">Session date</th><th scope="col" className="num">Net P&amp;L</th>
-                <th scope="col">Outcome</th><th scope="col" className="num">{hasUnresolved ? "Closed-session total" : "Cumulative P&L"}</th>
+                <th scope="col">Outcome</th>{!incomplete && <th scope="col" className="num">Cumulative P&amp;L</th>}
                 <th scope="col">Short-leg stops</th>
               </tr></thead>
               <tbody>
@@ -89,8 +89,8 @@ function SessionResults({ rows, hasUnresolved }) {
                       {row.status === "skipped" ? (row.data_gap ? "Data gap" : "Rule skip") : humanize(row.status)}
                       {row.reason && <small className="replay-reason">{row.reason}</small>}
                     </td>
-                    <td className="num">{signedUsd(row.cumulative)}</td>
-                    <td>{row.traded ? (row.stops?.map(humanize).join(", ") || "None") : "—"}</td>
+                    {!incomplete && <td className="num">{signedUsd(row.cumulative)}</td>}
+                    <td>{row.stops?.length ? row.stops.map(humanize).join(", ") : (row.traded ? "None" : "—")}</td>
                   </tr>
                 ))}
               </tbody>
@@ -118,8 +118,10 @@ export default function ReplayReport({ report }) {
   const rows = useMemo(() => replaySeries(scenario?.sessions), [scenario]);
   if (!scenario?.aggregate) return <p className="muted">No scenarios were recorded for this replay.</p>;
   const summary = scenario.aggregate;
-  const unresolved = summary.unresolved ?? 0;
   const spy = report.params?.ticker === "SPY";
+  const unresolved = rows.filter((row) => row.status === "unresolved").length;
+  const entryGaps = spy ? rows.filter((row) => row.status === "skipped" && row.data_gap).length : 0;
+  const incomplete = unresolved > 0 || entryGaps > 0;
   return (
     <div className="replay-report">
       <div className="replay-scenario">
@@ -139,25 +141,30 @@ export default function ReplayReport({ report }) {
           {spy && " SPY closing orders start 30 minutes before the equity session ends."}
         </p>
       </div>
-      {unresolved > 0 && (
+      {incomplete && (
         <p className="sd-outcome warn">
-          <b>{unresolved} of {summary.sessions} sessions unresolved.</b> The replay could not confirm every
-          fill. Full-period P&amp;L, win rate, and drawdown are unknown.
+          {unresolved > 0 && <b>{unresolved} of {summary.sessions} sessions unresolved. </b>}
+          {entryGaps > 0 && <b>{entryGaps} {entryGaps === 1 ? "session lacked" : "sessions lacked"} entry data. </b>}
+          Full-period P&amp;L, win rate, and drawdown are unknown.
         </p>
       )}
       <dl className="replay-metrics">
-        <div><dt>{unresolved ? "Closed-session P&L" : "Net P&L"}</dt><dd className={tone(summary.total_pnl)}>{signedUsd(summary.total_pnl)}</dd></div>
-        <div><dt>Win rate</dt><dd>{pct(unresolved ? null : summary.win_rate, 1)}</dd></div>
-        <div><dt>Max drawdown</dt><dd className={tone(unresolved ? null : summary.max_drawdown)}>{signedUsd(unresolved ? null : summary.max_drawdown)}</dd></div>
+        <div><dt>{incomplete ? "Closed-session P&L" : "Net P&L"}</dt><dd className={tone(summary.total_pnl)}>{signedUsd(summary.total_pnl)}</dd></div>
+        <div><dt>Win rate</dt><dd>{pct(incomplete ? null : summary.win_rate, 1)}</dd></div>
+        <div><dt>Max drawdown</dt><dd className={tone(incomplete ? null : summary.max_drawdown)}>{signedUsd(incomplete ? null : summary.max_drawdown)}</dd></div>
         <div><dt>{spy ? "Completed sessions" : "Traded sessions"}</dt><dd>{summary.traded ?? "—"} <small>of {summary.sessions ?? "—"}</small></dd></div>
       </dl>
-      {!unresolved && <PerformanceCurve rows={rows} />}
-      <div className="replay-facts">
-        <span>Best session <b className={tone(summary.best_day)}>{signedUsd(summary.best_day)}</b></span>
-        <span>Worst session <b className={tone(summary.worst_day)}>{signedUsd(summary.worst_day)}</b></span>
-        <span>{unresolved ? "Fees on closed sessions" : "Fees included"} <b>{usd(summary.fees)}</b></span>
-      </div>
-      <SessionResults key={selectedWidth} rows={rows} hasUnresolved={unresolved > 0} />
+      {!incomplete && <PerformanceCurve rows={rows} />}
+      {(!incomplete || summary.traded > 0) && (
+        <div className="replay-facts">
+          {!incomplete && <>
+            <span>Best session <b className={tone(summary.best_day)}>{signedUsd(summary.best_day)}</b></span>
+            <span>Worst session <b className={tone(summary.worst_day)}>{signedUsd(summary.worst_day)}</b></span>
+          </>}
+          <span>{incomplete ? "Fees on closed sessions" : "Fees included"} <b>{usd(summary.fees)}</b></span>
+        </div>
+      )}
+      <SessionResults key={selectedWidth} rows={rows} incomplete={incomplete} hasUnresolved={unresolved > 0} />
     </div>
   );
 }
