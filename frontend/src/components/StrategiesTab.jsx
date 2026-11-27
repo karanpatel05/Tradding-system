@@ -75,7 +75,7 @@ function ResearchSnapshot({ strategy, record, error }) {
 export default function StrategiesTab({ focusKey, onFocusHandled }) {
   const [strategies, setStrategies] = useState([]);
   const [sessionDate, setSessionDate] = useState(null);
-  const [detailKey, setDetailKey] = useState(null);
+  const [detail, setDetail] = useState(null);
   const [selectedKey, setSelectedKey] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -97,7 +97,7 @@ export default function StrategiesTab({ focusKey, onFocusHandled }) {
         setSessionDate(d.session_date || null);
         setError(null);
         setReloads((n) => n + 1);
-        setSelectedKey((k) => (k && list.some((s) => s.key === k && s.ready) ? k : list.find((s) => s.ready)?.key || null));
+        setSelectedKey((k) => (k && list.some((s) => s.key === k && s.ready && !s.archived) ? k : list.find((s) => s.ready && !s.archived)?.key || null));
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
@@ -107,7 +107,7 @@ export default function StrategiesTab({ focusKey, onFocusHandled }) {
   }, []);
   useEffect(() => {
     if (focusKey) {
-      setDetailKey(focusKey);
+      setDetail({ key: focusKey, view: "overview" });
       onFocusHandled?.();
     }
   }, [focusKey, onFocusHandled]);
@@ -130,20 +130,27 @@ export default function StrategiesTab({ focusKey, onFocusHandled }) {
     };
   }, [selectedKey, reloads]);
 
-  if (detailKey)
+  function openStrategy(key, view) {
+    setSelectedKey(key);
+    setDetail({ key, view });
+  }
+
+  if (detail)
     return (
       <StrategyDetail
-        key={detailKey}
-        keyName={detailKey}
-        summary={strategies.find((s) => s.key === detailKey) || null}
+        key={detail.key}
+        keyName={detail.key}
+        initialView={detail.view}
+        summary={strategies.find((s) => s.key === detail.key) || null}
         onBack={() => {
-          setDetailKey(null);
+          setDetail(null);
           load();
         }}
       />
     );
 
-  const ready = strategies.filter((s) => s.ready);
+  const ready = strategies.filter((s) => s.ready && !s.archived);
+  const archive = strategies.filter((s) => s.archived);
   const placeholders = strategies.filter((s) => !s.ready);
   const running = ready.filter((s) => s.running);
   const allocated = running.reduce((n, s) => n + (s.capital_allocation || 0), 0);
@@ -266,6 +273,18 @@ export default function StrategiesTab({ focusKey, onFocusHandled }) {
                           {s.name}
                         </button>
                         {s.category && <div className="strat-sub">{s.category}</div>}
+                        {s.has_backtest_reports && (
+                          <button
+                            className="strat-report-link"
+                            aria-label={`View backtest results for ${s.name}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openStrategy(s.key, "backtests");
+                            }}
+                          >
+                            Backtest results <span aria-hidden="true">→</span>
+                          </button>
+                        )}
                       </td>
                       <td className="strat-mono col-universe">{universeOf(s)}</td>
                       <td className="num">{usd(s.capital_allocation || 0)}</td>
@@ -292,6 +311,17 @@ export default function StrategiesTab({ focusKey, onFocusHandled }) {
             </table>
           </div>
         )}
+        {archive.map((s) => (
+          <div className="strat-note strat-archive" key={s.key}>
+            <span>{s.name}{s.running ? " · Managing existing positions" : ""}</span>
+            <button className="strat-report-link" onClick={() => openStrategy(s.key, "overview")}>Session history</button>
+            {s.has_backtest_reports && (
+              <button className="strat-report-link" onClick={() => openStrategy(s.key, "backtests")}>
+                Archived backtests
+              </button>
+            )}
+          </div>
+        ))}
         {placeholders.length > 0 && (
           <p className="strat-note">
             {placeholders.length} more in development: {placeholders.map((s) => s.name).join(", ")}
@@ -320,7 +350,7 @@ export default function StrategiesTab({ focusKey, onFocusHandled }) {
             {!canToggle(selected) && strategyStatus(selected).title && <p className="muted small">{strategyStatus(selected).title}</p>}
             <div className="strat-actions">
               <ToggleButton {...toggleProps(selected, true)} />
-              <button className="btn" onClick={() => setDetailKey(selected.key)}>Open details</button>
+              <button className="btn" onClick={() => openStrategy(selected.key, "overview")}>Open details</button>
             </div>
           </section>
           <ResearchSnapshot strategy={selected} record={record} error={recordError} />

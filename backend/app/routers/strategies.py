@@ -21,7 +21,7 @@ from app.config import get_settings
 from app.db.base import session_scope
 from app.db.models import StrategyState
 from app.engine.manager import engine_manager
-from app.services import backtest_store
+from app.services import backtest_reports, backtest_store
 from app.services.journal import log_event
 from app.strategies.registry import get_strategy, list_strategies
 
@@ -50,6 +50,8 @@ def _require_in_app(key: str):
     """``_require_ready`` plus: refuse strategies that execute outside this app
     (409). Used for actions that only mean something for an in-app worker."""
     strat = _require_ready(key)
+    if strat.archived:
+        raise HTTPException(status_code=409, detail=strat.activation_block_reason())
     if strat.external_runner:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -167,6 +169,7 @@ async def list_all() -> dict:
                 "key": strat.key,
                 "name": strat.name,
                 "ready": strat.ready,
+                "archived": strat.archived,
                 "status": st.status if st else "idle",
                 "selected_symbol": st.selected_symbol if st else None,
                 "capital_allocation": st.capital_allocation if st else 0.0,
@@ -177,6 +180,7 @@ async def list_all() -> dict:
                 "universe": list(strat.universe) if strat.ready else [],
                 "description": strat.description if strat.ready else None,
                 "execution": strat.execution_label() if strat.ready else None,
+                "has_backtest_reports": strat.ready and backtest_reports.has_reports(strat.key),
                 "session_pnl": pnl,
                 "month_pnl": month_pnl,
                 "year_pnl": year_pnl,
@@ -251,6 +255,7 @@ async def detail(key: str) -> dict:
         phase = st.status if st else "idle"  # stopped / idle
     return {
         "overview": strat.overview(),
+        "archived": strat.archived,
         "status": st.status if st else "idle",
         "phase": phase,
         "position": position,
@@ -475,12 +480,18 @@ async def activate(key: str) -> dict:
     strat = _require_ready(key)  # rejected for Coming-Soon strategies
     if (reason := strat.activation_block_reason()):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=reason)
+    if key == "spy_iron_fly":
+        st = await _state(key)
+        if st and st.status == "exiting":
+            raise HTTPException(status_code=409, detail="Finishing the existing SPY session")
+        if engine_manager.is_running(key):
+            return {"key": key, "status": st.status if st else "scanning", "running": True}
     from app.engine.worker import run_strategy  # lazy: engine wiring
 
-    await engine_manager.start_worker(key, run_strategy(strat))
     async with session_scope() as session:
         st = await session.get(StrategyState, key)
         st.status = "scanning"
+    await engine_manager.start_worker(key, run_strategy(strat))
     await log_event("Strategy activated", category="action", strategy_key=key)
     return {"key": key, "status": "scanning", "running": True}
 
@@ -527,6 +538,23 @@ async def backtest_last(key: str) -> dict:
     if _require_ready(key).backtest_note:
         return {}
     return backtest_store.load(key) or {}
+
+
+@router.get("/{key}/backtest/reports")
+def saved_reports(key: str) -> dict:
+    """Completed option replays available locally, plus in-app backtester capability."""
+    strat = _require_ready(key)
+    return {"reports": backtest_reports.list_reports(key),
+            "can_run": not (strat.external_runner or bool(strat.backtest_note))}
+
+
+@router.get("/{key}/backtest/reports/{report_id}")
+def saved_report(key: str, report_id: str) -> dict:
+    _require_ready(key)
+    report = backtest_reports.get_report(key, report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Saved backtest report unavailable")
+    return report
 
 
 @router.get("/{key}/backtest/stream")
@@ -672,9 +700,27 @@ async def selection_history(
 
 @router.post("/{key}/stop", dependencies=[Depends(require_auth)])
 async def stop(key: str) -> dict:
-    if get_strategy(key) is None:
+    strat = get_strategy(key)
+    if strat is None:
         raise HTTPException(status_code=404, detail="Unknown strategy")
+    if strat.archived:
+        raise HTTPException(status_code=409, detail=strat.activation_block_reason())
+    # Persist exit-only intent first. A restart during cancellation must never re-arm entries.
+    if key == "spy_iron_fly":
+        async with session_scope() as session:
+            st = await session.get(StrategyState, key)
+            st.status = "exiting"
+        from app.strategies.xsp_iron_fly import store
+        if engine_manager.is_running(key) and await store.has_unfinished(key):
+            # Let the in-flight order finish and persist its fills before the worker exits.
+            await log_event("SPY entries paused; managing the existing session", category="action", strategy_key=key)
+            return {"key": key, "status": "exiting", "was_running": True}
     stopped = await engine_manager.stop_worker(key)
+    if key == "spy_iron_fly":
+        if await store.has_unfinished(key):
+            await engine_manager.start_worker(key, strat.manage_existing())
+            await log_event("SPY entries paused; managing the existing session", category="action", strategy_key=key)
+            return {"key": key, "status": "exiting", "was_running": stopped}
     async with session_scope() as session:
         st = await session.get(StrategyState, key)
         if st:

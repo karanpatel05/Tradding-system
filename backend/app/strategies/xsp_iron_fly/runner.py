@@ -1,10 +1,10 @@
-"""XSP 0DTE iron fly runner: one session per trading day.
+"""0DTE iron fly runner: one session per trading day.
 
     09:45 ET  guards -> size -> persist "entering" -> 4-leg combo (or wings-first leg-in)
     intraday  per-short-leg 1.5x stop on the buy-to-close price, legs independent,
               wings never stopped, no profit target, no adjustment
-    close     remaining legs cash-settle at intrinsic vs the XSP close (optional
-              flatten at close - 2 min), then end-of-day reconciliation
+    close     SPY exits by confirmed broker fills ahead of the closing bell; legacy
+              XSP can settle at intrinsic against the index close.
 
 State lives in the ``xsp_fly_sessions`` row (one per day, unique) and in one
 TradeRecord per filled leg, saved after every change, so a restart never re-enters a
@@ -44,15 +44,22 @@ def _iso(dt: datetime | None) -> str | None:
 
 class IronFlyRunner:
     def __init__(self, key: str, params: IronFlyParams, feed, executor, clock, *,
-                 equity_fn, safe_mode_fn, alert_fn=None) -> None:
+                 equity_fn, safe_mode_fn, alert_fn=None, entries_paused_fn=None) -> None:
         self.key = key
         self.p = params
+        self.physical_delivery = params.ticker.upper() == "SPY"
+        if self.physical_delivery and (errors := params.validate()):
+            raise ValueError("; ".join(errors))
+        if key in ("xsp_iron_fly", "spy_iron_fly") and key != f"{params.ticker.lower()}_iron_fly":
+            raise ValueError("iron fly strategy key must match the configured underlying")
         self.feed = feed
         self.ex = executor
         self.clock = clock
         self.equity_fn = equity_fn          # starting equity + realized P&L
         self.safe_mode_fn = safe_mode_fn
+        self.entries_paused_fn = entries_paused_fn
         self.alert_fn = alert_fn
+        self._alert_prefix = f"{params.ticker.lower()}_fly"
         self._contracts: dict[date, list] = {}
         # (session_date, role) -> clock time a short leg was first seen past its stop on
         # a usable quote; the stop fires only if it is still past on a check >= the
@@ -88,6 +95,9 @@ class IronFlyRunner:
         while (rem := (dt - self.clock.now()).total_seconds()) > 0:
             await self.clock.sleep(min(rem, 300.0))
 
+    async def _entries_paused(self) -> bool:
+        return self.entries_paused_fn is not None and await self.entries_paused_fn()
+
     def _legs_open(self, s: dict) -> list[dict]:
         return [l for l in s["legs"] if l.get("status") in OPEN_STATES
                 and int(l.get("qty") or 0) > int(l.get("exit_qty") or 0)]
@@ -122,15 +132,16 @@ class IronFlyRunner:
         fees = self.p.fees_per_contract * (qty + int(leg.get("order_exit_qty") or 0))
         leg.update(status=status, exit_reason=reason, exit_time=_iso(now),
                    fees=round(fees, 4), pnl=round(gross - fees, 2))
-        await store.close_leg_trade(leg.get("trade_id"), leg["exit_price"], leg["pnl"], now)
+        await store.close_leg_trade(leg.get("trade_id"), leg["exit_price"], leg["pnl"], now,
+                                    session=s)
 
     # ------------------------------------------------------------------ main loop
-    async def run_forever(self) -> None:
+    async def run_forever(self, *, manage_only: bool = False) -> None:
         errs = self.p.validate()
         if errs:
             await self._log(f"invalid parameters, not running: {errs}", level="error")
             return
-        await self._log(f"XSP iron fly worker started (mode={self.p.mode}, executor="
+        await self._log(f"{self.p.ticker} iron fly worker started (mode={self.p.mode}, executor="
                         f"{self.ex.name}; real Alpaca paper orders and fills)",
                         category="action", data={"params": _params_dict(self.p)})
         try:
@@ -138,13 +149,19 @@ class IronFlyRunner:
                 d = self.clock.now().date()
                 try:
                     await self.recover_stale(d)
-                    await self.run_session(d)
+                    await self.run_session(d, manage_only=manage_only)
+                    if manage_only or await self._entries_paused():
+                        manage_only = True
+                        if not await store.has_unfinished(self.key):
+                            return
+                        await self.clock.sleep(300)
+                        continue
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001 - keep the worker alive
-                    logger.exception("XSP fly session error")
+                    logger.exception("%s fly session error", self.p.ticker)
                     await self._log(f"session error: {exc!r}", level="error")
-                    await self._alert("xsp_fly_error", f"XSP fly session error: {exc!r}")
+                    await self._alert(f"{self._alert_prefix}_error", f"{self.p.ticker} fly session error: {exc!r}")
                     await self.clock.sleep(30.0)
                     continue
                 await self._sleep_until(datetime.combine(d + timedelta(days=1), time(8, 0),
@@ -159,7 +176,7 @@ class IronFlyRunner:
                             category="action")
             raise
 
-    async def run_session(self, d: date) -> dict | None:
+    async def run_session(self, d: date, *, manage_only: bool = False) -> dict | None:
         reason = cal.skip_reason(d)
         if reason:
             if reason.startswith("exchange calendar"):
@@ -170,16 +187,20 @@ class IronFlyRunner:
         if s is not None:
             s = await self._recover_today(s)
         else:
+            if manage_only or await self._entries_paused():
+                return None
             now = self.clock.now()
             if now >= close_dt:
                 return None
             entry_dt = datetime.combine(d, self.p.entry_time, tzinfo=ET)
             if now < entry_dt:
                 await self._sleep_until(entry_dt)
+                if await self._entries_paused():
+                    return None
             now = self.clock.now()
             if now > entry_dt + timedelta(seconds=self.p.entry_grace_seconds):
                 s = await store.create_session(
-                    self.key, d, status="missed", mode=self.p.mode,
+                    self.key, d, status="missed", mode=self.p.mode, ticker=self.p.ticker,
                     reason=f"worker started at {now:%H:%M:%S} ET, after the "
                            f"{self.p.entry_time:%H:%M} entry window")
                 if s is not None:
@@ -224,8 +245,15 @@ class IronFlyRunner:
                    f"{s.get('mode') or 'sim'} but the strategy now runs in {self.p.mode}; "
                    "not managing it. Switch the mode back or close it by hand.")
             await self._log(msg, level="error")
-            await self._alert("xsp_fly_mode_mismatch", msg)
+            await self._alert(f"{self._alert_prefix}_mode_mismatch", msg)
             return {**s, "status": "mode_mismatch"}
+        if self.physical_delivery and s["status"] in ("open", "entering"):
+            if not s.get("close_time"):
+                await self._fatal(s, "SPY session has no recorded closing time; reconcile before proceeding")
+                return s
+            if self.clock.now() >= s["close_time"]:
+                await self._expired_spy_session(s)
+                return s
         if s["status"] == "entering":
             if not await self._broker_check_on_restart(s):
                 return s
@@ -313,8 +341,8 @@ class IronFlyRunner:
             now = self.clock.now()
             qs = [self.feed.quote(l["symbol"]) for l in legs]
             if self.feed.data_ready() and all(
-                    q is not None and (q.age(now) or 1e9) <= self.p.feed_stale_alert_seconds
-                    for q in qs):
+                    q is not None and (age := q.age(now)) is not None
+                    and 0 <= age <= self.p.feed_stale_alert_seconds for q in qs):
                 return
             await self.clock.sleep(1.0)
         await self._log("quotes for the legs to unwind did not arrive within "
@@ -322,6 +350,10 @@ class IronFlyRunner:
 
     async def recover_stale(self, today: date) -> None:
         for s in await store.unfinished_before(self.key, today):
+            if self.physical_delivery:
+                if s["status"] != "error":
+                    await self._expired_spy_session(s)
+                continue
             if s["status"] == "error":
                 # A day stopped by SAFE_MODE: book its settlement only once Alpaca's
                 # fills agree with the session (a human may have fixed it); else wait.
@@ -360,15 +392,30 @@ class IronFlyRunner:
                 continue
             await self._apply_settlement(s, px)
 
+    async def _expired_spy_session(self, s: dict) -> None:
+        """After expiry, a remaining ETF option can turn into shares. Its final
+        accounting requires broker exercise/assignment records, not intrinsic value."""
+        if s["status"] == "open":
+            await self._detect_killed(s)
+            if s["status"] == "killed":
+                return
+            if not self._legs_open(s):
+                await self._complete(s, None)
+                return
+        await self._fatal(s, f"{s['session_date']}: SPY close unconfirmed at expiry; "
+                             "reconcile broker fills, exercise/assignment and SPY shares")
+
     # ------------------------------------------------------------------ entry
     async def _plan(self, d: date, close_dt: datetime) -> tuple[dict | None, str, bool]:
         """(plan, why_not, permanent). Permanent reasons skip the day immediately;
         the rest are re-checked until the entry grace window ends."""
         p = self.p
         now = self.clock.now()
-        halt = await store.halt_reason()
+        halt = await store.halt_reason(key=self.key)
         if halt:
             return None, f"halted until cleared: {halt}", True
+        if self.physical_delivery and await store.unfinished_before(self.key, d):
+            return None, "an earlier SPY session requires broker reconciliation", True
         if await self.safe_mode_fn():
             return None, "engine SAFE_MODE is on", False
         if not self.feed.data_ready():
@@ -445,7 +492,7 @@ class IronFlyRunner:
                 if not permanent:
                     why = f"entry window closed: {why}"
                 s = await store.create_session(self.key, d, status="skipped", reason=why,
-                                               mode=self.p.mode)
+                                               mode=self.p.mode, ticker=self.p.ticker)
                 await self._log(f"{d}: entry skipped ({why})")
                 return s
             if why != last:
@@ -462,6 +509,14 @@ class IronFlyRunner:
             legs=legs, fills=[], extra_pnl=0.0, fees=0.0)
         if s is None:   # another writer created today's row: never double-enter
             return await store.get_session(self.key, d)
+        # Re-read the intent after claiming the day's row. A pause that raced the
+        # entry plan can still stop the first order. Once it is sent we manage its
+        # fills and their eventual exit through the normal recovery path.
+        if await self._entries_paused():
+            s.update(status="skipped", contracts=0, reason="strategy paused before entry",
+                     closed_time=self.clock.now())
+            await store.save(s)
+            return s
         await self._log(
             f"{d}: ENTRY signal: spot {plan['spot']:.2f} -> body {plan['body']:g}, wings "
             f"{plan['wings'][0]:g}C/{plan['wings'][1]:g}P, x{plan['qty']}, mid credit "
@@ -583,6 +638,8 @@ class IronFlyRunner:
     async def _fill_single(self, s: dict, leg: dict, side: str, qty: int,
                            attempts: int) -> int:
         """Marketable-limit entry for one leg, repriced from the live touch each try."""
+        if s["status"] == "error":
+            return 0
         got = 0
         for _ in range(max(1, attempts)):
             q = self.feed.quote(leg["symbol"])
@@ -612,7 +669,7 @@ class IronFlyRunner:
     async def _unwind(self, s: dict, leg: dict, qty: int) -> None:
         """Close ``qty`` of an entry leg that has no matching partner. Moves the qty out
         of the leg into extra_pnl so only balanced flies remain."""
-        if qty <= 0:
+        if qty <= 0 or s["status"] == "error":
             return
         entry = leg["entry_price"]
         tmp = dict(leg, qty=qty, exit_qty=0, exit_price=None)
@@ -621,14 +678,15 @@ class IronFlyRunner:
         if got:
             s["extra_pnl"] = round(float(s["extra_pnl"]) + L.leg_gross_pnl(
                 leg["action"], entry, px, got, self.p.multiplier), 2)
-        leg["qty"] = int(leg["qty"]) - qty
+        leg["qty"] = int(leg["qty"]) - got
         short = qty - got
-        if short and leg["action"] == "BUY" and no_bid:
+        if short and leg["action"] == "BUY" and no_bid and not self.physical_delivery:
             # A long wing nobody bids for: worthless, harmless (defined risk); book it at 0.
+            leg["qty"] -= short
             s["extra_pnl"] = round(float(s["extra_pnl"]) + L.leg_gross_pnl(
                 "BUY", entry, 0.0, short, self.p.multiplier), 2)
             self._record_fill(s, tmp, "SELL", short, 0.0, None, "abandon", fee=False)
-        elif short:
+        elif short and s["status"] != "error":
             await self._fatal(s, f"could not unwind {short}x {leg['role']} {leg['symbol']}")
         await store.save(s)
 
@@ -644,6 +702,8 @@ class IronFlyRunner:
         w = min(lc["qty"], lp["qty"])
         await self._unwind(s, lc, lc["qty"] - w)
         await self._unwind(s, lp, lp["qty"] - w)
+        if s["status"] == "error":
+            return
         if w == 0:
             s["reason"] = "wings did not fill; no body sold"
             return
@@ -654,7 +714,7 @@ class IronFlyRunner:
         await self._unwind(s, sp, sp["qty"] - f)
         await self._unwind(s, lc, lc["qty"] - f)      # then excess protection
         await self._unwind(s, lp, lp["qty"] - f)
-        if f == 0:
+        if f == 0 and s["status"] != "error":
             s["reason"] = "body did not fill; wings unwound"
         await store.save(s)
 
@@ -663,7 +723,9 @@ class IronFlyRunner:
         s["status"] = "error"
         s["reason"] = msg
         await store.save(s)
-        await trip_safe_mode(f"XSP fly: {msg}")
+        if self.physical_delivery:
+            await store.set_halt(msg, key=self.key)
+        await trip_safe_mode(f"{self.p.ticker} fly: {msg}")
         cleanup = ""
         if hasattr(self.ex, "cancel_working_for"):
             # Best effort: an order behind an "unknown" result has no id, so cancel by
@@ -675,7 +737,7 @@ class IronFlyRunner:
             except Exception as exc:  # noqa: BLE001 - never mask the original error
                 cleanup = f"; cancel of working orders failed: {exc!r}"
         await self._log(f"FATAL: {msg}; SAFE_MODE tripped{cleanup}", level="error")
-        await self._alert("safe_mode", f"XSP fly: {msg}{cleanup}")
+        await self._alert("safe_mode", f"{self.p.ticker} fly: {msg}{cleanup}")
 
     # ------------------------------------------------------------------ exits
     async def _close_qty(self, s: dict, leg: dict, qty: int, kind: str,
@@ -687,6 +749,8 @@ class IronFlyRunner:
         side = "BUY" if leg["action"] == "SELL" else "SELL"
         got, notional, no_bid = 0, 0.0, False
         while got < qty:
+            if self.physical_delivery and self.clock.now() >= s["close_time"]:
+                break
             q = self.feed.quote(leg["symbol"])
             if q is not None and L.quote_valid(q.bid, q.ask):
                 if kind == "stop" and q.bid > 0:
@@ -717,8 +781,8 @@ class IronFlyRunner:
                     key = (s.get("session_date"), leg["role"], kind)
                     if key not in self._reject_alerted:     # an unclosed short: tell a human
                         self._reject_alerted.add(key)
-                        await self._alert("xsp_fly_close_rejected",
-                                          f"XSP {kind} close for {leg['role']} rejected: "
+                        await self._alert(f"{self._alert_prefix}_close_rejected",
+                                          f"{self.p.ticker} {kind} close for {leg['role']} rejected: "
                                           f"{res.detail}")
                     break
                 if res.filled_qty:
@@ -771,7 +835,7 @@ class IronFlyRunner:
                f"{(now - since).total_seconds():.0f}s: {reason}; quote {quote}, stop "
                f"{leg['stop_level']:.2f}. Check the leg; the guard is not acting on it.")
         await self._log(msg, level="warning")
-        await self._alert("xsp_fly_stop_held", f"XSP fly: {msg}")
+        await self._alert(f"{self._alert_prefix}_stop_held", f"{self.p.ticker} fly: {msg}")
 
     async def _stop_leg(self, s: dict, leg: dict, trigger_quote=None) -> None:
         """Mark the leg 'stopping' (persisted first), then make ONE buy-to-close attempt.
@@ -819,8 +883,13 @@ class IronFlyRunner:
         are closed or the session close, so a leg with no usable quote never holds up
         the others. A leg nobody bids for is left to settle."""
         left = sorted(self._legs_open(s), key=lambda l: l["action"] != "SELL")
-        while left:
+        while left and self.clock.now() < s["close_time"]:
             for leg in list(left):
+                if self.physical_delivery and leg["action"] == "BUY" and any(
+                        l["action"] == "SELL" and l["right"] == leg["right"] for l in left):
+                    # Leave the matching protective wing in place until the short
+                    # is fully bought to close, including across retries.
+                    continue
                 remaining = int(leg["qty"]) - int(leg.get("exit_qty") or 0)
                 got, px, no_bid = await self._close_qty(s, leg, remaining, reason,
                                                         self.clock.now())
@@ -832,14 +901,19 @@ class IronFlyRunner:
                 if int(leg.get("exit_qty") or 0) >= int(leg["qty"]):
                     await self._finish_leg(s, leg, "closed", reason)
                     left.remove(leg)
-                elif no_bid:
+                elif no_bid and not self.physical_delivery:
                     await self._log(f"{reason}: {leg['role']} has no bid; left to settle")
                     left.remove(leg)
+                if got:
+                    await store.save(s)
             if not left or self.clock.now() >= s["close_time"]:
                 break
             await self.clock.sleep(self.p.close_retry_seconds)
         await store.save(s)
-        await self._log(f"flattened remaining legs ({reason})", category="trade")
+        if self.physical_delivery and self._legs_open(s):
+            await self._expired_spy_session(s)
+        else:
+            await self._log(f"finished close attempts ({reason})", category="trade")
 
     def _daily_loss_limit(self, s: dict) -> float:
         """$ limit for the day: per-contract limit x the flies sized at entry."""
@@ -850,10 +924,10 @@ class IronFlyRunner:
         msg = (f"max_daily_loss breached on {s['session_date']}: P&L {net:.2f} <= "
                f"-{self._daily_loss_limit(s):.2f} (${self.p.max_daily_loss_per_contract:.0f} "
                f"x {s['contracts']} fly); new entries halted until cleared")
-        await store.set_halt(msg)
+        await store.set_halt(msg, key=self.key)
         await store.save(s)
         await self._log(msg, level="error")
-        await self._alert("xsp_fly_daily_loss", msg, {"pnl": net})
+        await self._alert(f"{self._alert_prefix}_daily_loss", msg, {"pnl": net})
 
     async def _manage(self, s: dict) -> None:
         p = self.p
@@ -882,6 +956,8 @@ class IronFlyRunner:
             newest_sym = None
             spot_now = self.feed.spot(p.ticker)
             for leg in open_legs:
+                if s["status"] == "error":
+                    return
                 q = self.feed.quote(leg["symbol"])
                 if q is not None:
                     if q.ts is not None and (newest is None or q.ts > newest):
@@ -934,7 +1010,7 @@ class IronFlyRunner:
                     msg = (f"market data stale (option quotes {age}s, {p.ticker} {spot_age}s); "
                            "stops are blind until data resumes")
                     await self._log(msg, level="warning")
-                    await self._alert("xsp_fly_stale", msg)
+                    await self._alert(f"{self._alert_prefix}_stale", msg)
             elif stale:
                 stale = False
                 await self._log("option quotes fresh again; stop monitoring resumed")
@@ -947,8 +1023,10 @@ class IronFlyRunner:
                         if p.flatten_on_daily_loss:
                             await self._flatten(s, "daily_loss")
                             break
-            await self.clock.sleep(min(p.monitor_interval, p.stop_confirm_seconds)
-                                   if confirm_soon else p.monitor_interval)
+            delay = min(p.monitor_interval, p.stop_confirm_seconds) if confirm_soon else p.monitor_interval
+            remaining = ((flatten_at or close) - self.clock.now()).total_seconds()
+            if remaining > 0:
+                await self.clock.sleep(min(delay, remaining))
         if s["status"] == "error":             # SAFE_MODE: no flatten, no settlement
             return
         for leg in self._legs_open(s):
@@ -958,7 +1036,7 @@ class IronFlyRunner:
                                 "remainder is flattened or settles", level="warning")
         if flatten_at and self.clock.now() >= flatten_at and self._legs_open(s):
             await self._flatten(s, "pre_settlement")
-        if s["status"] == "error":
+        if s["status"] != "open":
             return
         await self._settle(s)
 
@@ -967,6 +1045,9 @@ class IronFlyRunner:
         close = s["close_time"]
         if not self._legs_open(s):
             await self._complete(s, None)
+            return
+        if self.physical_delivery:
+            await self._expired_spy_session(s)
             return
         await self._sleep_until(close + timedelta(seconds=self.p.settlement_delay_seconds))
         deadline = close + timedelta(minutes=self.p.settlement_timeout_minutes)
@@ -979,12 +1060,14 @@ class IronFlyRunner:
                 s["reason"] = "settlement price unavailable; will settle on a later start"
                 await store.save(s)
                 await self._log(f"{s['session_date']}: {s['reason']}", level="error")
-                await self._alert("xsp_fly_settlement", s["reason"])
+                await self._alert(f"{self._alert_prefix}_settlement", s["reason"])
                 return
             await self.clock.sleep(15.0)
         await self._apply_settlement(s, px)
 
     async def _apply_settlement(self, s: dict, px: float) -> None:
+        if self.physical_delivery:
+            raise ValueError("SPY options require broker-confirmed closes or assignment reconciliation")
         for leg in self._legs_open(s):
             remaining = int(leg["qty"]) - int(leg.get("exit_qty") or 0)
             iv = L.intrinsic(leg["right"], leg["strike"], px)
@@ -1005,7 +1088,21 @@ class IronFlyRunner:
         s["closed_time"] = self.clock.now()
         states = await store.trade_states([l["trade_id"] for l in legs if l.get("trade_id")])
         s["reconciliation"] = reconcile_session(s, states)
-        if hasattr(self.ex, "check_positions") and s.get("mode") == "alpaca_paper":
+        if self.physical_delivery:
+            # Read the broker's tagged fills (including expired contracts). A flat
+            # TradeRecord or the disappearance of an expired position proves no fill.
+            expected = {(l.get("occ") or l["symbol"]).replace(" ", ""): 0 for l in s["legs"]}
+            issues = (await self.ex.check_positions(expected)
+                      if hasattr(self.ex, "check_positions") else ["closing fills cannot be verified"])
+            rec = s["reconciliation"]
+            rec["broker"] = {"checked": "broker order fills flat on every SPY leg", "issues": issues}
+            rec["issues"].extend(issues)
+            rec["ok"] = not rec["issues"]
+            if not rec["ok"]:
+                s.update(closed_time=None, realized_pnl=None)
+                await self._fatal(s, f"SPY closing fills require reconciliation: {'; '.join(rec['issues'])}")
+                return
+        elif hasattr(self.ex, "check_positions") and s.get("mode") == "alpaca_paper":
             issues = await self.ex.check_positions(self._expected_broker(s))
             rec = s["reconciliation"]
             rec["broker"] = {"checked": "Alpaca app-owned fills vs session order fills",
@@ -1027,7 +1124,7 @@ class IronFlyRunner:
                                                   "exit_price", "exit_reason", "pnl")}
                            for l in legs], "reconciliation": rec})
         if not rec["ok"]:
-            await self._alert("xsp_fly_recon", "XSP fly end-of-day reconciliation mismatch",
+            await self._alert(f"{self._alert_prefix}_recon", f"{self.p.ticker} fly end-of-day reconciliation mismatch",
                               rec)
 
 

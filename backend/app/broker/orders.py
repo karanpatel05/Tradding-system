@@ -569,7 +569,7 @@ async def _cancel_app_orders() -> tuple[int, list[str], list[dict] | None]:
     return cancelled, failures, still
 
 
-# --- kill switch: marketable-limit closes for cash-settled index options -----------
+# --- kill switch: fill-confirmed closes for index and SPY option spreads ------------
 _IDX_THROUGH = 0.05        # limit this far through the touch
 _IDX_ATTEMPT = 2.0         # seconds an attempt rests before it is cancelled and repriced
 _IDX_GROUP_WAIT = 6.0      # retry window per group (shorts, then longs)
@@ -578,12 +578,31 @@ _IDX_STEP = 0.25
 _TERMINAL_ORDER = {"filled", "canceled", "expired", "rejected", "done_for_day", "replaced"}
 
 
-def is_index_option(sym: str) -> bool:
-    """A cash-settled index option (XSP, SPX/SPXW, ...): these take no IOC and are closed
-    with marketable limits by the kill switch, never market orders."""
+def _protection_group(sym: str) -> str | None:
+    """SPY wings protect SPY shorts; retain the existing group for cash-settled indices."""
     from app.broker.ledger import CASH_SETTLED_ROOTS
     p = parse_occ(sym)
-    return p is not None and p[0] in CASH_SETTLED_ROOTS
+    if p and p[0] in CASH_SETTLED_ROOTS:
+        return "index"
+    if p and p[0] == "SPY":
+        return "SPY"
+    return None
+
+
+def is_index_option(sym: str) -> bool:
+    return _protection_group(sym) == "index"
+
+
+def is_guarded_option(sym: str) -> bool:
+    """An option whose kill-switch close needs marketable limits and confirmed fills."""
+    return _protection_group(sym) is not None
+
+
+def _spy_option_legs(orders: list[dict]):
+    for order in orders:
+        for leg in [order, *(order.get("legs") or [])]:
+            if _protection_group(leg.get("symbol") or "") == "SPY":
+                yield leg
 
 
 def index_option_tick(price: float) -> float:
@@ -591,15 +610,15 @@ def index_option_tick(price: float) -> float:
     return 0.01 if price < 3.0 - 1e-9 else 0.05
 
 
-def _round_tick(x: float, up: bool) -> float:
+def _round_tick(x: float, up: bool, *, cash_settled: bool) -> float:
     import math
-    t = index_option_tick(x)
+    t = index_option_tick(x) if cash_settled else 0.01
     n = math.ceil(x / t - 1e-9) if up else math.floor(x / t + 1e-9)
     return round(n * t, 2)
 
 
 async def _index_option_quote(sym: str) -> tuple[float | None, float | None] | None:
-    """(bid, ask) for an OCC index option from the market-data facade (data only; no
+    """(bid, ask) for an OCC option from the market-data facade (data only; no
     order ever goes to the data provider), or None when no quote is available (feed
     down): "unknown", never "no bid". Indirection point for tests."""
     p = parse_occ(sym)
@@ -610,13 +629,14 @@ async def _index_option_quote(sym: str) -> tuple[float | None, float | None] | N
     return await option_nbbo(root, exp, strike, right)
 
 
-async def _close_index_leg(sym: str, qty: int, side: str, deadline: float) -> dict:
-    """Close ``qty`` of one index-option leg with marketable limits until filled or the
+async def _close_guarded_leg(sym: str, qty: int, side: str, deadline: float) -> dict:
+    """Close ``qty`` of one option leg with marketable limits until filled or the
     deadline: price through the live touch, rest briefly, cancel (confirmed), reprice.
     Returns {"filled", "left", "settle" (long with no bid: left to settle), "error"}.
     Fills come only from Alpaca's own order state."""
     filled, error = 0, None
     intent = f"{side}_to_close"
+    cash_settled = is_index_option(sym)
     while filled < qty and time.monotonic() < deadline:
         wait = max(0.05, min(_IDX_QUOTE_WAIT, deadline - time.monotonic()))
         try:
@@ -629,22 +649,26 @@ async def _close_index_leg(sym: str, qty: int, side: str, deadline: float) -> di
             continue
         bid, ask = quote
         if side == "sell":
-            if not bid or bid <= 0:    # a real quote with no bid: worthless wing, settle
-                return {"filled": filled, "left": qty - filled, "settle": True, "error": None}
-            limit = max(0.01, _round_tick(bid - _IDX_THROUGH, up=False))
+            if not bid or bid <= 0:
+                if cash_settled:
+                    return {"filled": filled, "left": qty - filled, "settle": True, "error": None}
+                error = "long leg has no bid: physical-delivery exposure remains open"
+                await asyncio.sleep(_IDX_STEP)
+                continue
+            limit = max(0.01, _round_tick(bid - _IDX_THROUGH, up=False, cash_settled=cash_settled))
         else:
             if not ask or ask <= 0:
                 error = "short leg has no ask: cannot price a buy-to-close"
                 await asyncio.sleep(_IDX_STEP)
                 continue
-            limit = _round_tick(ask + _IDX_THROUGH, up=True)
+            limit = _round_tick(ask + _IDX_THROUGH, up=True, cash_settled=cash_settled)
         error = None
         out = await submit_option_order(sym, side, qty - filled, limit_price=limit,
                                         position_intent=intent, reason="kill switch")
         oid = out.get("order_id")
         if not out.get("transmitted") or not oid:
             error = out.get("detail") or "close not transmitted"
-            if out.get("unknown_state"):
+            if out.get("unknown_state") or out.get("transmitted"):
                 error = f"close state unknown ({error})"
                 break
             await asyncio.sleep(_IDX_STEP)
@@ -676,9 +700,17 @@ async def _close_index_leg(sym: str, qty: int, side: str, deadline: float) -> di
         if not o or str(o.get("status") or "").lower() not in _TERMINAL_ORDER:
             error = f"close order {oid} state unknown after cancel"
             break
+        if o.get("status") == "replaced":
+            error = f"close order {oid} was replaced; replacement state unknown"
+            break
         try:
-            filled += int(round(float(o.get("filled_qty") or 0)))
-        except (TypeError, ValueError):
+            order_fills = float(o["filled_qty"])
+            if not order_fills.is_integer() or not 0 <= order_fills <= qty - filled:
+                raise ValueError
+            if o.get("status") == "filled" and order_fills != qty - filled:
+                raise ValueError
+            filled += int(order_fills)
+        except (KeyError, TypeError, ValueError):
             error = f"close order {oid}: unreadable filled_qty"
             break
     if filled < qty and error is None:
@@ -686,7 +718,7 @@ async def _close_index_leg(sym: str, qty: int, side: str, deadline: float) -> di
     return {"filled": filled, "left": qty - filled, "settle": False, "error": error}
 
 
-async def _transmitted_open_trades() -> dict[str, int]:
+async def transmitted_open_trades() -> dict[str, int]:
     """Open TradeRecords that were actually sent to Alpaca, as {symbol: signed qty}."""
     from sqlalchemy import select
 
@@ -716,18 +748,28 @@ async def flatten_all() -> str:
     the app sent orders, the broker may still hold them, and it raises (not flat).
     Raises RuntimeError("Flatten incomplete: ...") when anything app-owned remains or the
     configured broker cannot be read, so the kill switch never reports flat on a guess."""
-    from app.broker.ledger import account_positions, app_net_positions
+    from app.broker.ledger import account_positions, app_net_positions, app_open_orders
     if not ac.configured():
-        sent = await _transmitted_open_trades()
+        sent = await transmitted_open_trades()
         if sent:
             raise RuntimeError(f"Flatten incomplete: Alpaca is not configured but the app "
                                f"has transmitted open trade(s): {_fmt(sent)} (broker "
                                f"unreadable; not flat)")
+        # An interrupted SPY entry can have a live combo before it has TradeRecords.
+        from app.strategies.xsp_iron_fly.store import has_unfinished
+        if await has_unfinished("spy_iron_fly"):
+            raise RuntimeError("Flatten incomplete: Alpaca is not configured and the SPY "
+                               "iron fly has an unresolved session")
         return "No open positions."
     s = get_settings()
     if not s.enable_live_orders:
         try:
             app_net = await app_net_positions()
+            if not app_net:
+                pending, _ = await app_open_orders()
+                if any(_spy_option_legs(pending)):
+                    raise RuntimeError("Flatten incomplete: SPY option orders still pending "
+                                       "while routing is off")
         except _LOOKUP_ERRORS as exc:
             raise RuntimeError(f"Flatten incomplete: {_UNREADABLE} ({exc})") from exc
         if not app_net:
@@ -756,12 +798,15 @@ async def flatten_all() -> str:
     from app.engine.order_store import record_intent
     closed: list[str] = []
     settle_left: dict[str, int] = {}          # index longs with no bid: left to settle
-    index_jobs: list[tuple[str, int, str]] = []
-    # Every index short the app holds must be CLOSED before any index long is sold,
-    # including shorts skipped below (resting order, account mismatch): selling the
-    # wings while a short is open would leave it naked.
-    idx_shorts = {s for s, q in app_net.items() if q < 0 and is_index_option(s)}
-    idx_shorts_closed: set[str] = set()
+    guarded_jobs: list[tuple[str, int, str]] = []
+    # Include shorts skipped below due to resting orders or account mismatches.
+    open_shorts = {s: group for s, q in app_net.items()
+                   if q < 0 and (group := _protection_group(s)) is not None}
+    # A pending mleg entry can still open a short after this position snapshot.
+    pending_spy_short = any(
+        leg.get("side") != "buy" and leg.get("position_intent") != "sell_to_close"
+        for leg in _spy_option_legs(lingering or [])
+    )
     # shorts first: buying back a spread's short leg before selling its long keeps the
     # account covered while it unwinds
     for sym, app_qty in sorted(app_net.items(), key=lambda kv: (kv[1] > 0, kv[0])):
@@ -785,8 +830,8 @@ async def flatten_all() -> str:
                             f"{abs(app_qty)}")
         side = "sell" if app_qty > 0 else "buy"
         option = ap.get("asset_class") == "us_option" or bool(_OCC.match(sym.upper()))
-        if is_index_option(sym):
-            index_jobs.append((sym, qty, side))   # marketable limits, below
+        if is_guarded_option(sym):
+            guarded_jobs.append((sym, qty, side))
             continue
         try:
             ref = await record_intent("", sym[:16], "exit_long" if app_qty > 0 else "exit_short",
@@ -804,19 +849,24 @@ async def flatten_all() -> str:
         else:
             failures.append(f"{sym} x{qty} ({out.get('detail')})")
 
-    # Index options: no market orders (and no IOC). Shorts concurrently, then longs,
+    # Spread legs: no market orders (and no IOC). Shorts concurrently, then longs,
     # each group bounded, so the emergency stop stays prompt.
-    for group in ([j for j in index_jobs if j[2] == "buy"],
-                  [j for j in index_jobs if j[2] == "sell"]):
+    for close_side in ("buy", "sell"):
+        group = []
+        for sym, qty, side in guarded_jobs:
+            if side != close_side:
+                continue
+            if side == "sell" and _protection_group(sym) in open_shorts.values():
+                failures.append(f"{sym} x{qty} (held: a short leg is still open)")
+                continue
+            if side == "sell" and pending_spy_short and _protection_group(sym) == "SPY":
+                failures.append(f"{sym} x{qty} (held: a SPY short entry may still fill)")
+                continue
+            group.append((sym, qty, side))
         if not group:
             continue
-        if group[0][2] == "sell" and idx_shorts - idx_shorts_closed:
-            # A short is still open (skipped or not fully filled): keep its protection.
-            failures += [f"{sym} x{qty} (held: a short leg is still open)"
-                         for sym, qty, _ in group]
-            break
         deadline = time.monotonic() + _IDX_GROUP_WAIT
-        results = await asyncio.gather(*[_close_index_leg(sym, qty, side, deadline)
+        results = await asyncio.gather(*[_close_guarded_leg(sym, qty, side, deadline)
                                          for sym, qty, side in group],
                                        return_exceptions=True)
         for (sym, qty, side), res in zip(group, results):
@@ -828,7 +878,7 @@ async def flatten_all() -> str:
             if side == "buy" and not res["left"] and qty == abs(app_net.get(sym, 0)):
                 # closed only if ALL the app's short was bought back (a job capped by a
                 # lagging account read leaves the rest open)
-                idx_shorts_closed.add(sym)
+                open_shorts.pop(sym)
             if res["settle"] and res["left"]:
                 settle_left[sym] = res["left"]
             elif res["left"]:

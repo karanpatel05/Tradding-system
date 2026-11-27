@@ -6,8 +6,7 @@ only** (quotes, option chains, history; OAuth personal grant). The Alpaca paper 
 may be shared with other tools: the app only touches orders it tagged (`tsys-`
 client_order_id). Includes a live engine, dashboard, journal, equity backtests and an
 options Builder (paper-tracked, never places orders). The Strategies tab lists the QQQ
-first-hour credit spread, which runs outside this app and is switched off here (see
-"Strategies" below); the other slots are Coming Soon. Runs as a local web app, a macOS
+first-hour credit spread and SPY 0DTE iron fly, alongside the XSP history archive. Runs as a local web app, a macOS
 LaunchAgent service, or a hosted Docker stack.
 
 ## Architecture
@@ -190,71 +189,32 @@ Unlike the runner it has **no ML model**: every spread is held to the 15:50 flat
 - Sessions: `GET /api/strategies/qqq_credit_spread/sessions`. Settings: `QQQ_SPREAD_*` in
   `backend/app/config.py` (grace, re-price cadence, close times, sizing).
 
-**XSP 0DTE Iron Fly** (`xsp_iron_fly`) trades **on the Alpaca paper account** from this app,
-with real orders and fills; there is no simulated mode. It sells a 10-point-wide XSP iron fly
-at 09:45 ET, gives each short leg its own 1.5x stop, and holds the rest to the 4:00 pm cash
-settlement. Quotes for decisions come from Tastytrade, which never receives orders. Code:
-`backend/app/strategies/xsp_iron_fly/`.
+**SPY 0DTE Iron Fly** (`spy_iron_fly`) trades standard, physically delivered SPY ETF
+options on the tagged Alpaca paper account. Tastytrade supplies SPY trades and option quotes.
+The strategy sells the nearest at-the-money call and put at 09:45 ET and buys the wings
+nearest $10 away, all in one net-credit limit order. Each short has a 1.5× entry-fill stop.
+The existing fly size, risk, fee, and stop settings retain their `XSP_FLY_*` environment
+names. SPY sizing uses its own starting equity and realized SPY paper P&L.
 
-- **Orders.** Everything goes through the app's shared, tagged order path:
-  `orders.submit_combo_order` for the 4-leg entry, `orders.submit_option_order` for single
-  legs. Activation needs `ENABLE_LIVE_ORDERS` on, Alpaca keys, and the paper host.
-  `XSP_FLY_MODE` defaults to `alpaca_paper`; `live` is refused.
-  - **Entry** is one `mleg` DAY limit with a negative `limit_price`, which is the least
-    credit accepted. A 2026-11-24 test order on this paper account confirmed that
-    convention for XSP: Alpaca stored `-9.5`, and the order rested unfilled.
-  - **Stops** are single-leg `buy_to_close` limits, on the option's price increment
-    ($0.01 under $3, $0.05 from $3). Wings are never stopped. A rejected stop close
-    alerts once and retries every tick. In SAFE_MODE, opening orders are blocked but
-    closing orders still go out.
-  - **Fills.** Index options don't accept IOC, so each order is polled for a few
-    seconds, then cancelled and re-read. Fill prices are Alpaca's own per-leg averages,
-    and each fill records its Alpaca order id.
-  - **Fail-safe.** If an order can't be read, filled without prices, or is still working
-    after its cancel, SAFE_MODE trips and the day is left to a human.
-  - **Restart.** The app cancels orders a crash left working on the day's legs, then
-    compares Alpaca's app-owned fills with the session. A mismatch trips SAFE_MODE. It
-    never auto-applies unseen fills.
-  - **End of day.** Reconciliation adds the same Alpaca check. Alpaca posts the cash
-    settlement around 21:00 ET (`OPCSH`/`OPEXP`, visible the next day on paper).
-  - **Mode guard.** A fly recorded under another mode (e.g. the old simulator) is never
-    managed. It's left alone, with an alert.
-  - **Emergency stop.** Cash-settled index legs (XSP, SPX…) are closed with
-    **marketable limits**, never market orders, each priced through the live touch:
-    - shorts close first, concurrently, then longs;
-    - each group is repriced and retried for about 6 seconds, then whatever is left is
-      cancelled;
-    - a long wing with no bid is left to settle worthless, and the result says so;
-    - an unfilled close reports "Flatten incomplete", and that leg's TradeRecord stays
-      open;
-    - a short with no ask is reported, never skipped.
+- Closing orders begin 30 minutes before the regular equity session closes (15:30 ET on a
+  full day). The runner covers short options before selling protective wings, uses
+  broker-confirmed fills, and records an unresolved exit if contracts remain at expiration.
+  Check the broker's positions, fills and any exercise or assignment activity before
+  reconciling that session. The default minimum time to close skips half-day entries.
+- Pausing SPY stops new entries and keeps the existing session under management.
+  `GET /api/strategies/spy_iron_fly/sessions` returns its sessions and halt state.
+  The authenticated `POST /api/strategies/spy_iron_fly/clear-halt` clears its daily-loss flag.
+- From `backend/`, run
+  `python -m scripts.run_spy_fly_backtest fetch --start YYYY-MM-DD --end YYYY-MM-DD`
+  to download historical SPY market data, then use `run` with the same dates to replay it.
+  The replay uses an isolated database, independent $5,000 sessions, actual SPY prints,
+  modeled per-leg spreads, and the paper strategy's pre-expiry closing rules.
+  Open **Strategies → SPY 0DTE Iron Fly → Backtest results** to review the saved report.
+  A session with an unconfirmed exit has unknown final P&L.
 
-    Equity/ETF options (e.g. QQQ) still close at market.
-- **Expired options in the ledger.** The app's Alpaca ledger, and the local side of
-  startup reconciliation, drop **cash-settled index** option contracts (XSP, SPX/SPXW, NDX,
-  RUT, VIX…) past their expiry: the session close on the expiry day, 13:00 ET on half
-  days. A leg held to cash settlement has no closing order. Physically settled
-  equity/ETF options (e.g. QQQ) are never dropped, because they turn into shares.
-- **Sizing.** 1 fly per $5,000 of the strategy's own equity: `starting_equity` ($5,000)
-  plus the realized P&L of all its finished sessions, net of fees. It never sizes below 1
-  fly while equity still covers one fly's max loss. There is no contract cap. The
-  Strategies-page capital allocation doesn't affect this strategy's size.
-- **Settings** are `XSP_FLY_*` in `backend/.env` (see `config.py`). Defaults:
-  `starting_equity=5000`, `capital_per_fly=5000`, `max_daily_loss_per_contract=1000`
-  (the day's limit is this times the flies sized that day, and a fly whose max loss
-  exceeds it isn't traded), `max_leg_spread=0.15`, `max_quote_age=5s` and
-  `min_minutes_to_close=240`, which skips 13:00 half days.
-- **State.** Each trading day gets one `xsp_fly_sessions` row, unique per day and written
-  before any order, plus one `TradeRecord` per leg. A restart never enters the same day
-  twice, and it picks up open legs with their stop levels. The emergency stop closes the
-  leg records, treats the day as done, and leaves the strategy `stopped` so it doesn't
-  auto-resume at boot. A plain **Stop** while a fly is open leaves its legs open and
-  unmanaged until you activate it again (same day: monitoring resumes; later: the legs are
-  settled at that day's close).
-- **Daily-loss breach.** A breach sets a persisted halt that blocks later entries until it's
-  cleared with `POST /api/strategies/xsp_iron_fly/clear-halt`.
-  `GET /api/strategies/xsp_iron_fly/sessions` shows recent days: legs, stops, P&L and the
-  end-of-day reconciliation, including the check against Alpaca's fills.
+The former **XSP 0DTE Iron Fly** keeps its original `xsp_iron_fly` key for session history,
+cash settlement of existing positions, and archived XSP backtests. The archive is accessible
+from Strategies. Its records, capital and halt are separate from SPY.
 
 ## Run the full stack (Docker, hosted)
 

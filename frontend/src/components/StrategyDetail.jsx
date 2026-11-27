@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { api } from "../api.js";
+import BacktestResults from "./backtests/BacktestResults.jsx";
 import StrategyPnl from "./StrategyPnl.jsx";
 import {
   usd,
@@ -17,9 +17,6 @@ import {
   ChevronLeft,
 } from "./strategyUi.jsx";
 
-const TF_ORDER = ["1D", "1W", "1M", "YTD", "full"];
-const TF_LABEL = { full: "Full" };
-const pct2 = (n) => (n === null || n === undefined ? "—" : `${(n * 100).toFixed(2)}%`);
 const timeOf = (iso) =>
   iso ? new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "America/New_York" }) : "—";
 const dayLabel = (iso) => (iso ? new Date(iso + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }) : "—");
@@ -39,14 +36,13 @@ function BackLink({ onBack }) {
   );
 }
 
-export default function StrategyDetail({ keyName, summary, onBack }) {
+export default function StrategyDetail({ keyName, summary, onBack, initialView = "overview" }) {
   const [detail, setDetail] = useState(null);
-  const [backtest, setBacktest] = useState(null);
+  const [view, setView] = useState(initialView);
   const [sessions, setSessions] = useState(null);
   const [alloc, setAlloc] = useState("");
   const [msg, setMsg] = useState(null);
   const [loadError, setLoadError] = useState(null);
-  const [backtestError, setBacktestError] = useState(null);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -66,11 +62,7 @@ export default function StrategyDetail({ keyName, summary, onBack }) {
 
   useEffect(() => {
     let alive = true;
-    if (ready) {
-      api
-        .backtest(keyName)
-        .then((d) => alive && setBacktest(d))
-        .catch((e) => alive && setBacktestError(e.message));
+    if (ready && view === "overview") {
       api
         .strategySessions(keyName)
         .then((d) => alive && setSessions(d?.sessions || []))
@@ -79,7 +71,7 @@ export default function StrategyDetail({ keyName, summary, onBack }) {
     return () => {
       alive = false;
     };
-  }, [ready, keyName]);
+  }, [ready, keyName, view]);
 
   const act = async (fn, verb) => {
     setMsg(null);
@@ -111,10 +103,13 @@ export default function StrategyDetail({ keyName, summary, onBack }) {
     name: ov.name,
     ready: ov.ready,
     running: detail.running,
+    status: detail.status,
+    archived: detail.archived,
     external_runner: detail.external_runner,
     activation_blocked: detail.activation_blocked,
   };
-  const meta = [summary?.category, summary?.universe?.join(", "), summary?.execution].filter(Boolean);
+  const overview = view === "overview";
+  const meta = [summary?.category, summary?.universe?.join(", "), overview && summary?.execution].filter(Boolean);
   const { entry, exit } = scheduleOf(ov);
   const today = nyToday();
   const todaySession = sessions?.find((x) => x.session_date === today);
@@ -128,24 +123,32 @@ export default function StrategyDetail({ keyName, summary, onBack }) {
           <h1>{ov.name}</h1>
           {meta.length > 0 && <p className="sd-meta">{meta.join(" · ")}</p>}
         </div>
-        <div className="sd-head-actions">
-          <StatusMark s={s} />
-          {ready && !detail.external_runner && (
-            <ToggleButton
-              s={s}
-              primary
-              busy={busy}
-              confirming={confirming}
-              onAsk={() => setConfirming(true)}
-              onCancel={() => setConfirming(false)}
-              onConfirm={() => act(() => (s.running ? api.stop(keyName) : api.activate(keyName)), s.running ? "Pausing" : "Starting")}
-            />
-          )}
-        </div>
+        {overview && (
+          <div className="sd-head-actions">
+            <StatusMark s={s} />
+            {ready && !detail.external_runner && (
+              <ToggleButton
+                s={s}
+                primary
+                busy={busy}
+                confirming={confirming}
+                onAsk={() => setConfirming(true)}
+                onCancel={() => setConfirming(false)}
+                onConfirm={() => act(() => (s.running ? api.stop(keyName) : api.activate(keyName)), s.running ? "Pausing" : "Starting")}
+              />
+            )}
+          </div>
+        )}
       </header>
-      {ready && ov.description && <p className="sd-lede">{ov.description}</p>}
-      {msg && <div className="banner error" role="alert">{msg}</div>}
-      {ready && !canToggle(s) && !detail.external_runner && strategyStatus(s).title && <p className="muted small">{strategyStatus(s).title}</p>}
+      {ready && (
+        <div className="sd-view-switch" role="group" aria-label="Strategy view">
+          <button aria-pressed={overview} onClick={() => setView("overview")}>Overview</button>
+          <button aria-pressed={!overview} onClick={() => setView("backtests")}>Backtest results</button>
+        </div>
+      )}
+      {overview && ready && ov.description && <p className="sd-lede">{ov.description}</p>}
+      {overview && msg && <div className="banner error" role="alert">{msg}</div>}
+      {overview && ready && !canToggle(s) && !detail.external_runner && strategyStatus(s).title && <p className="muted small">{strategyStatus(s).title}</p>}
 
       {!ready ? (
         <section className="card sd-soon">
@@ -155,8 +158,10 @@ export default function StrategyDetail({ keyName, summary, onBack }) {
             they are.
           </p>
         </section>
+      ) : !overview ? (
+        <BacktestResults keyName={keyName} strategyName={ov.name} />
       ) : (
-        <div className="sd-grid">
+        <div className={detail.archived ? "sd-archive" : "sd-grid"}>
           <div className="sd-main">
             <section className="card sd-today" aria-label="Today">
               <div className="sd-card-head">
@@ -236,65 +241,9 @@ export default function StrategyDetail({ keyName, summary, onBack }) {
                 </div>
               </section>
             )}
-
-            <section className="card sd-backtest" aria-label="Backtest">
-              <h2>Backtest</h2>
-              {!backtest?.data_available ? (
-                <p className={backtestError ? "banner error" : "muted"}>{backtestError || backtest?.note || "Loading backtest…"}</p>
-              ) : (
-                <>
-                  <p className="sd-card-meta">
-                    {backtest.symbol} · {backtest.basis} · {backtest.date_range.start} to {backtest.date_range.end}, {backtest.date_range.trading_days} trading days
-                  </p>
-                  <div className="table-scroll">
-                    <table className="table metrics">
-                      <thead>
-                        <tr>
-                          <th>Window</th>
-                          <th className="num">Return</th>
-                          <th className="num">Win rate</th>
-                          <th className="num">Expectancy</th>
-                          <th className="num">Max drawdown</th>
-                          <th className="num">Sharpe</th>
-                          <th className="num">Trades</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {TF_ORDER.filter((tf) => backtest.timeframes[tf]).map((tf) => {
-                          const m = backtest.timeframes[tf];
-                          return (
-                            <tr key={tf}>
-                              <td>{TF_LABEL[tf] || tf}</td>
-                              <td className={"num " + (m.total_return >= 0 ? "pos" : "neg")}>{pct2(m.total_return)}</td>
-                              <td className="num">{pct2(m.win_rate)}</td>
-                              <td className="num">{pct2(m.expectancy)}</td>
-                              <td className="num neg">{pct2(m.max_drawdown)}</td>
-                              <td className="num">{fmt(m.sharpe)}</td>
-                              <td className="num">{fmt(m.trade_count)}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                  <h3>Equity curve</h3>
-                  <div className="sd-chart">
-                    <ResponsiveContainer width="100%" height={240}>
-                      <LineChart data={backtest.equity_curve} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-                        <CartesianGrid stroke="var(--border-soft)" vertical={false} />
-                        <XAxis dataKey="date" tick={{ fontSize: 11, fill: "var(--muted)", fontFamily: "var(--num)" }} tickLine={false} axisLine={{ stroke: "var(--border)" }} minTickGap={48} />
-                        <YAxis tick={{ fontSize: 11, fill: "var(--muted)", fontFamily: "var(--num)" }} tickLine={false} axisLine={false} width={56} domain={["auto", "auto"]} />
-                        <Tooltip contentStyle={{ border: "1px solid var(--border)", borderRadius: 8, fontSize: 12, boxShadow: "none" }} />
-                        <Line type="monotone" dataKey="equity" stroke="var(--accent)" strokeWidth={1.5} dot={false} isAnimationActive={false} />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                </>
-              )}
-            </section>
           </div>
 
-          <aside className="sd-side">
+          {!detail.archived && <aside className="sd-side">
             {detail.external_runner ? (
               <ExternalRunnerCard detail={detail} />
             ) : (
@@ -330,7 +279,7 @@ export default function StrategyDetail({ keyName, summary, onBack }) {
                 )}
               </section>
             )}
-          </aside>
+          </aside>}
         </div>
       )}
     </div>

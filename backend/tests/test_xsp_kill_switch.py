@@ -1,5 +1,4 @@
-"""Kill switch on cash-settled index options (XSP): marketable-limit closes, never market
-orders; legs only count as closed when Alpaca reports the fill; equity options unchanged.
+"""Fill-confirmed emergency closes for XSP index and SPY ETF option spreads.
 
 Run: DATABASE_URL=sqlite+aiosqlite:///./_t_kill.db ../.venv/bin/python -m pytest tests/test_xsp_kill_switch.py
 """
@@ -16,6 +15,7 @@ from app.broker import ledger, orders
 SC, SP = "XSP991231C00600000", "XSP991231P00600000"      # far-future: never "expired"
 LC, LP = "XSP991231C00610000", "XSP991231P00590000"
 QQQ = "QQQ991231C00500000"
+SPY_SHORT, SPY_WING = "SPY991231C00600000", "SPY991231C00610000"
 
 
 class Broker:
@@ -255,6 +255,113 @@ async def test_equity_option_kill_switch_unchanged_market_close(broker):
     assert "Flattened 1" in out and broker.limit_bodies == []
     (b,) = broker.market_bodies
     assert b["type"] == "market" and b["position_intent"] == "buy_to_close"
+
+
+@pytest.mark.asyncio
+async def test_spy_short_partial_fill_holds_spy_wing_but_allows_index_and_stock(broker):
+    broker.held = {SPY_SHORT: -2, SPY_WING: 2, LC: 1, "SPY": 10}
+    broker.quotes.update({SPY_SHORT: (3.19, 3.21), SPY_WING: (0.12, 0.14)})
+    broker.fill[SPY_SHORT] = "one_once"
+    with pytest.raises(RuntimeError, match=f"{SPY_SHORT} x1 not closed"):
+        await orders.flatten_all()
+    assert broker.held == {SPY_SHORT: -1, SPY_WING: 2}
+    assert [b["symbol"] for b in broker.market_bodies] == ["SPY"]
+    assert not any(b["symbol"] == SPY_WING for b in broker.limit_bodies)
+    assert broker.limit_bodies[0]["limit"] == pytest.approx(3.26)
+
+
+@pytest.mark.asyncio
+async def test_kill_keeps_transmitted_no_bid_spy_wing_open_until_fill(broker, monkeypatch):
+    from sqlalchemy import delete, select
+    from app.db.base import init_db, session_scope
+    from app.db.models import StrategyState, TradeRecord
+    from app.routers import dashboard
+
+    broker.held = {SPY_SHORT: -1, SPY_WING: 1}
+    broker.quotes.update({SPY_SHORT: (3.19, 3.21), SPY_WING: (0.0, 0.05)})
+
+    async def no_orders():
+        return [], set()
+    monkeypatch.setattr(ledger, "app_open_orders", no_orders)
+    await init_db()
+    async with session_scope() as db:
+        await db.execute(delete(TradeRecord))
+        await db.merge(StrategyState(key="spy_iron_fly", name="SPY iron fly", status="exiting"))
+        for symbol, side, sent in [(SPY_SHORT, "sell", True), (SPY_WING, "buy", True),
+                                   (SPY_WING, "buy", False)]:
+            db.add(TradeRecord(strategy_key="spy_iron_fly", symbol=symbol, side=side,
+                               quantity=1, transmitted=sent, status="open"))
+    report = await dashboard.kill_switch()
+    assert not report["fully_flat"] and report["trades_closed"] == 2
+    assert "spy_iron_fly" in report["strategies_stopped"]
+    assert "long leg has no bid" in report["flatten"]["error"]
+    assert "left to settle" not in report["flatten"]["error"]
+    assert broker.held == {SPY_WING: 1}
+    async with session_scope() as db:
+        remaining = (await db.scalars(select(TradeRecord).where(TradeRecord.status == "open"))).all()
+        assert [(r.symbol, r.transmitted, r.exit_time) for r in remaining] == [(SPY_WING, True, None)]
+    broker.quotes[SPY_WING] = (0.15, 0.20)
+    resolved = await dashboard.kill_switch()
+    assert resolved["fully_flat"] and resolved["trades_closed"] == 1 and not broker.held
+
+
+@pytest.mark.asyncio
+async def test_spy_unknown_order_state_does_not_resubmit_or_sell_wing(broker, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    broker.held = {SPY_SHORT: -1, SPY_WING: 1}
+    broker.quotes.update({SPY_SHORT: (2.5, 2.6), SPY_WING: (0.1, 0.2)})
+    submit = AsyncMock(return_value={"transmitted": True, "order_id": ""})
+    monkeypatch.setattr(orders, "submit_option_order", submit)
+    with pytest.raises(RuntimeError, match="close state unknown"):
+        await orders.flatten_all()
+    assert submit.await_count == 1 and submit.await_args.args[0] == SPY_SHORT
+
+
+@pytest.mark.asyncio
+async def test_pending_spy_entry_keeps_protective_wing(broker, monkeypatch):
+    broker.held = {SPY_WING: 1}
+    broker.quotes[SPY_WING] = (0.25, 0.26)
+    pending = {"order_class": "mleg", "status": "pending_cancel",
+               "legs": [{"symbol": SPY_SHORT, "side": "sell", "position_intent": "sell_to_open"}]}
+
+    async def cancel_pending():
+        return 0, ["entry cancellation pending"], [pending]
+    monkeypatch.setattr(orders, "_cancel_app_orders", cancel_pending)
+    with pytest.raises(RuntimeError, match="short entry may still fill"):
+        await orders.flatten_all()
+    assert not broker.limit_bodies
+
+
+@pytest.mark.asyncio
+async def test_disabled_routing_with_pending_spy_combo_reports_incomplete(broker, monkeypatch):
+    from unittest.mock import AsyncMock
+    from app.config import get_settings
+
+    broker.held = {}
+    monkeypatch.setattr(get_settings(), "enable_live_orders", False)
+    pending = [{"order_class": "mleg", "legs": [{"symbol": SPY_SHORT}]}]
+    monkeypatch.setattr(ledger, "app_open_orders", AsyncMock(return_value=(pending, {"id"})))
+    with pytest.raises(RuntimeError, match="SPY option orders still pending"):
+        await orders.flatten_all()
+    assert not broker.limit_bodies and not broker.market_bodies
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unreadable", [False, True])
+async def test_spy_exposure_seen_or_unreadable_after_flatten_is_reported(broker, monkeypatch, unreadable):
+    from unittest.mock import AsyncMock
+    from app.db.base import init_db
+    from app.routers import dashboard
+
+    await init_db()
+    broker.held = {SPY_SHORT: -1}
+    monkeypatch.setattr(dashboard, "flatten_all", AsyncMock(return_value="No open positions."))
+    if unreadable:
+        monkeypatch.setattr(ledger, "app_net_positions", AsyncMock(side_effect=RuntimeError("offline")))
+        monkeypatch.setattr(orders, "transmitted_open_trades", AsyncMock(return_value={SPY_SHORT: -1}))
+    report = await dashboard.kill_switch()
+    assert not report["fully_flat"] and SPY_SHORT in report["flatten"]["error"]
 
 
 @pytest.mark.asyncio

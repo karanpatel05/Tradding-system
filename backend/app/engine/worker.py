@@ -827,10 +827,10 @@ async def close_open_trades(reason: str = "kill_switch", *,
     ``exit_time``/``status`` are stamped so the trade leaves the open set.
     Idempotent: returns 0 when the ledger is already flat.
 
-    ``keep_index_symbols``: transmitted cash-settled index-option legs (XSP, ...) whose
+    ``keep_index_symbols``: transmitted SPY and cash-settled index-option legs whose
     OCC symbol is in this set are left OPEN, because Alpaca still holds them (their
     marketable-limit close didn't fill); None = the broker couldn't be read, so every
-    transmitted index-option leg stays open. Never marked closed unless it closed.
+    transmitted guarded option leg stays open.
     """
     from sqlalchemy import select
 
@@ -839,10 +839,10 @@ async def close_open_trades(reason: str = "kill_switch", *,
         rows = (await session.execute(
             select(TradeRecord).where(TradeRecord.status == "open")
         )).scalars().all()
-        from app.broker.orders import is_index_option
+        from app.broker.orders import is_guarded_option
         kept = 0
         for tr in rows:
-            if tr.transmitted and is_index_option(tr.symbol or "") and (
+            if tr.transmitted and is_guarded_option(tr.symbol or "") and (
                     keep_index_symbols is None
                     or tr.symbol.replace(" ", "") in keep_index_symbols):
                 kept += 1
@@ -853,7 +853,7 @@ async def close_open_trades(reason: str = "kill_switch", *,
     if n:
         logger.warning("Kill switch closed %d open trade record(s) [%s]", n, reason)
     if kept:
-        logger.error("Kill switch left %d index-option leg record(s) OPEN: still held at "
+        logger.error("Kill switch left %d option leg record(s) OPEN: still held at "
                      "Alpaca or unreadable [%s]", kept, reason)
     return n
 

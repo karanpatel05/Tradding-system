@@ -5,7 +5,7 @@ fixed by the spec; everything else here is execution hygiene or a risk limit.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import time
 
 
@@ -64,8 +64,11 @@ class IronFlyParams:
 
     def validate(self) -> list[str]:
         errs = []
-        if self.ticker != "XSP":
-            errs.append("ticker must be XSP (cash-settled European index options)")
+        if self.ticker not in ("SPY", "XSP"):
+            errs.append("unsupported iron fly underlying")
+        if self.ticker == "SPY" and (not self.close_before_settlement
+                                      or not 30 <= self.flatten_minutes_before_close < self.min_minutes_to_close):
+            errs.append("SPY must start closing at least 30 minutes before the session close and after entry")
         if self.wing_width <= 0:
             errs.append("wing_width must be > 0")
         if self.stop_mult <= 1:
@@ -81,6 +84,12 @@ class IronFlyParams:
         if self.mode not in ("alpaca_paper", "live"):
             errs.append("mode must be 'alpaca_paper' (or 'live', which is refused)")
         return errs
+
+    @classmethod
+    def for_spy(cls, settings=None):
+        """Use the operator's existing fly risk settings with a physical-delivery exit."""
+        return replace(cls.from_settings(settings), ticker="SPY", close_before_settlement=True,
+                       flatten_minutes_before_close=30.0)
 
     @classmethod
     def from_settings(cls, s=None) -> "IronFlyParams":

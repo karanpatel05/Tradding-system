@@ -3,6 +3,7 @@ persisted daily-loss halt flag. The runner holds the session as a plain dict and
 the whole thing after every state change."""
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import date, datetime, timezone
 
 from sqlalchemy import select
@@ -12,6 +13,8 @@ from app.db.base import session_scope
 from app.db.models import SystemFlag, TradeRecord, XspFlySession
 
 HALT_FLAG = "xsp_fly_halt"
+_HALT_FLAGS = {"xsp_iron_fly": HALT_FLAG, "spy_iron_fly": "spy_fly_halt"}
+_UNFINISHED = ("entering", "open", "error")
 
 _FIELDS = ("status", "reason", "mode", "ticker", "expiry", "close_time", "spot_at_entry",
            "body_strike", "contracts", "mid_credit", "net_credit", "max_loss", "legs",
@@ -39,8 +42,7 @@ def _to_dict(row: XspFlySession) -> dict:
     for f in _FIELDS:
         v = getattr(row, f)
         if isinstance(v, (list, dict)):
-            import copy
-            v = copy.deepcopy(v)
+            v = deepcopy(v)
         d[f] = _aware(v)
     d["legs"] = d["legs"] or []
     d["fills"] = d["fills"] or []
@@ -68,14 +70,16 @@ async def create_session(key: str, d: date, **fields) -> dict | None:
         return None
 
 
+def _write_session(row: XspFlySession, sess: dict) -> None:
+    for f in _FIELDS:
+        if f in sess:
+            v = sess[f]
+            setattr(row, f, deepcopy(v) if isinstance(v, (list, dict)) else _db(v))
+
+
 async def save(sess: dict) -> None:
-    import copy
     async with session_scope() as s:
-        row = await s.get(XspFlySession, sess["id"])
-        for f in _FIELDS:
-            if f in sess:
-                v = sess[f]
-                setattr(row, f, copy.deepcopy(v) if isinstance(v, (list, dict)) else _db(v))
+        _write_session(await s.get(XspFlySession, sess["id"]), sess)
 
 
 async def unfinished_before(key: str, d: date) -> list[dict]:
@@ -84,8 +88,15 @@ async def unfinished_before(key: str, d: date) -> list[dict]:
     async with session_scope() as s:
         rows = (await s.execute(select(XspFlySession).where(
             XspFlySession.strategy_key == key, XspFlySession.session_date < d,
-            XspFlySession.status.in_(("entering", "open", "error"))))).scalars().all()
+            XspFlySession.status.in_(_UNFINISHED)))).scalars().all()
         return [_to_dict(r) for r in rows]
+
+
+async def has_unfinished(key: str) -> bool:
+    async with session_scope() as s:
+        return (await s.scalar(select(XspFlySession.id).where(
+            XspFlySession.strategy_key == key, XspFlySession.status.in_(_UNFINISHED)
+        ).limit(1))) is not None
 
 
 def expected_broker(sess: dict, closed_trade_ids: set | frozenset = frozenset()) -> dict[str, int]:
@@ -149,7 +160,6 @@ async def recent_sessions(key: str, limit: int = 10) -> list[dict]:
 # --- legs as TradeRecords ---------------------------------------------------------
 async def finalize_entry(sess: dict, key: str, now: datetime) -> None:
     """Atomically: one open TradeRecord per filled leg + the session row as open."""
-    import copy
     async with session_scope() as s:
         real = sess.get("mode") == "alpaca_paper"
         for leg in sess["legs"]:
@@ -167,18 +177,18 @@ async def finalize_entry(sess: dict, key: str, now: datetime) -> None:
             s.add(tr)
             await s.flush()
             leg["trade_id"] = tr.id
-        row = await s.get(XspFlySession, sess["id"])
-        for f in _FIELDS:
-            if f in sess:
-                v = sess[f]
-                setattr(row, f, copy.deepcopy(v) if isinstance(v, (list, dict)) else _db(v))
+        _write_session(await s.get(XspFlySession, sess["id"]), sess)
 
 
 async def close_leg_trade(trade_id: int | None, exit_price: float, pnl: float,
-                          now: datetime) -> None:
+                          now: datetime, *, session: dict | None = None) -> None:
     if trade_id is None:
         return
     async with session_scope() as s:
+        if session is not None:
+            # The session's close fill and the TradeRecord must commit together.
+            # Otherwise restart can mistake our own close for an external kill.
+            _write_session(await s.get(XspFlySession, session["id"]), session)
         tr = await s.get(TradeRecord, trade_id)
         if tr is None or tr.status != "open":
             return
@@ -201,24 +211,25 @@ async def trade_states(trade_ids: list[int]) -> dict[int, dict]:
 
 
 # --- persisted halt ---------------------------------------------------------------
-async def halt_reason() -> str | None:
+async def halt_reason(*, key: str = "xsp_iron_fly") -> str | None:
     async with session_scope() as s:
-        row = await s.get(SystemFlag, HALT_FLAG)
+        row = await s.get(SystemFlag, _HALT_FLAGS[key])
         return (row.reason or "halted") if row and row.on else None
 
 
-async def set_halt(reason: str) -> None:
+async def set_halt(reason: str, *, key: str = "xsp_iron_fly") -> None:
     async with session_scope() as s:
-        row = await s.get(SystemFlag, HALT_FLAG)
+        flag = _HALT_FLAGS[key]
+        row = await s.get(SystemFlag, flag)
         if row is None:
-            s.add(SystemFlag(key=HALT_FLAG, on=True, reason=reason))
+            s.add(SystemFlag(key=flag, on=True, reason=reason))
         else:
             row.on, row.reason = True, reason
 
 
-async def clear_halt() -> bool:
+async def clear_halt(*, key: str = "xsp_iron_fly") -> bool:
     async with session_scope() as s:
-        row = await s.get(SystemFlag, HALT_FLAG)
+        row = await s.get(SystemFlag, _HALT_FLAGS[key])
         was = bool(row and row.on)
         if row is not None:
             row.on, row.reason = False, ""

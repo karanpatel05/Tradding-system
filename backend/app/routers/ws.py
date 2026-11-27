@@ -40,6 +40,8 @@ async def _strategies_snapshot() -> list[dict]:
     out = []
     async with session_scope() as session:
         for strat in list_strategies():
+            if strat.archived and not engine_manager.is_running(strat.key):
+                continue
             st = await session.get(StrategyState, strat.key)
             out.append({
                 "key": strat.key,
