@@ -1,4 +1,4 @@
-"""Read completed iron fly replays from the historical data cache."""
+"""Read saved iron fly research and completed replays from the historical data cache."""
 
 from datetime import date
 from functools import lru_cache
@@ -9,6 +9,7 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.config import get_settings
+from app.services import spy_research_report as research
 
 logger = logging.getLogger("trading.backtest_reports")
 
@@ -107,11 +108,15 @@ def _metadata(report_id: str, label: str, report: _Report) -> dict:
 
 
 def has_reports(key: str) -> bool:
+    if key == research.KEY and research.read() is not None:
+        return True
     return any(_read(key, path) is not None for _, path in _CATALOG.get(key, {}).values())
 
 
 def list_reports(key: str) -> list[dict]:
     reports = []
+    if key == research.KEY and (source := research.read()) is not None:
+        reports.append(research.metadata(source))
     for report_id, (label, path) in _CATALOG.get(key, {}).items():
         report = _read(key, path)
         if report is not None:
@@ -120,6 +125,9 @@ def list_reports(key: str) -> list[dict]:
 
 
 def get_report(key: str, report_id: str) -> dict | None:
+    if key == research.KEY and report_id == research.REPORT_ID:
+        source = research.read()
+        return {**source, "downloads": research.downloads()} if source is not None else None
     catalog = _CATALOG.get(key, {})
     if report_id not in catalog:
         return None
@@ -128,3 +136,9 @@ def get_report(key: str, report_id: str) -> dict | None:
     if report is None:
         return None
     return {**_metadata(report_id, label, report), **report.model_dump(mode="json", exclude_unset=True)}
+
+
+def report_file(key: str, report_id: str, filename: str) -> Path | None:
+    if key == research.KEY and report_id == research.REPORT_ID and research.read() is not None:
+        return research.file_path(filename)
+    return None

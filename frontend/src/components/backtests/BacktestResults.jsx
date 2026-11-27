@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api.js";
 import ReplayReport from "./ReplayReport.jsx";
+import ResearchReport from "./ResearchReport.jsx";
 import SavedBacktest from "./SavedBacktest.jsx";
 
 const dateFormat = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
@@ -29,7 +30,8 @@ function Replay({ strategyKey, id }) {
   }, [strategyKey, id, attempt]);
 
   if (error) return <LoadError message={error} retry={() => { setError(""); setAttempt((n) => n + 1); }} />;
-  if (!report) return <p className="bt-status" role="status">Loading historical replay…</p>;
+  if (!report) return <p className="bt-status" role="status">Loading saved report…</p>;
+  if (report.kind === "research") return <ResearchReport report={report} />;
   return <ReplayReport report={report} />;
 }
 
@@ -40,7 +42,7 @@ function ReplayLibrary({ strategyKey, reports }) {
     <>
       <div className="bt-report-head">
         <div>
-          <h2>Historical replay</h2>
+          <h2>{selected.kind === "research" ? "Research backtest" : "Historical replay"}</h2>
           <p className="sd-card-meta">{displayDate(selected.start)} – {displayDate(selected.end)}</p>
         </div>
         <label className="bt-report-select">
