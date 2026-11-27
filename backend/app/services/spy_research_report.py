@@ -18,6 +18,9 @@ LABEL = "Research · SPY 0DTE iron fly"
 PERIOD_ID = "research-february-one-cent"
 PERIOD_START = date(2024, 2, 1)
 PERIOD_CSV = "W10_stop150_full_spread_0.01_from_2024-02-01.csv"
+DAILY_FIELDS = ("date", "contracts", "wing_width", "stop_multiple", "full_bid_ask_spread",
+                "half_spread_per_fill", "fee_per_contract", "net_pnl_usd")
+DAILY_SETTINGS = ("10", "1.5", "0.01", "0.005", "0.035")
 _METRICS = ("total_pnl", "avg_day", "median_day", "win_rate_pct", "std_day", "sharpe",
             "max_drawdown", "best_day", "worst_day")
 _FILES = {
@@ -104,40 +107,52 @@ def downloads() -> list[dict]:
             for name, (_, label) in _FILES.items() if file_path(name) is not None]
 
 
+def daily_csv_path() -> Path:
+    return Path(get_settings().history_cache_dir) / "spy_iron_fly" / "daily_backtest.csv"
+
+
 def period_csv() -> Path | None:
-    return _copied_file(f"derived/{PERIOD_CSV}")
+    active = daily_csv_path()
+    return active if active.is_file() else _copied_file(f"derived/{PERIOD_CSV}")
 
 
 @lru_cache(maxsize=4)
 def _period(path: Path, version: tuple[int, int, int]) -> dict:
     sessions = []
     observed = set()
+    gaps = set()
     last_day = PERIOD_START - timedelta(days=1)
     wins = 0
     net = peak = drawdown = Decimal(0)
-    settings = ("contracts", "wing_width", "stop_multiple", "full_bid_ask_spread",
-                "half_spread_per_fill", "fee_per_contract")
-    expected = tuple(map(Decimal, ("1", "10", "1.5", "0.01", "0.005", "0.035")))
+    expected = tuple(map(Decimal, DAILY_SETTINGS))
     with path.open(newline="", encoding="utf-8") as data:
         for row in csv.DictReader(data):
             day = date.fromisoformat(row["date"])
-            pnl = Decimal(row["net_pnl_usd"])
-            if (day <= last_day or not calendar.is_trading_day(day) or not pnl.is_finite()
-                    or tuple(Decimal(row[k]) for k in settings) != expected):
+            # New dates come from the broker's exchange calendar, which can extend
+            # beyond the years configured for the paper strategy.
+            if (day <= last_day or day.weekday() >= 5
+                    or (calendar.calendar_configured(day) and not calendar.is_trading_day(day))
+                    or tuple(Decimal(row[k]) for k in DAILY_FIELDS[2:-1]) != expected):
                 raise ValueError("Unexpected session or scenario in the SPY research export")
-            sessions.append({"date": day.isoformat(), "pnl": float(pnl)})
             observed.add(day)
             last_day = day
+            if row["contracts"] == "0" and row["net_pnl_usd"] == "":
+                gaps.add(day)
+                continue
+            pnl = Decimal(row["net_pnl_usd"])
+            if Decimal(row["contracts"]) != 1 or not pnl.is_finite():
+                raise ValueError("Invalid trade in the SPY daily export")
+            sessions.append({"date": day.isoformat(), "pnl": float(pnl)})
             wins += int(pnl > 0)
             net += pnl
             peak = max(peak, net)
             drawdown = min(drawdown, net - peak)
-    if not sessions:
+    if not observed:
         raise ValueError("Empty research export")
     days = (PERIOD_START + timedelta(days=i) for i in range((last_day - PERIOD_START).days + 1))
-    missing = [day.isoformat() for day in days if calendar.is_trading_day(day) and day not in observed]
+    gaps.update(day for day in days if calendar.is_trading_day(day) and day not in observed)
     summary = {
-        "trades": len(sessions), "wins": wins, "win_rate_pct": round(100 * wins / len(sessions), 2),
+        "trades": len(sessions), "wins": wins, "win_rate_pct": round(100 * wins / len(sessions), 2) if sessions else None,
         "total_pnl": float(round(net, 2)), "max_drawdown": float(round(drawdown, 2)),
     }
     download = {
@@ -145,10 +160,15 @@ def _period(path: Path, version: tuple[int, int, int]) -> dict:
         "url": f"/api/strategies/{KEY}/backtest/reports/{PERIOD_ID}/files/{PERIOD_CSV}",
     }
     return {
-        "id": PERIOD_ID, "kind": "research-period", "label": "Research · $0.01 full spread",
-        "start": PERIOD_START.isoformat(), "end": last_day.isoformat(), "missing_dates": missing,
+        "id": PERIOD_ID, "kind": "research-period", "label": "SPY · Daily backtest ($0.01 full spread)",
+        "start": PERIOD_START.isoformat(), "end": last_day.isoformat(), "missing_dates": sorted(d.isoformat() for d in gaps),
         "summary": summary, "sessions": sessions, "downloads": [download],
     }
+
+
+def load_daily_csv(path: Path) -> dict:
+    stat = path.stat()
+    return _period(path, (stat.st_ino, stat.st_mtime_ns, stat.st_size))
 
 
 def read_period() -> dict | None:
@@ -156,8 +176,7 @@ def read_period() -> dict | None:
     if path is None:
         return None
     try:
-        stat = path.stat()
-        return _period(path, (stat.st_ino, stat.st_mtime_ns, stat.st_size))
+        return load_daily_csv(path)
     except (OSError, csv.Error, TypeError, KeyError, InvalidOperation, ValueError):
         logger.warning("Unreadable SPY research daily export at %s", path)
         return None

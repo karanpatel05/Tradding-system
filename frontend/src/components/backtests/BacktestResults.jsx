@@ -6,6 +6,8 @@ import SavedBacktest from "./SavedBacktest.jsx";
 
 const dateFormat = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
 const displayDate = (date) => dateFormat.format(new Date(date + "T12:00:00Z"));
+const DAILY_REPORT_POLL_MS = 15 * 60 * 1000;
+const reportTitles = { research: "Research backtest", "research-period": "SPY daily backtest" };
 
 function LoadError({ message, retry }) {
   return (
@@ -16,35 +18,71 @@ function LoadError({ message, retry }) {
   );
 }
 
-function Replay({ strategyKey, id }) {
+function Replay({ strategyKey, id, daily, onCatalogUpdate }) {
   const [report, setReport] = useState(null);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let active = true;
-    api.backtestReport(strategyKey, id)
-      .then((data) => { if (active) setReport(data); })
-      .catch((err) => { if (active) setError(err.message); });
-    return () => { active = false; };
-  }, [strategyKey, id, attempt]);
+    let pending = false;
+    async function load(refreshCatalog) {
+      if (pending) return;
+      pending = true;
+      try {
+        const [data, catalog] = await Promise.all([
+          api.backtestReport(strategyKey, id),
+          refreshCatalog ? api.backtestReports(strategyKey) : null,
+        ]);
+        if (active) {
+          setReport(data);
+          setError("");
+          if (catalog?.reports.some((item) => item.id === id)) onCatalogUpdate(catalog.reports);
+        }
+      } catch (err) {
+        if (active) setError(err.message);
+      } finally {
+        pending = false;
+      }
+    }
+    load(daily && attempt > 0);
+    const refresh = () => { if (!document.hidden) load(true); };
+    let timer;
+    if (daily) {
+      timer = window.setInterval(refresh, DAILY_REPORT_POLL_MS);
+      window.addEventListener("focus", refresh);
+      document.addEventListener("visibilitychange", refresh);
+    }
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [strategyKey, id, daily, onCatalogUpdate, attempt]);
 
-  if (error) return <LoadError message={error} retry={() => { setError(""); setAttempt((n) => n + 1); }} />;
+  const retry = () => { setError(""); setAttempt((n) => n + 1); };
+  if (error && !report) return <LoadError message={error} retry={retry} />;
   if (!report) return <p className="bt-status" role="status">Loading saved report…</p>;
-  if (report.kind === "research-period") return <ResearchPeriodReport report={report} />;
+  if (report.kind === "research-period") return <>
+    {error && <p role="status" className="bt-status">Could not refresh. Showing the last loaded report.{" "}
+      <button className="btn tiny" onClick={retry}>Try again</button></p>}
+    <ResearchPeriodReport report={report} />
+  </>;
   if (report.kind === "research") return <ResearchReport report={report} />;
   return <ReplayReport report={report} />;
 }
 
-function ReplayLibrary({ strategyKey, reports }) {
+function ReplayLibrary({ strategyKey, reports: initialReports }) {
+  const [reports, setReports] = useState(initialReports);
   const [selectedId, setSelectedId] = useState(reports[0].id);
   const selected = reports.find((item) => item.id === selectedId);
   return (
     <>
       <div className="bt-report-head">
         <div>
-          <h2>{selected.kind === "research" || selected.kind === "research-period" ? "Research backtest" : "Historical replay"}</h2>
-          <p className="sd-card-meta">{displayDate(selected.start)} – {displayDate(selected.end)}</p>
+          <h2>{reportTitles[selected.kind] || "Historical replay"}</h2>
+          {selected.kind !== "research-period" && <p className="sd-card-meta">{displayDate(selected.start)} – {displayDate(selected.end)}</p>}
         </div>
         <label className="bt-report-select">
           Saved report
@@ -53,7 +91,7 @@ function ReplayLibrary({ strategyKey, reports }) {
           </select>
         </label>
       </div>
-      <Replay key={selectedId} strategyKey={strategyKey} id={selectedId} />
+      <Replay key={selectedId} strategyKey={strategyKey} id={selectedId} daily={selected.kind === "research-period"} onCatalogUpdate={setReports} />
     </>
   );
 }
