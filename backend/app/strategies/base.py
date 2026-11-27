@@ -83,6 +83,11 @@ class BaseStrategy(ABC):
         """Realized P&L today from the strategy's own records, or None for the ledger."""
         return None
 
+    async def session_rows(self) -> list[dict] | None:
+        """Every session row from the strategy's own store (one per day), for the
+        year/month/day P&L view; None to use the trade ledger instead."""
+        return None
+
     def activation_block_reason(self) -> str | None:
         """Why this (ready) strategy must not be switched ON right now, or None.
         Non-None refuses activation (409)."""

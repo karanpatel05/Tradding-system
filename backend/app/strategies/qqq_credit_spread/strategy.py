@@ -142,6 +142,10 @@ class QqqCreditSpreadStrategy(BaseStrategy):
         from app.strategies.qqq_credit_spread import store
         return session_record(await store.recent_sessions(self.key, 1000))
 
+    async def session_rows(self) -> list[dict] | None:
+        from app.strategies.qqq_credit_spread import store
+        return await store.recent_sessions(self.key, 5000)
+
     async def session_pnl_today(self, today) -> float | None:
         from app.strategies.qqq_credit_spread import store
         sess = await store.get_session(self.key, today)
