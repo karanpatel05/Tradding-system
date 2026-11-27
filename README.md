@@ -208,7 +208,7 @@ names. SPY sizing uses its own starting equity and realized SPY paper P&L.
   `python -m scripts.run_spy_fly_backtest fetch --start YYYY-MM-DD --end YYYY-MM-DD`
   to download historical SPY market data, then use `run` with the same dates to replay it.
   The replay uses an isolated database, independent $5,000 sessions, actual SPY prints,
-  modeled per-leg spreads, and the paper strategy's pre-expiry closing rules.
+  a modeled $0.01 bid/ask spread per option leg, and the paper strategy's pre-expiry closing rules.
   Open **Strategies → SPY 0DTE Iron Fly → Backtest results** to review the saved report.
   A session with an unconfirmed exit has unknown final P&L.
 
