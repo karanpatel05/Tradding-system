@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from app.backtest.spy_iron_fly import (ET, PrintSeries, ReplayClock, SpyPrintFeed, aggregate,
-                                     body_at, option_symbols)
+                                     body_at, option_symbols, session_row)
 from app.services import backtest_reports
 from app.strategies.xsp_iron_fly.params import IronFlyParams
 
@@ -63,6 +63,16 @@ def test_unresolved_sessions_do_not_inflate_win_rate_or_report_zero():
     assert all(sums[k] is None for k in ("win_rate", "max_drawdown", "total_pnl", "fees", "best_day"))
     rows.append({"date": "2026-11-18", "status": "closed", "pnl": 100.0, "fees": 8.0})
     assert aggregate(rows)["total_pnl"] == 100.0 and aggregate(rows)["fees"] == 8.0
+
+
+def test_unfilled_combo_with_planned_legs_is_an_untraded_session():
+    session = {"session_date": DAY, "status": "skipped", "reason": "entry not filled",
+               "legs": [{"qty": 0} for _ in range(4)], "fills": [], "realized_pnl": 0.0}
+    row = session_row(session)
+    assert row["status"] == "skipped" and row["contracts"] == 0 and not row["data_gap"]
+    assert aggregate([row])["rule_skips"] == {str(DAY): "entry not filled"}
+    session["legs"][0]["qty"] = 1
+    assert session_row(session)["status"] == "unresolved"
 
 
 def test_fetch_uses_completed_spot_bar_and_eligible_single_leg_trades():

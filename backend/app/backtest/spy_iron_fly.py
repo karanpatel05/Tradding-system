@@ -198,7 +198,7 @@ def session_row(session):
     legs = session.get("legs") or []
     if status == "closed" and session.get("realized_pnl") is not None:
         outcome = "closed"
-    elif status == "skipped" and not legs:
+    elif status == "skipped" and not session.get("fills") and not any(leg.get("qty") for leg in legs):
         outcome = "skipped"
     else:
         outcome = "unresolved"
