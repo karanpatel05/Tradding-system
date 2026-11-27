@@ -12,7 +12,7 @@ import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.auth.gate import require_auth
@@ -555,6 +555,15 @@ def saved_report(key: str, report_id: str) -> dict:
     if report is None:
         raise HTTPException(status_code=404, detail="Saved backtest report unavailable")
     return report
+
+
+@router.get("/{key}/backtest/reports/{report_id}/files/{filename}")
+def saved_report_file(key: str, report_id: str, filename: str) -> FileResponse:
+    _require_ready(key)
+    path = backtest_reports.report_file(key, report_id, filename)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Saved report file unavailable")
+    return FileResponse(path, filename=filename)
 
 
 @router.get("/{key}/backtest/stream")

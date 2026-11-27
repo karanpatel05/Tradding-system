@@ -1,0 +1,29 @@
+.research-method {
+  margin: 16px 0;
+  max-width: 85ch;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.research-controls {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-bottom: 18px;
+}
+.research-files { margin-top: 18px; }
+.research-files h3 { margin: 0; font-size: 14px; }
+.research-files ul {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 235px), 1fr));
+  gap: 8px 18px;
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+}
+.research-files a {
+  color: var(--accent-bright);
+  overflow-wrap: anywhere;
+  text-underline-offset: 3px;
+}
