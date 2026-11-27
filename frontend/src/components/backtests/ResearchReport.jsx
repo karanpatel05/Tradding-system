@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { api } from "../../api.js";
-import { tone } from "../strategyUi.jsx";
+import { signedUsd, tone } from "../strategyUi.jsx";
+import { PerformanceCurve } from "./ReplayReport.jsx";
 import "./researchReport.css";
 
 const modeNames = {
@@ -18,6 +19,56 @@ const modeNames = {
 const signedMoney = new Intl.NumberFormat("en-US", {
   style: "currency", currency: "USD", minimumFractionDigits: 0, maximumFractionDigits: 2, signDisplay: "exceptZero",
 });
+const sessionDate = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+
+function ResearchFiles({ files, title }) {
+  if (!files.length) return null;
+  return (
+    <section aria-label={title} className="research-files">
+      <h3>{title}</h3>
+      <ul>
+        {files.map((file) => (
+          <li key={file.filename}><a href={`${api.base}${file.url}`} download={file.filename}>{file.label}</a></li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+export function ResearchPeriodReport({ report }) {
+  const { summary, sessions, missing_dates: missingDates } = report;
+  const curve = useMemo(() => {
+    // The daily export records six decimals. Sum at its precision for the equity curve.
+    let total = 0;
+    return sessions.map(({ date, pnl }) => {
+      total += Math.round(pnl * 1e6);
+      return { date, traded: true, cumulative: total / 1e6 };
+    });
+  }, [sessions]);
+  return (
+    <div className="replay-report research-report">
+      <p className="research-method">
+        The SPY0DTEIronFly study uses one fly with $10 wings and a 1.5× stop per short leg.
+        Fills use a $0.01 full bid–ask spread ($0.005 per side) and a $0.035 fee per contract.
+        Open legs are valued at intrinsic value at expiration.
+      </p>
+      <dl className="replay-metrics">
+        <div><dt>Net P&amp;L</dt><dd className={tone(summary.total_pnl)}>{signedUsd(summary.total_pnl)}</dd></div>
+        <div><dt>Win rate</dt><dd>{summary.win_rate_pct.toFixed(2)}%</dd></div>
+        <div><dt>Max drawdown</dt><dd className={tone(summary.max_drawdown)}>{signedUsd(summary.max_drawdown)}</dd></div>
+        <div><dt>Winning trades</dt><dd>{summary.wins} <small>of {summary.trades}</small></dd></div>
+      </dl>
+      {missingDates.length > 0 && (
+        <p className="research-method">
+          {missingDates.length} {missingDates.length === 1 ? "session lacked" : "sessions lacked"} entry data
+          {" ("}{missingDates.map((d) => sessionDate.format(new Date(d + "T12:00:00Z"))).join(", ")}).
+        </p>
+      )}
+      <PerformanceCurve rows={curve} />
+      <ResearchFiles files={report.downloads} title="Daily results" />
+    </div>
+  );
+}
 
 function ScenarioResults({ scenarios, daysTraded }) {
   const [wing, setWing] = useState(10);
@@ -76,16 +127,7 @@ export default function ResearchReport({ report }) {
       {report.scenarios.length > 0 ? (
         <ScenarioResults scenarios={report.scenarios} daysTraded={report.days_traded} />
       ) : <p className="bt-status">No scenarios were saved in the research summary.</p>}
-      {report.downloads.length > 0 && (
-        <section aria-label="Research files" className="research-files">
-          <h3>Source files</h3>
-          <ul>
-            {report.downloads.map((file) => (
-              <li key={file.filename}><a href={`${api.base}${file.url}`} download={file.filename}>{file.label}</a></li>
-            ))}
-          </ul>
-        </section>
-      )}
+      <ResearchFiles files={report.downloads} title="Source files" />
     </div>
   );
 }

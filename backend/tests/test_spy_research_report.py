@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from app.config import get_settings
 from app.main import app
+from app.services import spy_research_report as research
 
 
 SUMMARY = """SPY 0DTE ATM IRON FLY (short straddle + long wings)
@@ -46,3 +47,32 @@ def test_copied_research_is_scoped_and_preserves_source_metrics(tmp_path, monkey
     summary.write_text("incomplete export")
     assert client.get(url).status_code == 404
     assert client.get(base).json()["reports"] == []
+
+
+def test_period_report_uses_saved_daily_rows_and_offers_exact_csv(tmp_path, monkeypatch):
+    monkeypatch.setattr(get_settings(), "history_cache_dir", str(tmp_path))
+    root = tmp_path / "spy_iron_fly_research"
+    (root / "results").mkdir(parents=True)
+    (root / "results/summary.txt").write_text(SUMMARY)
+    (root / "derived").mkdir()
+    path = root / "derived" / research.PERIOD_CSV
+    path.write_text("date,contracts,wing_width,stop_multiple,full_bid_ask_spread,half_spread_per_fill,"
+                    "fee_per_contract,net_pnl_usd\n"
+                    "2024-02-01,1,10,1.5,0.01,0.005,0.035,-4.123\n"
+                    "2024-02-05,1,10,1.5,0.01,0.005,0.035,5.121\n")
+    client = TestClient(app)
+    base = "/api/strategies/spy_iron_fly/backtest/reports"
+    assert [s["id"] for s in client.get(base).json()["reports"]] == [research.PERIOD_ID, research.REPORT_ID]
+    url = f"{base}/{research.PERIOD_ID}"
+    detail = client.get(url).json()
+    assert detail["missing_dates"] == ["2024-02-02"]
+    assert detail["sessions"][0]["pnl"] == -4.123
+    assert detail["summary"] == {"trades": 2, "wins": 1, "win_rate_pct": 50.0, "total_pnl": 1.0,
+                                 "max_drawdown": -4.12}
+    download, = detail["downloads"]
+    assert client.get(download["url"]).content == path.read_bytes()
+    assert client.get(f"{url}/files/summary.txt").status_code == 404
+    path.write_text(path.read_text().replace("0.005", "0.01"))
+    assert client.get(url).status_code == 404
+    assert client.get(download["url"]).status_code == 404
+    assert [s["id"] for s in client.get(base).json()["reports"]] == [research.REPORT_ID]

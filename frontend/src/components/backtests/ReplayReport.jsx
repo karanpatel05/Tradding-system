@@ -21,7 +21,7 @@ function CurveTooltip({ active, payload }) {
   );
 }
 
-function PerformanceCurve({ rows }) {
+export function PerformanceCurve({ rows }) {
   const titleId = useId();
   const data = useMemo(() => [startPoint, ...rows], [rows]);
   return (

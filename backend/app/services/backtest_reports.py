@@ -108,15 +108,17 @@ def _metadata(report_id: str, label: str, report: _Report) -> dict:
 
 
 def has_reports(key: str) -> bool:
-    if key == research.KEY and research.read() is not None:
+    if key == research.KEY and (research.read_period() or research.read()):
         return True
     return any(_read(key, path) is not None for _, path in _CATALOG.get(key, {}).values())
 
 
 def list_reports(key: str) -> list[dict]:
     reports = []
-    if key == research.KEY and (source := research.read()) is not None:
-        reports.append(research.metadata(source))
+    if key == research.KEY:
+        for source in (research.read_period(), research.read()):
+            if source is not None:
+                reports.append(research.metadata(source))
     for report_id, (label, path) in _CATALOG.get(key, {}).items():
         report = _read(key, path)
         if report is not None:
@@ -125,6 +127,8 @@ def list_reports(key: str) -> list[dict]:
 
 
 def get_report(key: str, report_id: str) -> dict | None:
+    if key == research.KEY and report_id == research.PERIOD_ID:
+        return research.read_period()
     if key == research.KEY and report_id == research.REPORT_ID:
         source = research.read()
         return {**source, "downloads": research.downloads()} if source is not None else None
@@ -139,6 +143,8 @@ def get_report(key: str, report_id: str) -> dict | None:
 
 
 def report_file(key: str, report_id: str, filename: str) -> Path | None:
+    if key == research.KEY and report_id == research.PERIOD_ID and filename == research.PERIOD_CSV:
+        return research.period_csv() if research.read_period() is not None else None
     if key == research.KEY and report_id == research.REPORT_ID and research.read() is not None:
         return research.file_path(filename)
     return None

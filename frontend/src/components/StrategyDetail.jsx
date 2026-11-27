@@ -61,6 +61,20 @@ export default function StrategyDetail({ keyName, summary, onBack, initialView =
   const ready = detail?.overview?.ready;
 
   useEffect(() => {
+    if (view !== "backtests") return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("backtest", keyName);
+    window.history.replaceState(window.history.state, "", url);
+    return () => {
+      const current = new URL(window.location.href);
+      if (current.searchParams.get("backtest") === keyName) {
+        current.searchParams.delete("backtest");
+        window.history.replaceState(window.history.state, "", current);
+      }
+    };
+  }, [keyName, view]);
+
+  useEffect(() => {
     let alive = true;
     if (ready && view === "overview") {
       api

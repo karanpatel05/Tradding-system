@@ -1,6 +1,8 @@
 """Read the saved SPY iron fly research summary and its published attachments."""
 
-from datetime import date
+import csv
+from datetime import date, timedelta
+from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 import logging
 import math
@@ -8,10 +10,14 @@ from pathlib import Path
 import re
 
 from app.config import get_settings
+from app.strategies.xsp_iron_fly import calendar
 
 KEY = "spy_iron_fly"
 REPORT_ID = "research-iron-fly"
 LABEL = "Research · SPY 0DTE iron fly"
+PERIOD_ID = "research-february-one-cent"
+PERIOD_START = date(2024, 2, 1)
+PERIOD_CSV = "W10_stop150_full_spread_0.01_from_2024-02-01.csv"
 _METRICS = ("total_pnl", "avg_day", "median_day", "win_rate_pct", "std_day", "sharpe",
             "max_drawdown", "best_day", "worst_day")
 _FILES = {
@@ -27,10 +33,12 @@ logger = logging.getLogger("trading.backtest_reports")
 
 def file_path(filename: str) -> Path | None:
     entry = _FILES.get(filename)
-    if not entry:
-        return None
+    return _copied_file(entry[0]) if entry else None
+
+
+def _copied_file(relative_path: str) -> Path | None:
     root = Path(get_settings().history_cache_dir) / "spy_iron_fly_research"
-    path = (root / entry[0]).resolve()
+    path = (root / relative_path).resolve()
     return path if path.is_relative_to(root.resolve()) and path.is_file() else None
 
 
@@ -94,3 +102,62 @@ def downloads() -> list[dict]:
     base = f"/api/strategies/{KEY}/backtest/reports/{REPORT_ID}/files"
     return [{"filename": name, "label": label, "url": f"{base}/{name}"}
             for name, (_, label) in _FILES.items() if file_path(name) is not None]
+
+
+def period_csv() -> Path | None:
+    return _copied_file(f"derived/{PERIOD_CSV}")
+
+
+@lru_cache(maxsize=4)
+def _period(path: Path, version: tuple[int, int, int]) -> dict:
+    sessions = []
+    observed = set()
+    last_day = PERIOD_START - timedelta(days=1)
+    wins = 0
+    net = peak = drawdown = Decimal(0)
+    settings = ("contracts", "wing_width", "stop_multiple", "full_bid_ask_spread",
+                "half_spread_per_fill", "fee_per_contract")
+    expected = tuple(map(Decimal, ("1", "10", "1.5", "0.01", "0.005", "0.035")))
+    with path.open(newline="", encoding="utf-8") as data:
+        for row in csv.DictReader(data):
+            day = date.fromisoformat(row["date"])
+            pnl = Decimal(row["net_pnl_usd"])
+            if (day <= last_day or not calendar.is_trading_day(day) or not pnl.is_finite()
+                    or tuple(Decimal(row[k]) for k in settings) != expected):
+                raise ValueError("Unexpected session or scenario in the SPY research export")
+            sessions.append({"date": day.isoformat(), "pnl": float(pnl)})
+            observed.add(day)
+            last_day = day
+            wins += int(pnl > 0)
+            net += pnl
+            peak = max(peak, net)
+            drawdown = min(drawdown, net - peak)
+    if not sessions:
+        raise ValueError("Empty research export")
+    days = (PERIOD_START + timedelta(days=i) for i in range((last_day - PERIOD_START).days + 1))
+    missing = [day.isoformat() for day in days if calendar.is_trading_day(day) and day not in observed]
+    summary = {
+        "trades": len(sessions), "wins": wins, "win_rate_pct": round(100 * wins / len(sessions), 2),
+        "total_pnl": float(round(net, 2)), "max_drawdown": float(round(drawdown, 2)),
+    }
+    download = {
+        "filename": PERIOD_CSV, "label": "Download daily results (CSV)",
+        "url": f"/api/strategies/{KEY}/backtest/reports/{PERIOD_ID}/files/{PERIOD_CSV}",
+    }
+    return {
+        "id": PERIOD_ID, "kind": "research-period", "label": "Research · $0.01 full spread",
+        "start": PERIOD_START.isoformat(), "end": last_day.isoformat(), "missing_dates": missing,
+        "summary": summary, "sessions": sessions, "downloads": [download],
+    }
+
+
+def read_period() -> dict | None:
+    path = period_csv()
+    if path is None:
+        return None
+    try:
+        stat = path.stat()
+        return _period(path, (stat.st_ino, stat.st_mtime_ns, stat.st_size))
+    except (OSError, csv.Error, TypeError, KeyError, InvalidOperation, ValueError):
+        logger.warning("Unreadable SPY research daily export at %s", path)
+        return None

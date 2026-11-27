@@ -72,11 +72,11 @@ function ResearchSnapshot({ strategy, record, error }) {
   );
 }
 
-export default function StrategiesTab({ focusKey, onFocusHandled }) {
+export default function StrategiesTab({ focus, onFocusHandled }) {
   const [strategies, setStrategies] = useState([]);
   const [sessionDate, setSessionDate] = useState(null);
-  const [detail, setDetail] = useState(null);
-  const [selectedKey, setSelectedKey] = useState(null);
+  const [detail, setDetail] = useState(focus);
+  const [selectedKey, setSelectedKey] = useState(focus?.key ?? null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [confirming, setConfirming] = useState(null);
@@ -106,11 +106,11 @@ export default function StrategiesTab({ focusKey, onFocusHandled }) {
     load();
   }, []);
   useEffect(() => {
-    if (focusKey) {
-      setDetail({ key: focusKey, view: "overview" });
+    if (focus) {
+      setDetail(focus);
       onFocusHandled?.();
     }
-  }, [focusKey, onFocusHandled]);
+  }, [focus, onFocusHandled]);
   useEffect(() => {
     if (!selectedKey) return;
     let alive = true;
