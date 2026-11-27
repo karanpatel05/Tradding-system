@@ -1,0 +1,402 @@
+"""XSP stop trigger and stop-close pricing must ignore bad quotes (2026-11-25: a
+bid 4.52 / ask 9.99 stub fired the short-call stop 3 s after entry, and the close was
+priced at that ask + 0.05) while a REAL gap through the stop still fires promptly."""
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+
+import pytest
+
+from app.strategies.xsp_iron_fly import logic as L
+from app.strategies.xsp_iron_fly.feed import Quote, Spot
+from tests.test_xsp_fly_sim import _db  # noqa: F401  (autouse: fresh tables per test)
+from tests.test_xsp_fly_sim import D, P, FakeFeed, SimClock, at, flat, leg, make
+
+TODAY_STOP = 7.875                       # 1.5 x the 5.25 short-call entry on 2026-11-25
+GUARD = dict(max_age=3.0, max_spread_abs=0.50, max_spread_pct=0.25)
+
+
+# --- pure trigger rule ------------------------------------------------------------------
+def test_todays_recorded_quote_does_not_fire():
+    ok, why = L.stop_check(4.52, 9.99, 0.5, TODAY_STOP, "ask", **GUARD)
+    assert ok is False                    # too wide for the ask, and its mid 7.255 < stop
+
+
+def test_a_tight_quote_past_the_stop_fires():
+    assert L.stop_check(7.90, 8.00, 0.5, TODAY_STOP, "ask", **GUARD)[0] is True
+
+
+def test_the_midday_stub_does_not_fire():
+    # 2026-11-25 12:08 ET (live xstest run): bid 4.54 / ask 10.00 x 1/2 contracts vs stop
+    # 5.70. Its mid (7.27) is past the stop, so a mid fallback fired; real market ~4.6.
+    assert L.stop_check(4.54, 10.00, 0.5, 5.70, "ask", **GUARD)[0] is False
+
+
+def test_a_real_gap_with_a_wide_spread_still_fires_on_the_bid():
+    ok, why = L.stop_check(8.00, 11.00, 0.5, TODAY_STOP, "ask", **GUARD)  # bid past stop
+    assert ok is True and "bid" in why
+    assert L.stop_check(7.00, 11.00, 0.5, TODAY_STOP, "ask", **GUARD)[0] is False
+
+
+def test_stale_and_one_sided_quotes_never_fire():
+    assert L.stop_check(9.00, 9.10, 10.0, TODAY_STOP, "ask", **GUARD) == (False, "stale")
+    assert L.stop_check(9.00, 9.10, None, TODAY_STOP, "ask", **GUARD) == (False, "stale")
+    assert L.stop_check(0.0, 9.99, 0.5, TODAY_STOP, "ask", **GUARD) == (False, "one-sided")
+    assert L.stop_check(None, 9.99, 0.5, TODAY_STOP, "ask", **GUARD) == (False, "one-sided")
+
+
+def test_mark_trigger_uses_the_mid():
+    assert L.stop_check(7.50, 8.10, 0.5, TODAY_STOP, "mark", **GUARD)[0] is False  # mid 7.80
+    assert L.stop_check(7.80, 8.00, 0.5, TODAY_STOP, "mark", **GUARD)[0] is True   # mid 7.90
+
+
+# --- pure close pricing -----------------------------------------------------------------
+def test_stop_close_limit_caps_then_steps_up_to_the_touch():
+    # tight-enough quote: from the mid. 7.40/8.00 -> mid 7.70, cap 0.77
+    lims = [L.stop_close_limit(7.40, 8.00, through=0.05, tick=0.05, attempt=k)
+            for k in range(3)]
+    assert lims[0] == pytest.approx(8.05)          # min(ask+0.05=8.05, mid+cap=8.47)
+    # a stub-wide quote: from the BID (the mid is inflated by the stub ask).
+    # 4.54/10.00 -> bid 4.54, cap max(0.30, 0.454) = 0.454
+    wide = [L.stop_close_limit(4.54, 10.00, through=0.05, tick=0.05, attempt=k)
+            for k in range(14)]
+    assert wide[0] == pytest.approx(5.00)          # 4.54 + 0.454 -> 5.00, not ~8 or 10.05
+    assert wide == sorted(wide) and wide[-1] == pytest.approx(10.05)   # never beyond
+    assert all(lim <= 10.05 + 1e-9 for lim in wide)
+
+
+def test_stop_close_limit_on_a_tight_quote_is_the_touch():
+    assert L.stop_close_limit(4.20, 4.32, through=0.05, tick=0.05,
+                              attempt=0) == pytest.approx(4.40)
+
+
+# --- end to end through the runner (sim harness) ------------------------------------------
+class WideStubFeed(FakeFeed):
+    """Between t0 and t1 the short call quotes a stub: bid 0.6 x mid, ask 2.2 x mid. Its
+    ask is far past a 1.5 x entry stop but its mid (1.4 x) is not."""
+
+    def __init__(self, *a, t0, t1, ts_shift=0.0, **k):
+        super().__init__(*a, **k)
+        self.t0, self.t1, self.ts_shift = t0, t1, ts_shift
+
+    def quote(self, symbol):
+        q = super().quote(symbol)
+        now = self.clock.now()
+        if (q is not None and symbol == self.sym(D, "C", 600)
+                and self.t0 <= now < self.t1):
+            m = (q.bid + q.ask) / 2
+            return Quote(round(0.6 * m, 2), round(2.2 * m, 2),
+                         now - timedelta(seconds=self.ts_shift))
+        return q
+
+
+@pytest.mark.asyncio
+async def test_a_wide_stub_quote_after_entry_does_not_stop_the_short():
+    clock = SimClock(at(D, 9, 0))
+    feed = WideStubFeed(clock, flat(600.0), t0=at(D, 9, 46), t1=at(D, 10, 30))
+    s = await make(clock, feed).run_session(D)
+    sc = leg(s, "short_call")
+    assert sc["status"] == "settled" and sc.get("stop_triggered_at") is None
+
+
+class MiddayStubFeed(WideStubFeed):
+    """The 12:08 pattern: bid above entry but below the stop, ask so high the MID is past
+    the stop (bid 1.2 x mid, ask 2.6 x mid -> mid 1.9 x vs a 1.5 x entry stop)."""
+
+    def quote(self, symbol):
+        q = FakeFeed.quote(self, symbol)
+        now = self.clock.now()
+        if (q is not None and symbol == self.sym(D, "C", 600)
+                and self.t0 <= now < self.t1):
+            m = (q.bid + q.ask) / 2
+            return Quote(round(1.2 * m, 2), round(2.6 * m, 2), now)
+        return q
+
+
+@pytest.mark.asyncio
+async def test_a_stub_whose_mid_is_past_the_stop_does_not_fire():
+    clock = SimClock(at(D, 9, 0))
+    feed = MiddayStubFeed(clock, flat(600.0), t0=at(D, 10, 0), t1=at(D, 10, 2))
+    s = await make(clock, feed).run_session(D)
+    sc = leg(s, "short_call")
+    assert sc["status"] == "settled" and sc.get("stop_triggered_at") is None
+
+
+@pytest.mark.asyncio
+async def test_a_stale_quote_past_the_stop_does_not_fire():
+    clock = SimClock(at(D, 9, 0))
+    feed = FakeFeed(clock, flat(600.0))
+    feed.overrides[feed.sym(D, "C", 600)] = (
+        lambda t: (4.20, 4.32, t - timedelta(seconds=20)) if t >= at(D, 10, 30) else None)
+    s = await make(clock, feed).run_session(D)
+    assert leg(s, "short_call").get("stop_triggered_at") is None
+
+
+@pytest.mark.asyncio
+async def test_a_single_spike_is_not_confirmed():
+    clock = SimClock(at(D, 9, 0))
+    feed = FakeFeed(clock, flat(600.0))
+    spike = at(D, 10, 30)
+    feed.overrides[feed.sym(D, "C", 600)] = (
+        lambda t: (4.20, 4.32) if spike <= t < spike + timedelta(seconds=0.5) else None)
+    s = await make(clock, feed).run_session(D)
+    assert leg(s, "short_call").get("stop_triggered_at") is None
+
+
+@pytest.mark.asyncio
+async def test_a_real_gap_still_fires_within_a_few_seconds():
+    clock = SimClock(at(D, 9, 0))
+    feed = FakeFeed(clock, flat(600.0))
+    gap_at = at(D, 10, 30)
+    feed.overrides[feed.sym(D, "C", 600)] = lambda t: (4.20, 4.32) if t >= gap_at else None
+    s = await make(clock, feed).run_session(D)
+    sc = leg(s, "short_call")
+    assert sc["status"] == "stopped"
+    fired = datetime.fromisoformat(sc["stop_triggered_at"])
+    assert fired - gap_at <= timedelta(seconds=P.monitor_interval + 1.5)
+
+
+# --- held-stop alert: the guard is holding a stop back while the leg may be past it -------
+HELD = "xsp_fly_stop_held"
+
+
+def test_todays_three_replays_unchanged():
+    assert L.stop_check(4.52, 9.99, 0.5, 7.875, "ask", **GUARD)[0] is False     # 09:46 stub
+    assert L.stop_check(4.54, 10.00, 0.5, 5.70, "ask", **GUARD)[0] is False     # 12:08 stub
+    assert L.stop_check(5.35, 5.89, 0.5, 5.595, "ask", **GUARD)[0] is True      # 10:19 real
+
+
+def test_held_reason_pure():
+    assert L.stop_held_reason(4.54, 10.00, 0.5, 5.70, "ask", **GUARD) is not None  # mid past
+    assert L.stop_held_reason(9.00, 9.10, 20.0, 5.70, "ask", **GUARD) == "stale quote"  # near
+    assert L.stop_held_reason(0.0, 9.99, 0.5, 5.70, "ask", **GUARD) == "one-sided quote"
+    assert L.stop_held_reason(4.40, 4.50, 0.5, 5.70, "ask", **GUARD) is None      # fine
+    assert L.stop_held_reason(5.80, 5.90, 0.5, 5.70, "ask", **GUARD) is None      # fires
+
+
+def _held(alerts):
+    return [m for k, m in alerts if k == HELD]
+
+
+class StaleNearStopFeed(WideStubFeed):
+    """Between t0 and t1 the short call's quote is frozen (receive time t0) at a price NEAR
+    its 1.5 x entry stop (bid 1.3 x mid, ask 1.4 x mid of the model price at t0)."""
+
+    def quote(self, symbol):
+        q = FakeFeed.quote(self, symbol)
+        now = self.clock.now()
+        if q is not None and symbol == self.sym(D, "C", 600) and self.t0 <= now < self.t1:
+            if not hasattr(self, "_frozen"):
+                m = (q.bid + q.ask) / 2
+                self._frozen = Quote(round(1.3 * m, 2), round(1.4 * m, 2), self.t0)
+            return self._frozen
+        return q
+
+
+@pytest.mark.asyncio
+async def test_per_leg_stale_quote_near_the_stop_alerts_once_while_other_legs_tick():
+    clock = SimClock(at(D, 9, 0))
+    feed = StaleNearStopFeed(clock, flat(600.0), t0=at(D, 10, 0), t1=at(D, 10, 5))
+    alerts = []
+    s = await make(clock, feed, alerts=alerts).run_session(D)
+    msgs = _held(alerts)
+    assert len(msgs) == 1 and "short_call" in msgs[0] and "stale" in msgs[0]
+    assert leg(s, "short_call").get("stop_triggered_at") is None       # no stop decision
+
+
+@pytest.mark.asyncio
+async def test_per_leg_stale_quote_far_from_the_stop_does_not_alert():
+    clock = SimClock(at(D, 9, 0))
+    feed = FakeFeed(clock, flat(600.0))
+    t0 = at(D, 10, 0)
+    feed.overrides[feed.sym(D, "C", 600)] = (                          # quiet, far below stop
+        lambda t: (1.00, 1.04, t0) if t0 <= t < t0 + timedelta(minutes=5) else None)
+    alerts = []
+    await make(clock, feed, alerts=alerts).run_session(D)
+    assert _held(alerts) == []
+
+
+class QuietLegsFeed(FakeFeed):
+    """From t0 every option quote is frozen (no new events, as DXLink sends only on
+    change) while the XSP underlying keeps ticking, unless spot_stale_until says not."""
+
+    def __init__(self, *a, t0, t1, spot_silent=False, **k):
+        super().__init__(*a, **k)
+        self.t0, self.t1, self.frozen, self.spot_silent = t0, t1, {}, spot_silent
+
+    def spot(self, ticker):
+        sp = super().spot(ticker)
+        now = self.clock.now()
+        if self.spot_silent and self.t0 <= now < self.t1:      # underlying silent too
+            return Spot(sp.price, self.t0)
+        return sp
+
+    def quote(self, symbol):
+        now = self.clock.now()
+        if self.t0 <= now < self.t1:
+            if symbol not in self.frozen:
+                q = super().quote(symbol)
+                self.frozen[symbol] = q and Quote(q.bid, q.ask, self.t0)
+            return self.frozen[symbol]
+        return super().quote(symbol)
+
+
+def _stale(alerts):
+    return [m for k, m in alerts if k == "xsp_fly_stale"]
+
+
+@pytest.mark.asyncio
+async def test_quiet_legs_with_a_live_underlying_do_not_alert():
+    """2026-11-25 13:25 ET: the open legs sent no quote changes for ~39 s while the feed
+    was alive. Neither the blind-stops alert nor a held-stop alert may fire."""
+    clock = SimClock(at(D, 9, 0))
+    feed = QuietLegsFeed(clock, flat(600.0), t0=at(D, 13, 25), t1=at(D, 13, 30))
+    alerts = []
+    await make(clock, feed, alerts=alerts).run_session(D)
+    assert _stale(alerts) == [] and _held(alerts) == []
+
+
+@pytest.mark.asyncio
+async def test_a_real_outage_still_alerts_blind_stops():
+    clock = SimClock(at(D, 9, 0))
+    t0 = at(D, 13, 25)
+    feed = QuietLegsFeed(clock, flat(600.0), t0=t0, t1=at(D, 13, 30), spot_silent=True)
+    alerts = []
+    await make(clock, feed, alerts=alerts).run_session(D)
+    assert len(_stale(alerts)) == 1
+
+
+def test_held_reason_stale_only_near_the_stop():
+    G = dict(GUARD, near_fraction=0.80)
+    assert L.stop_held_reason(4.40, 4.50, 40.0, 5.00, "ask", **G) == "stale quote"   # 90%
+    assert L.stop_held_reason(0.05, 0.10, 40.0, 5.00, "ask", **G) is None            # 2%
+    assert L.stop_held_reason(None, None, None, 5.00, "ask", **G) == "stale quote"   # blind
+    # one-sided: a worthless far-OTM short (0.00/0.04) is quiet; a stub (0.00/9.99) alerts
+    assert L.stop_held_reason(0.0, 0.04, 0.5, 5.00, "ask", **G) is None
+    assert L.stop_held_reason(0.0, 9.99, 0.5, 5.00, "ask", **G) == "one-sided quote"
+    assert L.stop_held_reason(0.0, 0.04, 0.5, 5.00, "ask", underlying_moved=True,
+                              **G) == "one-sided quote"
+
+
+@pytest.mark.asyncio
+async def test_wide_quote_with_mid_past_stop_alerts_once_and_never_stops():
+    clock = SimClock(at(D, 9, 0))
+    feed = MiddayStubFeed(clock, flat(600.0), t0=at(D, 10, 0), t1=at(D, 10, 5))
+    alerts = []
+    s = await make(clock, feed, alerts=alerts).run_session(D)
+    msgs = _held(alerts)
+    assert len(msgs) == 1 and "short_call" in msgs[0]                 # no duplicates
+    assert leg(s, "short_call").get("stop_triggered_at") is None
+
+
+@pytest.mark.asyncio
+async def test_short_wide_hold_under_30s_does_not_alert():
+    clock = SimClock(at(D, 9, 0))
+    feed = MiddayStubFeed(clock, flat(600.0), t0=at(D, 10, 0),
+                          t1=at(D, 10, 0) + timedelta(seconds=10))
+    alerts = []
+    await make(clock, feed, alerts=alerts).run_session(D)
+    assert _held(alerts) == []
+
+
+@pytest.mark.asyncio
+async def test_one_sided_quote_alerts():
+    clock = SimClock(at(D, 9, 0))
+    feed = FakeFeed(clock, flat(600.0))
+    t0 = at(D, 10, 0)
+    feed.overrides[feed.sym(D, "C", 600)] = (
+        lambda t: (0.0, 9.99) if t0 <= t < t0 + timedelta(minutes=2) else None)
+    alerts = []
+    s = await make(clock, feed, alerts=alerts).run_session(D)
+    msgs = _held(alerts)
+    assert len(msgs) == 1 and "one-sided" in msgs[0]
+    assert leg(s, "short_call").get("stop_triggered_at") is None
+
+
+class TwoStubFeed(MiddayStubFeed):
+    def __init__(self, *a, windows, **k):
+        super().__init__(*a, t0=windows[0][0], t1=windows[0][1], **k)
+        self.windows = windows
+
+    def quote(self, symbol):
+        now = self.clock.now()
+        for w0, w1 in self.windows:
+            if w0 <= now < w1:
+                self.t0, self.t1 = w0, w1
+                return super().quote(symbol)
+        self.t0 = self.t1 = now            # outside every window: a normal quote
+        return super().quote(symbol)
+
+
+@pytest.mark.asyncio
+async def test_held_alert_re_arms_after_the_condition_clears():
+    clock = SimClock(at(D, 9, 0))
+    w = [(at(D, 10, 0), at(D, 10, 2)), (at(D, 11, 0), at(D, 11, 2))]
+    feed = TwoStubFeed(clock, flat(600.0), windows=w)
+    alerts = []
+    s = await make(clock, feed, alerts=alerts).run_session(D)
+    assert len(_held(alerts)) == 2                                    # one per episode
+    assert leg(s, "short_call").get("stop_triggered_at") is None
+
+
+# --- option-only outage: XSP keeps trading (and moving) while option quotes are dead -----
+def _move(t0, t1, a, b):
+    """Spot flat at a until t0, ramps to b by t1, then holds."""
+    def f(t):
+        if t <= t0:
+            return a
+        if t >= t1:
+            return b
+        return a + (b - a) * (t - t0).total_seconds() / (t1 - t0).total_seconds()
+    return f
+
+
+@pytest.mark.asyncio
+async def test_option_only_outage_during_a_move_still_alerts_blind_stops():
+    clock = SimClock(at(D, 9, 0))
+    t0 = at(D, 13, 25)
+    feed = QuietLegsFeed(clock, _move(t0, t0 + timedelta(minutes=2), 600.0, 603.0),
+                         t0=t0, t1=at(D, 13, 30))       # XSP +0.5%, option quotes frozen
+    alerts = []
+    await make(clock, feed, alerts=alerts).run_session(D)
+    assert len(_stale(alerts)) == 1
+
+
+class OneLegDeadFeed(FakeFeed):
+    """From t0 only the short PUT's quote is frozen (a dropped subscription); every other
+    leg keeps ticking, and XSP moves."""
+
+    def __init__(self, *a, t0, t1, **k):
+        super().__init__(*a, **k)
+        self.t0, self.t1, self.frozen = t0, t1, None
+
+    def quote(self, symbol):
+        now = self.clock.now()
+        if symbol == self.sym(D, "P", 600) and self.t0 <= now < self.t1:
+            if self.frozen is None:
+                q = super().quote(symbol)
+                self.frozen = Quote(q.bid, q.ask, self.t0)
+            return self.frozen
+        return super().quote(symbol)
+
+
+@pytest.mark.asyncio
+async def test_one_dead_leg_far_from_its_stop_alerts_when_xsp_moves():
+    clock = SimClock(at(D, 9, 0))
+    t0 = at(D, 13, 25)
+    # XSP down 0.5%: the frozen short put looks far below its stop, but its real price moved
+    feed = OneLegDeadFeed(clock, _move(t0, t0 + timedelta(minutes=2), 600.0, 597.0),
+                          t0=t0, t1=at(D, 13, 30))
+    alerts = []
+    await make(clock, feed, alerts=alerts).run_session(D)
+    msgs = _held(alerts)
+    assert len(msgs) == 1 and "short_put" in msgs[0] and "moved" in msgs[0]
+
+
+@pytest.mark.asyncio
+async def test_one_dead_leg_in_a_quiet_market_does_not_alert():
+    clock = SimClock(at(D, 9, 0))
+    feed = OneLegDeadFeed(clock, flat(600.0), t0=at(D, 13, 25), t1=at(D, 13, 30))
+    alerts = []
+    await make(clock, feed, alerts=alerts).run_session(D)
+    assert _held(alerts) == [] and _stale(alerts) == []

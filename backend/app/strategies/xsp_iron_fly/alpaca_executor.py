@@ -1,4 +1,4 @@
-"""Alpaca PAPER executor for the XSP iron fly: real orders, real fills.
+"""Alpaca PAPER executor for the XSP and SPY iron flies: real orders, real fills.
 
 Every order goes through the app's own Alpaca path (``broker.orders._transmit``):
 SAFE_MODE -> ENABLE_LIVE_ORDERS gate -> paper lock -> durable intent row -> POST with
@@ -32,9 +32,10 @@ logger = logging.getLogger("trading.xsp_fly.alpaca")
 # a stuck order becomes "unknown" (SAFE_MODE) rather than "unfilled" (re-price).
 TERMINAL = frozenset({"filled", "canceled", "expired", "rejected", "done_for_day",
                       "replaced"})
-def option_tick(price: float) -> float:
-    """Single-leg price increment for XSP options: $0.01 under $3.00, $0.05 from $3.00
-    (Cboe penny-pilot style). A limit off-increment would be rejected."""
+def option_tick(price: float, underlying: str = "XSP") -> float:
+    """SPY trades in pennies at all premiums. XSP increments change at $3."""
+    if underlying == "SPY":
+        return 0.01
     return 0.01 if price < 3.0 - 1e-9 else 0.05
 
 
@@ -79,6 +80,7 @@ class AlpacaPort:
         from app.broker import orders
         if (why := self.routing_block()) is not None:
             return {"transmitted": False, "detail": f"blocked: {why}"}
+        expected_root = self.key.split("_", 1)[0].upper()
         if body.get("order_class") == "mleg":
             legs, root = [], None
             for x in body["legs"]:
@@ -86,6 +88,8 @@ class AlpacaPort:
                 if parsed is None:
                     return {"transmitted": False, "detail": f"bad OCC {x['symbol']}"}
                 root, exp, right, strike = parsed
+                if root != expected_root:
+                    return {"transmitted": False, "detail": f"{self.key} cannot route {root} options"}
                 legs.append({"expiry": exp, "strike": strike, "right": right,
                              "action": "SELL" if x["side"] == "sell" else "BUY"})
             limit = float(body["limit_price"])
@@ -93,6 +97,9 @@ class AlpacaPort:
                 root, legs, net_price=abs(limit), action="SELL" if limit < 0 else "BUY",
                 reason=f"{self.key} {intent}", quantity=int(qty), strategy_key=self.key)
         else:
+            parsed = orders.parse_occ(body["symbol"])
+            if parsed is None or parsed[0] != expected_root:
+                return {"transmitted": False, "detail": f"unexpected OCC {body['symbol']} for {self.key}"}
             out = await orders.submit_option_order(
                 body["symbol"], body["side"], int(qty), limit_price=float(body["limit_price"]),
                 position_intent=body["position_intent"], strategy_key=self.key,
@@ -278,7 +285,9 @@ class AlpacaFlyExecutor:
         if isinstance(mids, str):
             return OrderResult("unfilled", detail=mids)
         opening = side == leg["action"]
-        px = L.round_to_tick(limit, option_tick(limit), "up" if side == "BUY" else "down")
+        # The canonical OCC suffix is the 6-digit expiry, right and 8-digit strike.
+        tick = option_tick(limit, occ(leg)[:-15])
+        px = L.round_to_tick(limit, tick, "up" if side == "BUY" else "down")
         if side == "SELL":
             px = max(px, 0.01)
         if px <= 0:

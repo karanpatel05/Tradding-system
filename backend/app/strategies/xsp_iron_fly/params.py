@@ -5,7 +5,7 @@ fixed by the spec; everything else here is execution hygiene or a risk limit.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import time
 
 
@@ -47,13 +47,28 @@ class IronFlyParams:
     stop_trigger: str = "ask"               # "ask" (buy-to-close price) | "mark"
     close_retry_seconds: float = 1.0
     feed_stale_alert_seconds: float = 30.0
+    # Stop trigger quote guard (2026-11-25 stub-quote stop): a stop acts only on a fresh,
+    # two-sided, sane quote, confirmed by a second qualifying quote >= stop_confirm_seconds
+    # later; the stop close limit is capped near the mid and steps up per attempt.
+    stop_max_quote_age: float = 5.0         # seconds
+    stop_max_spread_abs: float = 0.50       # index points
+    stop_max_spread_pct: float = 0.25       # of the mid
+    stop_confirm_seconds: float = 1.0
+    stop_close_cap_abs: float = 0.30
+    stop_close_cap_pct: float = 0.10
+    stop_held_alert_seconds: float = 30.0   # alert once when a stop is held back this long
+    stop_held_near_fraction: float = 0.80   # stale-quote alert only if last price >= 80% of stop
+    feed_quiet_max_move: float = 0.0025     # XSP move (fraction) since a quote = "not quiet"
     settlement_delay_seconds: float = 60.0  # wait after the close before reading the print
     settlement_timeout_minutes: float = 60.0
 
     def validate(self) -> list[str]:
         errs = []
-        if self.ticker != "XSP":
-            errs.append("ticker must be XSP (cash-settled European index options)")
+        if self.ticker not in ("SPY", "XSP"):
+            errs.append("unsupported iron fly underlying")
+        if self.ticker == "SPY" and (not self.close_before_settlement
+                                      or not 30 <= self.flatten_minutes_before_close < self.min_minutes_to_close):
+            errs.append("SPY must start closing at least 30 minutes before the session close and after entry")
         if self.wing_width <= 0:
             errs.append("wing_width must be > 0")
         if self.stop_mult <= 1:
@@ -69,6 +84,12 @@ class IronFlyParams:
         if self.mode not in ("alpaca_paper", "live"):
             errs.append("mode must be 'alpaca_paper' (or 'live', which is refused)")
         return errs
+
+    @classmethod
+    def for_spy(cls, settings=None):
+        """Use the operator's existing fly risk settings with a physical-delivery exit."""
+        return replace(cls.from_settings(settings), ticker="SPY", close_before_settlement=True,
+                       flatten_minutes_before_close=30.0)
 
     @classmethod
     def from_settings(cls, s=None) -> "IronFlyParams":

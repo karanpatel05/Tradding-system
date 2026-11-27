@@ -1,28 +1,30 @@
-"""XSP iron fly: read-only session view, and clearing the persisted daily-loss halt."""
-from __future__ import annotations
-
+"""Session history and operator halt controls for the two independent iron-fly books."""
 from fastapi import APIRouter, Depends
 
 from app.auth.gate import require_auth
 from app.services.journal import log_event
 from app.strategies.registry import get_strategy
-
-router = APIRouter(prefix="/api/strategies/xsp_iron_fly", tags=["strategies"])
-KEY = "xsp_iron_fly"
+from app.strategies.xsp_iron_fly import store
 
 
-@router.get("/sessions")
-async def sessions() -> dict:
-    """Recent trading days: status, legs, stop levels, fills count, P&L, reconciliation."""
-    return await get_strategy(KEY).status_view()
+def fly_routes(key: str) -> APIRouter:
+    routes = APIRouter(prefix=f"/api/strategies/{key}", tags=["strategies"])
+
+    @routes.get("/sessions", name=f"{key}_sessions")
+    async def sessions() -> dict:
+        return await get_strategy(key).status_view()
+
+    @routes.post("/clear-halt", name=f"{key}_clear_halt", dependencies=[Depends(require_auth)])
+    async def clear_halt() -> dict:
+        cleared = await store.clear_halt(key=key)
+        if cleared:
+            await log_event("Iron fly daily-loss halt cleared by operator",
+                            category="action", strategy_key=key)
+        return {"cleared": cleared}
+
+    return routes
 
 
-@router.post("/clear-halt", dependencies=[Depends(require_auth)])
-async def clear_halt() -> dict:
-    """A human clears the max_daily_loss halt before entries resume."""
-    from app.strategies.xsp_iron_fly import store
-    was = await store.clear_halt()
-    if was:
-        await log_event("XSP fly daily-loss halt cleared by operator", category="action",
-                        strategy_key=KEY)
-    return {"cleared": was}
+router = APIRouter()
+router.include_router(fly_routes("xsp_iron_fly"))
+router.include_router(fly_routes("spy_iron_fly"))

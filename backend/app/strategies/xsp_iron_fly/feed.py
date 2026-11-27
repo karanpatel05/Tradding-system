@@ -1,4 +1,4 @@
-"""Market data for the XSP fly: 0DTE contract list, raw NBBO, index spot, settlement.
+"""Iron fly market data: 0DTE contracts, raw NBBO, underlying spot and XSP settlement.
 
 The runner only talks to the ``Feed`` protocol, so tests drive it with a scripted fake
 and a simulated clock. ``TastytradeFeed`` is the live implementation.
@@ -64,7 +64,7 @@ class Feed(Protocol):
 
     async def settlement_price(self, ticker: str, d: date, close_dt: datetime,
                                now: datetime) -> float | None:
-        """Provisional settlement value (the index close) once the session has ended."""
+        """Cash settlement value for XSP after the close; None for physical delivery."""
 
     def data_ready(self) -> bool: ...
 
@@ -100,16 +100,22 @@ class TastytradeFeed:
                 return None
             chain = await asyncio.wait_for(get_option_chain(sess, ticker), LOOKUP_TIMEOUT)
         except Exception:  # noqa: BLE001 - failed/timed-out lookup is retryable
-            logger.warning("XSP chain lookup failed", exc_info=True)
+            logger.warning("%s chain lookup failed", ticker, exc_info=True)
             return None
         best: dict[tuple[str, float], Contract] = {}
         for o in chain.get(expiry, []):
             if (getattr(o, "root_symbol", ticker) or ticker) != ticker:
                 continue
             settle = str(getattr(o, "settlement_type", "PM") or "PM").upper()
-            if settle != "PM":          # 0DTE XSP is PM-settled; drop any AM listing
+            if settle != "PM":
                 continue
-            if not o.streamer_symbol:
+            # The SDK's PM field identifies settlement time for both products.
+            # SPY delivers ETF shares; adjusted deliverables don't fit the fly's 100x sizing.
+            if ticker == "SPY" and (o.underlying_symbol != ticker or o.shares_per_contract != 100
+                                    or o.option_chain_type != "Standard" or not o.active
+                                    or o.is_closing_only):
+                continue
+            if not o.streamer_symbol or not o.symbol:
                 continue
             right = ("C" if str(getattr(o.option_type, "value", o.option_type))
                      .upper().startswith("C") else "P")
@@ -147,7 +153,8 @@ class TastytradeFeed:
 
     async def settlement_price(self, ticker: str, d: date, close_dt: datetime,
                                now: datetime) -> float | None:
-        if now < close_dt:
+        # A SPY close is a stock price. Only the cash-settled index uses this path.
+        if ticker != "XSP" or now < close_dt:
             return None
         s = self.spot(ticker)
         # An index print received after the close is the closing value.

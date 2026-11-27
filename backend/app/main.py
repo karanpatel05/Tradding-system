@@ -90,6 +90,15 @@ async def _resume_active_workers() -> None:
     async with session_scope() as session:
         for strat in list_strategies():
             st = await session.get(StrategyState, strat.key)
+            if st and (strat.archived and st.status in ("active", "scanning", "paused", "exiting")
+                       or strat.key == "spy_iron_fly" and st.status == "exiting"):
+                from app.strategies.xsp_iron_fly import store
+                pending = await store.has_unfinished(strat.key)
+                st.status = "exiting" if pending else "stopped"
+                await session.commit()
+                if pending and not engine_manager.is_running(strat.key):
+                    await engine_manager.start_worker(strat.key, strat.manage_existing())
+                continue
             if (st and st.status in ("scanning", "active")
                     and strat.ready and not engine_manager.is_running(strat.key)
                     and not strat.resume_block_reason()):

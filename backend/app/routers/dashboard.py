@@ -102,28 +102,41 @@ async def kill_switch() -> dict:
     # re-open a trade here. Close the ledger so the dashboard (which reads open
     # TradeRecords) actually goes flat — broker flatten alone leaves paper-mode
     # positions, and the ledger row, standing.
+    held = await _index_legs_still_held(check_orders=not report.fully_flat)
+    # A late fill can first appear in this second ledger read. A physically
+    # delivered SPY option still held by the app cannot be reported flat.
+    if report.flatten_ok:
+        from app.broker.orders import parse_occ, transmitted_open_trades
+        evidence = held if held is not None else await transmitted_open_trades()
+        spy_legs = sorted(sym for sym in evidence if (occ := parse_occ(sym)) and occ[0] == "SPY")
+        if spy_legs:
+            report.flatten_ok = False
+            state = "still held" if held is not None else "broker state unavailable"
+            report.flatten_error = f"Flatten incomplete: SPY options {state}: {', '.join(spy_legs)}"
     result = report.to_dict()
-    result["trades_closed"] = await close_open_trades(
-        keep_index_symbols=await _index_legs_still_held())
+    result["trades_closed"] = await close_open_trades(keep_index_symbols=held)
     result["strategies_stopped"] = await _mark_strategies_stopped()
     return result
 
 
-async def _index_legs_still_held() -> set[str] | None:
-    """Cash-settled index-option symbols Alpaca still holds for the app after the
-    flatten (their marketable-limit close didn't fill): their TradeRecords stay open.
-    None when the broker can't be read or isn't configured (then every transmitted
-    index leg stays open: they may still be held at Alpaca)."""
+async def _index_legs_still_held(*, check_orders: bool = False) -> set[str] | None:
+    """Guarded option legs still held by the app, including pending orders after a
+    partial kill. On an unreadable broker keep every transmitted guarded leg open."""
     from app.broker import alpaca_client as ac
-    from app.broker.ledger import app_net_positions
-    from app.broker.orders import is_index_option
+    from app.broker.ledger import app_net_positions, app_open_orders
+    from app.broker.orders import is_guarded_option
     if not ac.configured():
         return None
     try:
-        held = await app_net_positions()
+        held = set(await app_net_positions())
+        if check_orders:
+            pending, _ = await app_open_orders()
+            for order in pending:
+                held.update(ac.occ_unpadded(leg.get("symbol") or "")
+                            for leg in [order, *(order.get("legs") or [])])
     except Exception:  # noqa: BLE001 - unreadable: keep them open
         return None
-    return {sym for sym in held if is_index_option(sym)}
+    return {sym for sym in held if is_guarded_option(sym)}
 
 
 async def _mark_strategies_stopped() -> list[str]:
@@ -136,7 +149,7 @@ async def _mark_strategies_stopped() -> list[str]:
     from app.db.models import StrategyState
     async with session_scope() as session:
         rows = (await session.execute(select(StrategyState).where(
-            StrategyState.status.in_(("scanning", "active", "paused"))))).scalars().all()
+            StrategyState.status.in_(("scanning", "active", "paused", "exiting"))))).scalars().all()
         for st in rows:
             st.status = "stopped"
         return [st.key for st in rows]

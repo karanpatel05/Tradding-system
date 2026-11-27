@@ -6,6 +6,7 @@ Run: DATABASE_URL=sqlite+aiosqlite:///./_t_xsp_api.db ../.venv/bin/python -m pyt
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
@@ -50,6 +51,42 @@ def test_backtest_routes_return_note_not_an_equity_baseline(client, monkeypatch)
     assert r.json()["data_available"] is False and "No in-app backtest" in r.json()["note"]
     assert client.get(f"/api/strategies/{KEY}/backtest/last").json() == {}
     assert client.get(f"/api/strategies/{KEY}/backtest/stream").status_code == 409
+
+
+def test_saved_option_replays_are_read_only_and_scoped_to_xsp(client, monkeypatch, tmp_path):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "history_cache_dir", str(tmp_path))
+    base = f"/api/strategies/{KEY}/backtest/reports"
+    assert client.get(base).json() == {"reports": [], "can_run": False}
+
+    scenario = {"aggregate": {"sessions": 2, "traded": 1, "total_pnl": -20.0,
+                               "win_rate": 0, "max_drawdown": -20.0, "fees": 4},
+                "sessions": [{"date": "2026-08-25", "status": "settled", "pnl": -20.0,
+                              "contracts": 1, "fees": 4},
+                             {"date": "2026-08-26", "status": "skipped", "pnl": None,
+                              "contracts": 0, "fees": 0, "data_gap": True}]}
+    replay = {"basis": "modeled spread", "days": ["2026-08-25", "2026-08-26"],
+              "bars_minutes": 5, "params": {"ticker": "XSP"}, "by_width": {"0.05": scenario}}
+    for directory in ("xsp_bt", "xsp_bt_alpaca"):
+        path = tmp_path / directory
+        path.mkdir()
+        (path / "results_5m.json").write_text(json.dumps(replay))
+    (tmp_path / "xsp_bt" / "validate.json").write_text(json.dumps(replay))
+    (tmp_path / "xsp_bt" / "results_1m_oct27.json").write_text('{"by_width": {}}')
+
+    reports = client.get(base).json()["reports"]
+    assert [r["id"] for r in reports] == ["alpaca-5m", "tastytrade-5m"]
+    assert reports[0]["start"] == "2026-08-25" and reports[0]["end"] == "2026-08-26"
+    report = client.get(f"{base}/alpaca-5m").json()
+    assert report["by_width"]["0.05"] == scenario
+    assert report["id"] == "alpaca-5m" and report["params"] == replay["params"]
+    assert client.get(f"{base}/validate").status_code == 404
+    assert client.get(f"{base}/tastytrade-1m-oct27").status_code == 404
+    assert client.get("/api/strategies/qqq_credit_spread/backtest/reports/alpaca-5m").status_code == 404
+    assert client.get("/api/strategies/strategy_2/backtest/reports").status_code == 409
+    flags = {s["key"]: s["has_backtest_reports"] for s in client.get("/api/strategies").json()["strategies"]}
+    assert flags[KEY] and not any(present for k, present in flags.items() if k != KEY)
 
 
 def test_sessions_view_and_clear_halt(client):

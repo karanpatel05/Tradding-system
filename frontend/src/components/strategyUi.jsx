@@ -17,12 +17,14 @@ export const isOptions = (s) => /^options/i.test(s?.category || "");
 // One status vocabulary for the list, the selected panel and the detail page.
 export function strategyStatus(s) {
   if (!s.ready) return { label: "Coming soon", cls: "soon" };
+  if (s.status === "exiting") return { label: "Managing exits", cls: "live" };
+  if (s.archived) return { label: "Archived", cls: "idle", title: s.activation_blocked };
   if (s.running) return { label: "Running", cls: "live" };
   if (s.external_runner) return { label: "External", cls: "external", title: s.activation_blocked || "Runs outside this app" };
   if (s.activation_blocked) return { label: "Blocked", cls: "blocked", title: s.activation_blocked };
   return { label: "Paused", cls: "idle" };
 }
-export const canToggle = (s) => s.ready && !s.external_runner && (s.running || !s.activation_blocked);
+export const canToggle = (s) => s.ready && !s.archived && s.status !== "exiting" && !s.external_runner && (s.running || !s.activation_blocked);
 
 export function StatusMark({ s }) {
   const st = strategyStatus(s);

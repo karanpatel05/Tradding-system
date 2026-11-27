@@ -102,6 +102,8 @@ export const api = {
   },
   // The last persisted backtest result (reloads after a page/server restart).
   backtestLast: (key) => request(`/api/strategies/${key}/backtest/last`),
+  backtestReports: (key) => request(`/api/strategies/${key}/backtest/reports`),
+  backtestReport: (key, id) => request(`/api/strategies/${key}/backtest/reports/${encodeURIComponent(id)}`),
   strategyRecord: (key) => request(`/api/strategies/${key}/record`),
   // Per-day session ledger (options strategies); 404 for strategies without one.
   strategySessions: (key) => request(`/api/strategies/${key}/sessions`),

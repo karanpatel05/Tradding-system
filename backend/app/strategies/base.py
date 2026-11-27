@@ -33,6 +33,7 @@ class BaseStrategy(ABC):
     ready: bool = False
     #: True when the strategy executes outside this app (shown, never run here).
     external_runner: bool = False
+    archived: bool = False
     #: Set when the app's equity backtester does not apply to this strategy; the
     #: backtest routes then return this note instead of running it.
     backtest_note: str | None = None
