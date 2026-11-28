@@ -80,6 +80,8 @@ class Settings(BaseSettings):
     history_cache_enabled: bool = True
     history_cache_dir: str = str(_BASE_DIR / "data_cache")
     history_cache_ttl_hours: float = 12.0
+    # Equities/ETFs to archive after each regular session. Empty disables the job.
+    market_archive_symbols: str = "SPY,QQQ,DIA,IWM,VIXY,NVDA,AAPL,TSLA,MSFT,AMZN"
 
     # When set (the web/hosted run mode sets FRONTEND_DIST), the API also serves the built
     # React app from this directory at "/" with SPA fallback. Empty in dev (Vite serves UI).

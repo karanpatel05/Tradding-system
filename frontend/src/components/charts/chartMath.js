@@ -10,31 +10,157 @@ export const sessionOf = time => etDate.format(new Date(time));
 
 // Normalize feed candles into chart bars: add the session and the price*volume
 // sum the VWAP study accumulates.
-export function normalizeBars(raw) {
-  return raw.map(b => ({
-    time: b.time, session: sessionOf(b.time),
-    open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume || 0,
-    value: (b.high + b.low + b.close) / 3 * (b.volume || 0),
-  }));
+export function normalizeBars(raw, feed) {
+  return raw.map(b => {
+    // DXLink uses midnight UTC to identify a daily candle's trading date.
+    const time = feed === "1d" && b.time % 86400000 === 0
+      ? dailyStart(new Date(b.time).toISOString().slice(0, 10)) : b.time;
+    return { time, session: sessionOf(time),
+      open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume || 0,
+      value: (b.high + b.low + b.close) / 3 * (b.volume || 0) };
+  });
 }
 
-// Merge every `factor` consecutive bars of one session (15m -> 30m or 1h).
+// Intraday buckets follow the 09:30 New York open. An hourly candle starts on
+// the half-hour in both EST and EDT, even if some of its 15m candles are missing.
+function intradayStart(time, minutes) {
+  const width = minutes * 60000;
+  const offset = minutes === 60 ? 30 * 60000 : 0;
+  return Math.floor((time - offset) / width) * width + offset;
+}
+
+// Merge 15m history into the same 30m or hourly buckets used for trades.
 export function aggregate(bars, factor) {
   if (factor <= 1) return bars;
   const out = [];
-  let count = 0;
   for (const bar of bars) {
+    const time = intradayStart(bar.time, factor * 15);
     const last = out.at(-1);
-    if (!last || last.session !== bar.session || count === factor) {
-      out.push({ ...bar });
-      count = 1;
+    if (!last || last.time !== time || last.session !== bar.session) {
+      out.push({ ...bar, time });
     } else {
       last.high = Math.max(last.high, bar.high);
       last.low = Math.min(last.low, bar.low);
       last.close = bar.close;
       last.volume += bar.volume;
       last.value += bar.value;
-      count++;
+    }
+  }
+  return out;
+}
+
+const minutesByInterval = { "1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60 };
+
+export function barIndexAt(bars, time) {
+  let lo = 0, hi = bars.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (bars[mid].time <= time) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo - 1;
+}
+
+// A null end time follows the latest candle. Panning stores a timestamp so
+// incoming candles and history backfills leave the viewed time range in place.
+export function chartWindow(bars, view) {
+  const length = Math.min(bars.length, Math.max(10, view.length));
+  const anchorEnd = view.endTime == null ? bars.length : barIndexAt(bars, view.endTime) + 1;
+  const end = Math.max(length, anchorEnd);
+  return { length, offset: bars.length - end, end, start: end - length };
+}
+
+function dailyStart(session) {
+  // New York midnight falls at either 04:00 or 05:00 UTC.
+  const summerMidnight = Date.parse(session + "T04:00:00Z");
+  const midnight = sessionOf(summerMidnight) === session ? summerMidnight : summerMidnight + 3600000;
+  return midnight + (9 * 60 + 30) * 60000;
+}
+
+// Fold every print before painting. One array copy per batch, plus one new
+// object per changed bar; REST history and earlier React state stay immutable.
+export function applyTradeTicks(bars, ticks, interval, pendingVolume = new Map()) {
+  let out = bars;
+  let bar;
+  for (const { time, barTime = time, price, size, updatesPrice } of ticks) {
+    if (!Number.isFinite(time) || time <= 0 || !Number.isFinite(price) || price <= 0) continue;
+    const tail = out.at(-1);
+    const session = interval === "1D" ? sessionOf(barTime) : null;
+    let bucket = interval === "1D"
+      ? (tail?.session === session ? tail.time : dailyStart(session))
+      : intradayStart(barTime, minutesByInterval[interval]);
+    let index = out.length - 1;
+    if (tail && bucket < tail.time) {
+      // A late print can still change an earlier candle's range and volume.
+      index = out.findLastIndex(b => interval === "1D" ? b.session <= session : b.time <= bucket);
+      if (interval === "1D" && out[index]?.session === session) bucket = out[index].time;
+    }
+    const last = out[index];
+    const newBar = !last || bucket > last.time;
+    const shares = Number.isFinite(size) && size > 0 ? size : 0;
+    const pending = pendingVolume.get(bucket);
+    if (newBar && updatesPrice === false) {
+      pendingVolume.set(bucket, { volume: (pending?.volume ?? 0) + shares,
+        value: (pending?.value ?? 0) + price * shares });
+      continue;
+    }
+    if (out === bars) out = bars.slice();
+    if (newBar) {
+      bar = { time: bucket, session: session ?? sessionOf(bucket), open: price,
+        high: price, low: price, close: price, volume: 0, value: 0, firstTradeTime: time };
+      out.splice(index + 1, 0, bar);
+    } else if (last !== bar) {
+      bar = { ...last };
+      out[index] = bar;
+    }
+    if (updatesPrice !== false) {
+      bar.high = Math.max(bar.high, price);
+      bar.low = Math.min(bar.low, price);
+      if (time < bar.firstTradeTime) {
+        bar.firstTradeTime = time;
+        bar.open = price;
+      }
+      if (time >= (bar.lastTradeTime ?? 0) && (newBar || last === tail || bar.lastTradeTime != null)) {
+        bar.lastTradeTime = time;
+        bar.close = price;
+      }
+    }
+    bar.volume += shares + (pending?.volume ?? 0);
+    bar.value += price * shares + (pending?.value ?? 0);
+    if (pending) pendingVolume.delete(bucket);
+    bar.hasTrades = true;
+  }
+  return out;
+}
+
+// A history request may return after several trades. Completed feed candles
+// are authoritative. Keep newer tick-built candles and reconcile the overlapping
+// candle without adding the same trades to its reported volume a second time.
+export function reconcileHistory(history, liveBars, interval, keepTradeClose = true, pendingVolume = new Map()) {
+  const head = history.at(-1);
+  if (!head) return liveBars;
+  const out = history.slice();
+  // Some buckets may have received only volume-eligible prints. Once history
+  // supplies the bar, reconcile its volume without creating a synthetic price.
+  for (const [time, pending] of pendingVolume) {
+    if (time > head.time) continue;
+    const i = out.findIndex(b => b.time === time);
+    if (i >= 0 && pending.volume > out[i].volume) {
+      out[i] = { ...out[i], volume: pending.volume, value: pending.value, hasTrades: true };
+    }
+    pendingVolume.delete(time);
+  }
+  for (const bar of liveBars) {
+    if (!bar.hasTrades) continue;
+    const same = interval === "1D" ? bar.session === head.session : bar.time === head.time;
+    if (same) {
+      const useLocalVolume = bar.volume >= head.volume;
+      out[out.length - 1] = { ...head, high: Math.max(head.high, bar.high),
+        low: Math.min(head.low, bar.low), close: keepTradeClose && bar.lastTradeTime != null ? bar.close : head.close,
+        volume: Math.max(head.volume, bar.volume), value: useLocalVolume ? bar.value : head.value,
+        lastTradeTime: bar.lastTradeTime, hasTrades: true };
+    } else if (bar.time > head.time) {
+      out.push(bar);
     }
   }
   return out;

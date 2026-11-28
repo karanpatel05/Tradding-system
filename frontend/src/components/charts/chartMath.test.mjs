@@ -1,5 +1,5 @@
 // Plain-node test (no runner configured). Run: node frontend/src/components/charts/chartMath.test.mjs
-import { aggregate, bollinger, crossovers, donchian, ema, heikinAshi, makeScale, normalizeBars, rsi, sessionOf, sessionStats, sma, sourceValues } from "./chartMath.js";
+import { aggregate, applyTradeTicks, bollinger, chartWindow, crossovers, donchian, ema, heikinAshi, makeScale, normalizeBars, reconcileHistory, rsi, sessionOf, sessionStats, sma, sourceValues } from "./chartMath.js";
 import { applyStudy, studyValues } from "./chartData.js";
 
 const eq = (a, b, msg) => {
@@ -30,6 +30,69 @@ eq(bars[0].close, 101, "aggregate does not mutate input");
 
 const nextDay = normalizeBars([{ ...raw[0], time: Date.UTC(2026, 10, 23, 14, 30) }]);
 eq(aggregate([...bars.slice(0, 2), ...nextDay], 4).length, 2, "aggregate never merges across sessions");
+
+// All ticks in a display frame contribute to OHLCV even when the price returns
+// to its starting level, including fractional shares and a delayed print.
+const start = raw[0].time;
+const sale = (seconds, price, size = 1) => ({ time: start + seconds * 1000, price, size });
+const live = applyTradeTicks([], [sale(15, 101), sale(35, 103, 0.5), sale(35, 102),
+  sale(60, 104, 3), sale(5, 100), sale(50, 101)], "1m");
+eq(live.length, 2, "a new minute rolls over");
+eq(live[0].open, 100, "earliest observed trade opens the candle");
+eq(live[0].close, 101, "last trade in first minute closes that minute");
+eq(live[0].high, 103, "intrabracket high is retained");
+eq(live[0].low, 100, "intrabracket low is retained");
+eq(live[0].volume, 4.5, "every trade contributes its size once");
+eq(live[0].value, 455.5, "live VWAP numerator uses traded value");
+eq(live[1].close, 104, "late trade does not rewind latest price");
+const ticked = applyTradeTicks(bars.slice(0, 1), [sale(10, 110, 2)], "1m");
+eq(ticked[0].open, 100, "history retains open");
+eq(ticked[0].close, 110, "live trade updates close");
+eq(ticked[0].volume, 12, "live trade updates volume");
+eq(bars[0].volume, 10, "cached feed bars remain immutable");
+const merged = reconcileHistory(bars.slice(0, 1), [...ticked, live[1]], "1m");
+eq(merged[0].close, 110, "late REST response cannot undo observed close");
+eq(merged[0].volume, 12, "overlapping snapshot never double-counts live volume");
+eq(merged[1].close, 104, "a response ending earlier preserves new tick-built candles");
+eq(reconcileHistory(bars.slice(0, 1), ticked, "1m", false)[0].close, 101, "offline refresh can update last price");
+eq(aggregate([bars[0], bars[4]], 4).length, 2, "missing intervals cannot extend an hourly bar");
+eq(applyTradeTicks([], [sale(3599, 101), sale(3600, 102)], "1h")[1].time,
+  start + 3600e3, "hourly trade buckets align to the market open");
+const daily = applyTradeTicks([bars[0]], [sale(900, 110),
+  { time: nextDay[0].time, price: 103, size: 7 }], "1D");
+eq(daily.length, 2, "daily merges existing history by NY date before rolling");
+eq(daily[0].close, 110, "same-session daily candle updates");
+eq(daily[1].session, "2026-11-23", "new NY session opens a daily bar");
+eq(daily[1].time, Date.UTC(2026, 10, 23, 14, 30), "winter daily bar starts at 09:30 EST");
+eq(applyTradeTicks([], [{ time: Date.UTC(2026, 6, 1, 14), price: 103, size: 2 }], "1D")[0].time,
+  Date.UTC(2026, 6, 1, 13, 30), "summer daily bar starts at 09:30 EDT");
+const rawDaily = normalizeBars([{ ...raw[0], time: Date.UTC(2026, 10, 20) }], "1d");
+eq(rawDaily[0].session, "2026-11-20", "DXLink midnight UTC stamp means the US trading date");
+eq(applyTradeTicks(rawDaily, [sale(50, 105)], "1D").length, 1, "same-day trade updates the daily history candle");
+const pending = new Map();
+const oddLot = { ...sale(1, 500, 0.25), updatesPrice: false };
+const waiting = applyTradeTicks([], [oddLot], "1m", pending);
+eq(waiting.length, 0, "volume-only trade cannot set a candle price");
+const oddLots = applyTradeTicks(waiting, [sale(2, 100), { ...oddLot, time: start + 3000 }], "1m", pending);
+eq(oddLots[0].volume, 1.5, "volume-only trades before and after the first eligible price count");
+eq(oddLots[0].high, 100, "volume-only trades do not set the high");
+eq(oddLots[0].close, 100, "volume-only trades do not set the close");
+eq(pending.size, 0, "pending volume clears once consumed");
+const earlyClose = Date.UTC(2026, 10, 27, 18); // 13:00 ET
+const closing = applyTradeTicks([], [
+  { time: earlyClose - 1000, price: 103, size: 2 },
+  { time: earlyClose, barTime: earlyClose - 1, price: 104, size: 3 },
+], "1m");
+eq(closing.length, 1, "closing print lands on the final minute of an early-close session");
+eq(closing[0].time, earlyClose - 60000, "no 13:00 candle follows the early close");
+eq(closing[0].volume, 5, "final minute includes closing print size");
+eq(closing[0].lastTradeTime, earlyClose, "closing trade keeps its exchange timestamp");
+const scrollBars = Array.from({ length: 30 }, (_, time) => ({ time }));
+const panned = { length: 10, endTime: 22 };
+eq(chartWindow(scrollBars, { length: 10, endTime: null }).end, 30, "latest view follows appended bars");
+eq(chartWindow(scrollBars.slice(0,-1), panned).start, 13, "panned view starts at chosen time");
+eq(chartWindow(scrollBars, panned).start, 13, "new candle does not move a panned view");
+eq(chartWindow([{time:-1}, ...scrollBars], panned).end, 24, "backfill preserves the visible time anchor");
 
 const e = ema([10, 20], 3);
 eq(e[0], 10, "ema seeds with first value");

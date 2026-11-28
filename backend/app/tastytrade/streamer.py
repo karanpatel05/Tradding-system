@@ -8,10 +8,12 @@ import asyncio
 import logging
 import math
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
+import anyio
 from tastytrade import DXLinkStreamer
-from tastytrade.dxfeed import Candle, Quote, Trade
+from tastytrade.dxfeed import Candle, Quote, TimeAndSale, Trade
 
 from app.tastytrade.session import get_tt_session
 
@@ -31,6 +33,14 @@ def _accept_fractional_trade_sizes() -> None:
             changed = True
     if changed:
         Trade.model_rebuild(force=True)
+    # Some trades lack a contemporaneous bid, ask or sale-condition string.
+    # The SDK otherwise discards the entire print, including its price and size.
+    if TimeAndSale.model_fields["size"].annotation is int:
+        TimeAndSale.model_fields["size"].annotation = float | None
+        for name in ("bid_price", "ask_price", "exchange_sale_conditions"):
+            field = TimeAndSale.model_fields[name]
+            field.annotation = field.annotation | None
+        TimeAndSale.model_rebuild(force=True)
 
 
 _accept_fractional_trade_sizes()
@@ -44,6 +54,41 @@ def _num(x):
     except (TypeError, ValueError):
         return None
     return None if math.isnan(f) else f
+
+
+class TickSubscription:
+    """One browser's ordered buffer. A gap ends this subscription."""
+
+    QUEUE_LIMIT = 4096
+    BATCH_LIMIT = 256
+
+    def __init__(self) -> None:
+        self._queue: asyncio.Queue[dict | None] = asyncio.Queue(self.QUEUE_LIMIT)
+        self.gapped = False
+
+    def publish(self, tick: dict) -> None:
+        if self.gapped:
+            return
+        try:
+            self._queue.put_nowait(tick)
+        except asyncio.QueueFull:
+            self.invalidate()
+
+    def invalidate(self) -> None:
+        if not self.gapped:
+            self.gapped = True
+            while not self._queue.empty():
+                self._queue.get_nowait()
+            self._queue.put_nowait(None)
+
+    async def next_batch(self) -> list[dict]:
+        first = await self._queue.get()
+        if first is None:
+            return []
+        batch = [first]
+        while len(batch) < self.BATCH_LIMIT and not self._queue.empty():
+            batch.append(self._queue.get_nowait())
+        return batch
 
 
 class TTStreamer:
@@ -63,6 +108,7 @@ class TTStreamer:
         self._prev_close: dict[str, float] = {}
         self._candles: dict[str, dict[int, dict]] = {}
         self._subscribed: dict[str, set[str]] = {"Quote": set(), "Trade": set()}
+        self._tick_listeners: dict[str, set[TickSubscription]] = {}
         self._runner: asyncio.Task | None = None
         # SDK 12.x race: a channel is marked ready on CHANNEL_OPENED, BEFORE its
         # FEED_SETUP is sent, so a concurrent 2nd subscribe can go out first; the server
@@ -123,6 +169,10 @@ class TTStreamer:
         self._dx = None
         self._runner = None
         self._subscribed = {"Quote": set(), "Trade": set()}
+        for listeners in self._tick_listeners.values():
+            for listener in listeners:
+                listener.invalidate()
+        self._tick_listeners.clear()
 
     def _alive(self) -> bool:
         return self._dx is not None and (self._runner is None or not self._runner.done())
@@ -160,6 +210,7 @@ class TTStreamer:
         self._pumps = [
             asyncio.create_task(self._pump(Quote)),
             asyncio.create_task(self._pump(Trade)),
+            asyncio.create_task(self._pump(TimeAndSale)),
             asyncio.create_task(self._pump(Candle)),
         ]
 
@@ -179,6 +230,8 @@ class TTStreamer:
                         ch = _num(getattr(ev, "change", None))
                         if ch is not None and p - ch > 0:
                             self._prev_close[ev.event_symbol] = round(p - ch, 4)
+                elif cls is TimeAndSale:
+                    self._publish_sale(ev)
                 else:  # Candle: event_symbol like "QQQ{=5m}"
                     bucket = self._candles.setdefault(ev.event_symbol, {})
                     t = int(ev.time)
@@ -191,6 +244,78 @@ class TTStreamer:
             logger.warning("DXLink pump (%s) died; will reconnect on demand",
                            cls.__name__, exc_info=True)
             await self.teardown()
+
+    def _publish_sale(self, ev: TimeAndSale) -> None:
+        listeners = self._tick_listeners.get(ev.event_symbol)
+        if (not listeners or ev.type != "NEW" or ev.extended_trading_hours
+                or ev.time <= 0 or ev.size is None):
+            return
+        price, size = float(ev.price), float(ev.size)
+        if not (math.isfinite(price) and price > 0 and math.isfinite(size) and size > 0):
+            return
+        tick = {"symbol": ev.event_symbol, "time": ev.time, "price": price,
+                "size": size, "updatesPrice": ev.valid_tick}
+        # The closing auction belongs to the final regular-session candle.
+        # Preserve its exchange timestamp on the tape, including on half days.
+        if ev.time % 3_600_000 == 0:
+            from app.strategies.xsp_iron_fly import calendar
+            at = datetime.fromtimestamp(ev.time / 1000, calendar.ET)
+            close = calendar.EARLY_CLOSE if calendar.is_early_close(at.date()) else calendar.REGULAR_CLOSE
+            if at.time() == close:
+                tick["barTime"] = ev.time - 1
+        for listener in listeners:
+            listener.publish(tick)
+
+    async def _add_tick_listener(self, symbols: list[str], listener: TickSubscription) -> bool:
+        if not await self._ensure():
+            return False
+        async with self._sub_lock:
+            dx = self._dx
+            if dx is None:
+                return False
+            new = [symbol for symbol in symbols if symbol not in self._tick_listeners]
+            for symbol in symbols:
+                self._tick_listeners.setdefault(symbol, set()).add(listener)
+            if new:
+                try:
+                    await dx.subscribe(TimeAndSale, new, refresh_interval=0)
+                except Exception:
+                    logger.warning("DXLink tick subscription failed", exc_info=True)
+                    if self._dx is dx:
+                        await self.teardown()
+                    return False
+            return self._dx is dx
+
+    async def _remove_tick_listener(self, symbols: list[str], listener: TickSubscription):
+        async with self._sub_lock:
+            unused = []
+            for symbol in symbols:
+                listeners = self._tick_listeners.get(symbol)
+                if listeners and listener in listeners:
+                    listeners.remove(listener)
+                    if not listeners:
+                        unused.append(symbol)
+                        del self._tick_listeners[symbol]
+            dx = self._dx
+            if unused and dx is not None:
+                try:
+                    await dx.unsubscribe(TimeAndSale, unused)
+                except Exception:
+                    logger.warning("DXLink tick unsubscribe failed", exc_info=True)
+                    if self._dx is dx:
+                        await self.teardown()
+
+    @asynccontextmanager
+    async def listen_ticks(self, symbols: list[str]):
+        """Subscribe once per symbol across viewers. Feed loss wakes every listener."""
+        listener = TickSubscription()
+        try:
+            if not await self._add_tick_listener(symbols, listener):
+                listener.invalidate()
+            yield listener
+        finally:
+            with anyio.CancelScope(shield=True):
+                await self._remove_tick_listener(symbols, listener)
 
     async def teardown(self) -> None:
         runner = self._runner

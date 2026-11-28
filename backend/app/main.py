@@ -56,8 +56,14 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(refresher())
     from app.services.alpaca_status import alpaca_refresher
     asyncio.create_task(alpaca_refresher())
-    yield
-    logger.info("Shutting down")
+    from app.services.minute_archive import run_minute_archive
+    archive_task = asyncio.create_task(run_minute_archive(), name="market-minute-archive")
+    try:
+        yield
+    finally:
+        archive_task.cancel()
+        await asyncio.gather(archive_task, return_exceptions=True)
+        logger.info("Shutting down")
 
 
 async def _startup_recovery() -> None:

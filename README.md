@@ -49,10 +49,26 @@ stop**. Recovery (safe mode) and connection banners appear above every screen.
 | Screen | What it shows |
 | --- | --- |
 | **Overview** | Market board, Alpaca paper account metrics, app-owned positions, strategy activity, allocation budgets, system health |
+| **Chart** | Live trade updates and candles. **Saved 1m** opens archived one-minute prices and volume for the selected symbol and New York session date. |
 | **Strategies** | Strategy table plus detail, allocation, activation and backtest workflows |
 | **Options builder** | Analysis workspace (quote, payoff, Greeks, IV smile) and a trade setup panel with templates and stock/option legs; **Build \| Trades** toggle for paper-tracked trades and portfolio P&L |
 | **Journal** | Month calendar of sessions with per-day session detail |
 | **Connections** | Tastytrade market data, Alpaca paper, access token and order-routing settings |
+
+### One-minute market archive
+
+After each regular equity close, the backend saves Tastytrade one-minute open, high, low,
+close, and volume to the application database. It collects the provider's minutes from
+04:00 through 20:00 Eastern, including pre-market and after-hours trading. Minutes with
+no reported candle stay empty. The background job runs with the browser closed, checks
+every five minutes, and reconciles the entire session on its first pass after 20:20 Eastern.
+After a restart it resumes from the last completed session for each symbol.
+
+The default symbols are SPY, QQQ, DIA, IWM, VIXY, NVDA, AAPL, TSLA, MSFT, and AMZN.
+Set the comma-separated `MARKET_ARCHIVE_SYMBOLS` in `backend/.env` to change them.
+An empty value disables recurring saves. A newly added symbol starts with the most
+recent regular session that has closed. Saved sessions remain available through
+`GET /api/market/minutes?symbol=SPY&day=YYYY-MM-DD`. Omit `day` for the latest saved session.
 
 Notes:
 

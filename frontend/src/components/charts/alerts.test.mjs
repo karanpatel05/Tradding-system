@@ -1,5 +1,5 @@
 // Plain-node test. Run: node frontend/src/components/charts/alerts.test.mjs
-import { rearm, sessionCloseAfter, shouldFire, stepAlerts } from "./alerts.js";
+import { rearm, sessionCloseAfter, shouldFire, stepAlerts, stepAlertTicks } from "./alerts.js";
 
 const eq = (a, b, msg) => { if (a !== b) { console.error(`FAIL: ${msg} — got ${a}, want ${b}`); process.exit(1); } };
 const up = { condition: "crossing_up", value: 100 };
@@ -36,6 +36,13 @@ eq(st.fired.length, 1, "once fires on the crossing");
 eq(st.alerts[0].active, false, "once turns the alert off");
 eq(st.alerts[0].status, "Triggered", "once status is Triggered");
 const every = { ...base, trigger: "every" };
+const batch = [101, 99, 101, 99].map(price => ({ symbol: "QQQ", price }));
+const intraframe = stepAlertTicks([every], { QQQ: 99 }, batch, NOW);
+eq(intraframe.fired.length, 2, "both crossings fire even though the frame ends where it started");
+eq(intraframe.alerts[0].fires, 2, "every-time count retains intraframe crossings");
+eq(stepAlertTicks([base], { QQQ: 99 }, batch, NOW).fired.length, 1, "once alert fires once across the batch");
+eq(stepAlertTicks([every], { QQQ: 99 }, [{ ...batch[0], updatesPrice: false }], NOW).fired.length, 0,
+  "volume-only print cannot fire an alert");
 st = stepAlerts([every], { QQQ: 99 }, live(101), NOW);
 eq(st.alerts[0].active, true, "every time stays on");
 eq(st.alerts[0].fires, 1, "every time counts fires");

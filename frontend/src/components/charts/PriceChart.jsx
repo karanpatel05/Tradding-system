@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Drawings from "./Drawings.jsx";
-import { crossovers, heikinAshi, makeScale, rsi } from "./chartMath.js";
+import { barIndexAt, chartWindow, crossovers, heikinAshi, makeScale, rsi } from "./chartMath.js";
 import { PRICE_STUDIES, studyLabel, studyLines } from "./chartData.js";
 import { clearHover, publishHover, useHoverTime } from "./syncStore.js";
 import { sessionCloseAfter } from "./alerts.js";
@@ -27,12 +27,6 @@ function segments(values, start, end, x, y) {
   return out;
 }
 
-function barIndexAt(bars, time) {
-  let lo = 0, hi = bars.length;
-  while (lo < hi) { const mid = (lo+hi) >> 1; if (bars[mid].time <= time) lo = mid+1; else hi = mid; }
-  return lo - 1;
-}
-
 // Ticks once a second on its own so the rest of the chart does not re-render.
 function Countdown({endsAt, intervalMs, x, y, color}) {
   const [now, setNow] = useState(Date.now());
@@ -49,11 +43,15 @@ export default function PriceChart({pane, paneId, bars, tool, drawingProps, onRe
   const S = settings;
   const limit = (n, min, max) => Math.max(min, Math.min(max, n));
   const total = bars.length;
-  const [view, setView] = useState({length: Math.min(80,total), offset:0});
-  const length = limit(view.length, Math.min(10,total), total);
-  const offset = limit(view.offset, 0, total-length);
-  const end = total - offset;
-  const start = end - length;
+  const [view, saveView] = useState({ length: 80, endTime: null });
+  const { length, offset, end, start } = chartWindow(bars, view);
+  function setView(update) {
+    saveView(old => {
+      const next = typeof update === "function" ? update(chartWindow(bars, old)) : update;
+      const endTime = next.offset > 0 ? bars[total - 1 - next.offset]?.time : null;
+      return { length: next.length, endTime };
+    });
+  }
   const plot = useRef(null);
   const [size,setSize] = useState({width:580,height:240});
   useEffect(()=>{
@@ -108,7 +106,7 @@ export default function PriceChart({pane, paneId, bars, tool, drawingProps, onRe
     }
     svg.addEventListener("wheel",wheel,{passive:false});
     return ()=>svg.removeEventListener("wheel",wheel);
-  },[total]); // eslint-disable-line react-hooks/exhaustive-deps
+  },[total, bars[0].time, bars.at(-1).time]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Price studies -> drawn lines (nulls skipped). RSI in its own pane.
   const series = useMemo(() => studies.filter(s => s.visible && PRICE_STUDIES.has(s.type)).map(s => ({...s, lines:studyLines(bars,s)})), [bars, studies]);
@@ -147,8 +145,12 @@ export default function PriceChart({pane, paneId, bars, tool, drawingProps, onRe
   useEffect(() => () => clearHover(paneId), [paneId]); // remount/unmount: drop our stale sync time
   const syncIndex = S.syncCrosshair && syncTime != null && syncSource !== paneId && hover === null ? barIndexAt(bars, syncTime) - start : null;
 
-  const shown = hover ?? (syncIndex !== null && syncIndex >= 0 && syncIndex < visible.length ? syncIndex : visible.length-1);
+  const shown = hover !== null ? Math.min(hover, visible.length-1)
+    : (syncIndex !== null && syncIndex >= 0 && syncIndex < visible.length ? syncIndex : visible.length-1);
   const selected = visible[shown];
+  const volumeNote = selected.hasTrades
+    ? "Trade-built volume is provisional until candle history is refreshed."
+    : undefined;
   const prevClose = bars[start + shown - 1]?.close;
   const change = prevClose ? selected.close - prevClose : null;
   const label = b => interval === "1D" ? b.session.slice(5) : clock.format(b.time);
@@ -186,7 +188,7 @@ export default function PriceChart({pane, paneId, bars, tool, drawingProps, onRe
     <div className="cx-plot-wrap" onPointerLeave={()=>setNearBottom(false)}>
     <div className="cx-study-values">{series.map(study=><div key={study.id}><i style={{background:study.color}}/>{studyLabel(study)} <b style={{color:study.color}}>{study.lines.map(l=>l.values[start+shown]).filter(Number.isFinite).map(v=>v.toFixed(2)).join(" · ")||"—"}</b>
         <button aria-label={"Settings for "+studyLabel(study)} onClick={()=>onEditStudy(study.id)}>⚙</button><button aria-label={"Remove "+studyLabel(study)} onClick={()=>onRemove(study.id)}>×</button></div>)}
-      {volume && <div><i style={{background:C.axis}}/>Vol <b>{Math.round(selected.volume).toLocaleString()}</b><button aria-label="Remove volume" onClick={()=>onRemove(volume.id)}>×</button></div>}
+      {volume && <div><i style={{background:C.axis}}/>Vol <b title={volumeNote}>{Math.round(selected.volume).toLocaleString()}</b><button aria-label="Remove volume" onClick={()=>onRemove(volume.id)}>×</button></div>}
     </div>
     <svg ref={plot} data-tool={tool} className="cx-plot" tabIndex={0} onContextMenu={contextMenu}
       onKeyDown={e=>{
@@ -314,7 +316,7 @@ export default function PriceChart({pane, paneId, bars, tool, drawingProps, onRe
         <div className="cx-dw-head"><b>{hoverLabel}</b>{pinned && <button aria-label="Unpin data window" title="Unpin (follow the crosshair)" onClick={()=>onSettings({dataWindow:"follow"})}>📌</button>}</div>
         <dl>{[["Open",selected.open],["High",selected.high],["Low",selected.low],["Close",selected.close]].map(([k,n])=><div key={k}><dt>{k}</dt><dd className={selected.close>=selected.open?"up":"down"}>{n.toFixed(2)}</dd></div>)}
           <div><dt>Change</dt><dd className={change>=0?"up":"down"}>{change==null?"—":(change>=0?"+":"")+(change/prevClose*100).toFixed(2)+"%"}</dd></div>
-          <div><dt>Volume</dt><dd>{Math.round(selected.volume).toLocaleString()}</dd></div></dl>
+          <div><dt>Volume</dt><dd title={volumeNote}>{Math.round(selected.volume).toLocaleString()}</dd></div></dl>
         {(series.length>0 || rsiNow!=null) && <ul>{series.map(s=><li key={s.id}><span><i style={{background:s.color}}/>{studyLabel(s)}</span><b style={{color:s.color}}>{v(s)}</b></li>)}
           {rsiNow!=null && <li><span><i style={{background:rsiStudy.color||C.rsi}}/>RSI {rsiStudy.period||14}</span><b style={{color:rsiStudy.color||C.rsi}}>{rsiNow.toFixed(1)}</b></li>}</ul>}
       </div>;

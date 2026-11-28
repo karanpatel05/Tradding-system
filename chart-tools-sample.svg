@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="560" viewBox="0 0 900 560">
+  <rect width="900" height="560" fill="#0b0f14"/>
+  <rect x="0" y="0" width="80" height="560" fill="#151d28" stroke="#314153"/>
+  <text x="40" y="28" fill="#91a4b9" font-family="Arial, sans-serif" font-size="10" font-weight="700" text-anchor="middle">⌘  TOOLS</text>
+  <path d="M12 40H68" stroke="#314153"/>
+  <g font-family="Arial, sans-serif" font-size="20" text-anchor="middle">
+    <rect x="12" y="54" width="56" height="46" rx="12" fill="#173c3a" stroke="#2dd4a7"/>
+    <text x="40" y="84" fill="#52e0bc">⌖</text>
+    <rect x="12" y="108" width="56" height="46" rx="12" fill="#1b2633" stroke="#29394a"/>
+    <text x="40" y="138" fill="#91a2b4">✥</text>
+    <rect x="12" y="170" width="56" height="56" rx="12" fill="#202e3d" stroke="#536b82"/>
+    <text x="40" y="204" fill="#f1f5f9">╱</text>
+    <text x="58" y="218" fill="#91a4b9" font-size="10">▸</text>
+    <rect x="12" y="234" width="56" height="46" rx="12" fill="#1b2633" stroke="#29394a"/>
+    <text x="40" y="264" fill="#91a2b4">✎</text>
+  </g>
+  <path d="M14 294H66" stroke="#314153"/>
+  <g font-family="Arial, sans-serif" font-size="20" text-anchor="middle">
+    <rect x="12" y="310" width="56" height="46" rx="12" fill="#1b2633" stroke="#29394a"/>
+    <text x="40" y="340" fill="#91a2b4">⌁</text>
+    <rect x="12" y="364" width="56" height="46" rx="12" fill="#1b2633" stroke="#29394a"/>
+    <text x="40" y="394" fill="#91a2b4">⟳</text>
+    <rect x="12" y="418" width="56" height="46" rx="12" fill="#1b2633" stroke="#29394a"/>
+    <text x="40" y="448" fill="#91a2b4">⚿</text>
+  </g>
+  <rect x="80" y="0" width="820" height="52" fill="#0e131a"/>
+  <text x="104" y="32" fill="#e6edf3" font-family="Arial, sans-serif" font-size="16" font-weight="700">QQQ</text>
+  <text x="158" y="32" fill="#7d8a9a" font-family="Arial, sans-serif" font-size="12">5m · Candles · Indicators</text>
+  <g stroke="#17212a" stroke-width="1">
+    <path d="M110 130H870M110 220H870M110 310H870M110 400H870M110 490H870"/>
+    <path d="M220 70V520M340 70V520M460 70V520M580 70V520M700 70V520M820 70V520"/>
+  </g>
+  <polyline points="120,410 170,350 215,370 260,280 315,320 365,250 420,285 470,190 520,245 565,210 620,295 675,260 730,320 790,270 850,295" fill="none" stroke="#2dd4a7" stroke-width="3"/>
+  <text x="110" y="548" fill="#5f6b7a" font-family="Arial, sans-serif" font-size="11">Alternate sample · floating toolbox rail with active-tool marker</text>
+</svg>

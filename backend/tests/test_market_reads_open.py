@@ -13,7 +13,7 @@ def _gated(path: str) -> bool:
 
 def test_market_data_reads_are_open():
     for path in ("/api/market/status", "/api/market/overview",
-                 "/api/market/bars", "/api/market/quotes"):
+                 "/api/market/bars", "/api/market/quotes", "/api/market/minutes"):
         assert not _gated(path), path
 
 

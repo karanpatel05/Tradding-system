@@ -84,6 +84,16 @@ def _is_trading_day(d: date) -> bool:
     return d.weekday() < 5 and d not in NYSE_HOLIDAYS
 
 
+def regular_session_close(day: date) -> datetime | None:
+    """Close used for historical equity session dates, including half days."""
+    from app.strategies.xsp_iron_fly import calendar
+    if calendar.calendar_configured(day):
+        return calendar.close_time(day)
+    if _is_trading_day(day):
+        return datetime.combine(day, REGULAR_CLOSE, ET)
+    return None
+
+
 def get_market_status() -> dict:
     now = datetime.now(ET)
     today = now.date()

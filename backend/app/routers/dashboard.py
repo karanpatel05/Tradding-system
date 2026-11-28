@@ -8,11 +8,12 @@ or the engine requires auth.
 from __future__ import annotations
 
 import logging
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth.gate import require_auth
-from app.services.chart_data import ChartDataError, get_bars, get_quotes
+from app.services.chart_data import ChartDataError, get_bars, get_quotes, saved_minutes
 from app.engine.execution import flatten_all
 from app.engine.manager import engine_manager
 from app.engine.worker import close_open_trades
@@ -38,11 +39,11 @@ async def market_overview() -> dict:
 
 
 @router.get("/market/bars")
-async def market_bars(symbol: str, interval: str = "5m") -> dict:
+async def market_bars(symbol: str, interval: str = "5m", recover: bool = False) -> dict:
     """Candle history for the Chart screen (1m, 5m, 15m or 1d). Empty with a note when
     the feed has nothing; the frontend then falls back to labelled sample data."""
     try:
-        return await get_bars(symbol, interval)
+        return await get_bars(symbol, interval, recover=recover)
     except ChartDataError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -52,6 +53,14 @@ async def market_quotes(symbols: str) -> dict:
     """Watchlist quotes: last price and change from the previous close."""
     try:
         return await get_quotes(symbols)
+    except ChartDataError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/market/minutes")
+async def market_minutes(symbol: str, day: date | None = None) -> dict:
+    try:
+        return await saved_minutes(symbol, day)
     except ChartDataError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
