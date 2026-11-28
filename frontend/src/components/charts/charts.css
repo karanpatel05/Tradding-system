@@ -223,6 +223,12 @@
 .cx-dialog-head {display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px}
 .cx-dialog-head button {border:0!important;background:transparent!important;color:var(--cx-muted)}
 .cx-dialog-body {padding:0 16px 14px;overflow:auto}
+.cx-minutes-controls {display:flex;align-items:flex-end;gap:12px}
+.cx-minutes-scroll {max-height:40vh;overflow:auto}
+.cx-minutes-scroll table {width:100%;border-collapse:collapse;white-space:nowrap;font-variant-numeric:tabular-nums}
+.cx-minutes-scroll :is(td,th) {padding:5px 8px;text-align:right;border-bottom:1px solid var(--cx-line)}
+.cx-minutes-scroll tr>:nth-child(-n+2) {text-align:left}
+.cx-minutes-scroll thead th {position:sticky;top:0;background:var(--cx-card)}
 .cx-dialog-foot {display:flex;align-items:center;gap:8px;padding:10px 16px;border-top:1px solid var(--cx-line)}
 .cx-layer button.primary {background:var(--cx-accent)!important;border-color:var(--cx-accent)!important;color:#06231b;font-weight:650}
 .cx-layer button.primary:disabled {opacity:.4}

@@ -3,9 +3,10 @@ import { createPortal } from "react-dom";
 import {drawingTools,symbolDrawings} from "./Drawings.jsx";
 import PaneResize from "./PaneResize.jsx";
 import PriceChart from "./PriceChart.jsx";
+import SavedMinutesDialog from "./SavedMinutesDialog.jsx";
 import { applyStudy, intervals, symbols } from "./chartData.js";
 import { sessionStats } from "./chartMath.js";
-import { useBars, useLiveCandle, usePositions, useQuotes } from "./marketData.js";
+import { useBars, usePositions, useQuotes } from "./marketData.js";
 import { conditionLabel, rearm, useAlertEngine, useAlerts } from "./alerts.js";
 import { SYMBOL_PATTERN, describe } from "./controls/catalog.js";
 import SymbolSearch from "./controls/SymbolSearch.jsx";
@@ -83,26 +84,25 @@ async function copyChartImage(svg, name) {
   return "Clipboard unavailable here, so the chart image was downloaded";
 }
 
-function ChartPane({index, pane, selected, tool, positions, settings, onSettings, alerts, resetToken, liveQuote, onActivate, patch,
+function ChartPane({index, pane, selected, tool, positions, settings, onSettings, alerts, resetToken, onActivate, patch,
   drawingProps, selectedDrawing, onDrawingChange, onDrawingDelete, onDrawingCopy, onDrawingAlert, onEditStudy, onSearch, onContextMenu}) {
-  const {bars: fetched, live, stale, note} = useBars(pane.symbol, pane.interval, !selected);
-  const bars = useLiveCandle(fetched, live && !stale ? liveQuote : null, pane.interval);
+  const {bars, live, streaming, stale, note, archived} = useBars(pane.symbol, pane.interval, !selected);
   return <article className={"cx-pane "+(selected?"selected":"")} data-pane={index} tabIndex="0" aria-label={"Chart "+(index+1)+" "+pane.symbol}
     onFocus={onActivate} onPointerDown={e=>{onActivate(); if(e.target.closest("svg.cx-plot") && !e.target.closest("[data-drawing]")) drawingProps.onSelect(null);}}>
     <div className="cx-controls"><button className="cx-sym-btn" aria-label={"Change symbol for chart "+(index+1)} onClick={onSearch}>{pane.symbol} <span>▾</span></button>
     <select aria-label={"Timeframe for chart "+(index+1)} value={pane.interval} onChange={e=>patch({interval:e.target.value})}>{Object.keys(intervals).map(t=><option key={t}>{t}</option>)}</select>
-    {bars && <span className={"cx-source "+(live&&!stale?"live":"sample")} title={note || undefined}>{!live?"Sample data":stale?"Tastytrade · stale":"Tastytrade"}</span>}
+    {bars && <span className={"cx-source "+(live&&!stale?"live":"sample")} title={note || undefined}>{archived?"Saved 1m":!live?"Sample data":stale?"Tastytrade · stale":streaming?"Tick by tick":"Candle history"}</span>}
     <select aria-label={"Symbol link group for chart "+(index+1)} value={pane.group} onChange={e=>patch({group:e.target.value})}><option value="">Unlinked</option><option value="A">Link A</option><option value="B">Link B</option></select></div>
     {selectedDrawing && <DrawingToolbar key={selectedDrawing.id} drawing={selectedDrawing} onChange={onDrawingChange} onDelete={onDrawingDelete} onCopy={onDrawingCopy}
       onAlert={selectedDrawing.type==="Horizontal line" ? onDrawingAlert : null}/>}
-    {bars ? <PriceChart key={pane.symbol+"-"+pane.interval} paneId={"p"+index} pane={pane} bars={bars} tool={tool} live={live && !stale}
-      position={live ? positionFor(positions, pane.symbol) : null} settings={settings} onSettings={onSettings} alerts={alerts} resetToken={resetToken}
+    {bars ? <PriceChart key={pane.symbol+"-"+pane.interval+"-"+live} paneId={"p"+index} pane={pane} bars={bars} tool={tool} live={live && !stale}
+      position={live && !archived ? positionFor(positions, pane.symbol) : null} settings={settings} onSettings={onSettings} alerts={archived ? [] : alerts} resetToken={resetToken}
       onRemove={id=>patch({studies:pane.studies.filter(study=>study.id!==id)})} onEditStudy={onEditStudy} onContextMenu={onContextMenu} drawingProps={drawingProps}/>
       : <div className="cx-loading" role="status">Loading {pane.symbol} {pane.interval} candles…</div>}
     <PaneResize direction="width"/><PaneResize direction="height"/></article>;
 }
 
-function SidePanel({active, watchlist, onPick, onRemove, onAdd, quotes, bars, live}) {
+function SidePanel({active, watchlist, onPick, onRemove, onAdd, quotes, bars, live, archived}) {
   const stats = bars ? sessionStats(bars) : null;
   const [side,setSide]=useState("Buy");
   const [type,setType]=useState("Limit");
@@ -128,7 +128,7 @@ function SidePanel({active, watchlist, onPick, onRemove, onAdd, quotes, bars, li
       })}</tbody></table>
     </section>
     <section className="cx-details" aria-label={active.symbol+" details"}>
-      <div className="cx-side-head"><h2>{active.symbol}</h2>{bars && <span className={"cx-source "+(live?"live":"sample")}>{live?"Tastytrade":"Sample data"}</span>}</div>
+      <div className="cx-side-head"><h2>{active.symbol}</h2>{bars && <span className={"cx-source "+(live && !archived?"live":"sample")}>{archived?"Saved 1m":live?"Tastytrade":"Sample data"}</span>}</div>
       {describe(active.symbol) && <p className="cx-muted cx-sub">{describe(active.symbol).name} · {describe(active.symbol).exchange}</p>}
       {stats ? <>
         <div className="cx-price"><strong>{fmt(stats.last)}</strong><span className={tone(stats.change)}>{signed(stats.change)} ({stats.changePct==null?"—":signed(stats.changePct)+"%"})</span></div>
@@ -213,14 +213,10 @@ export default function ChartWorkspace({account, accountError, onOpenBuilder}) {
   const activeData=useBars(active.symbol, active.interval);
   const [alerts,setAlerts]=useAlerts();
   const quoteSymbols=[...new Set([...s.watchlist, ...ids.map(i=>s.panes[i].symbol), ...alerts.filter(a=>a.active).map(a=>a.symbol)])];
-  const quotes=useQuotes(quoteSymbols.length?quoteSymbols:["QQQ"]);
-  // Live quote for a symbol, only in the regular session and while quotes are fresh: chart panes
-  // and the side panel fold it into their newest candle so both show the same live price.
-  const liveQuoteFor=sym=>quotes.live && !quotes.stale && quotes.session==="regular" ? quotes.quotes[sym] || null : null;
-  const activeBars=useLiveCandle(activeData.bars, activeData.live && !activeData.stale ? liveQuoteFor(active.symbol) : null, active.interval);
   const {positions, note:positionsNote}=usePositions();
   const notify=text=>{const id=Date.now()+Math.random(); setToasts(t=>[...t,{id,text}]); setTimeout(()=>setToasts(t=>t.filter(x=>x.id!==id)),8000);};
-  useAlertEngine(alerts, setAlerts, quotes, (a, muted)=>notify(`${a.symbol} alert · ${a.message} · last ${fmt(a.price)}${muted?" (sound blocked by the browser until you click the page)":""}`));
+  const onQuotes=useAlertEngine(alerts, setAlerts, (a, muted)=>notify(`${a.symbol} alert · ${a.message} · last ${fmt(a.price)}${muted?" (sound blocked by the browser until you click the page)":""}`));
+  const quotes=useQuotes(quoteSymbols, onQuotes);
 
   function patch(i,changes) {
     set(old=>({...old,active:i,panes:old.panes.map((p,j)=>{
@@ -233,7 +229,7 @@ export default function ChartWorkspace({account, accountError, onOpenBuilder}) {
   const pickSymbol = (i, symbol) => { patch(i,{symbol}); set(old=>({...old, recent:[symbol, ...old.recent.filter(x=>x!==symbol)].slice(0,8)})); setSelected(null); };
   const addWatch = symbol => set(old=>old.watchlist.includes(symbol)?old:({...old, watchlist:[...old.watchlist, symbol]}));
   const chooseTool = name => { setTool(name); if(DRAWING_NAMES.includes(name)) set(old=>({...old,lastTool:name})); if(name!=="Pan" && name!=="Crosshair"){setLocked(false);setHidden(false);} };
-  const lastPrice = () => activeBars?.at(-1)?.close ?? null;
+  const lastPrice = () => activeData.archived ? null : activeData.bars?.at(-1)?.close ?? null;
   const resetPane = i => setResets(r=>({...r,[i]:(r[i]||0)+1}));
   const drawingsOf = p => symbolDrawings(p);
   const saveDrawings = (i, items) => { const p=s.panes[i]; patch(i,{drawings:{...p.drawings,[p.symbol]:items}}); };
@@ -270,6 +266,7 @@ export default function ChartWorkspace({account, accountError, onOpenBuilder}) {
       <button ref={refs.type} className="cx-tool-btn" aria-label={"Chart type: "+s.settings.type} title={s.settings.type} aria-expanded={open==="type"} onClick={()=>setOpen(open==="type"?null:"type")}><Icon name={TYPE_ICON[s.settings.type]||"candles"} size={18}/></button>
       <button className="cx-tool-btn" aria-expanded={open==="indicators"} onClick={()=>setOpen("indicators")}>ƒx Indicators</button>
       <button className="cx-tool-btn" onClick={()=>setAlertDraft({symbol:active.symbol, price:lastPrice()})}><Icon name="bell"/> Alert</button>
+      <button className="cx-tool-btn" aria-haspopup="dialog" onClick={()=>setOpen("saved-minutes")}>Saved 1m</button>
     </div>
     <div className="cx-tools">
       {s.favoriteTools.length>0 && <div className="cx-favorites" role="toolbar" aria-label="Favorite drawing tools">{s.favoriteTools.map(name=><button key={name} title={name} aria-label={"Favorite: "+name} aria-pressed={tool===name} onClick={()=>chooseTool(name)}>{toolIcon[name]}</button>)}</div>}
@@ -277,7 +274,7 @@ export default function ChartWorkspace({account, accountError, onOpenBuilder}) {
       <button aria-pressed={s.side} onClick={()=>set({...s,side:!s.side})}>Watchlist</button>
       <button aria-pressed={s.bottom} onClick={()=>set({...s,bottom:!s.bottom})}>Positions</button>
       <button className="cx-icon-btn" aria-label="Chart settings" title="Chart settings" onClick={()=>setOpen("settings")}><Icon name="gear"/></button>
-      {activeData.bars && <span className={"cx-source "+(live&&!activeData.stale?"live":"sample")} title={activeData.note || undefined}>{!live?"Sample market data":activeData.stale?"Tastytrade · stale, refresh failed":"Live · Tastytrade"}</span>}</div></div>
+      {activeData.bars && <span className={"cx-source "+(live&&!activeData.stale?"live":"sample")} title={activeData.note || undefined}>{activeData.archived?"Saved 1m history":!live?"Sample market data":activeData.stale?"Tastytrade · stale":activeData.streaming?"Tick by tick · Tastytrade":"Candle history · Tastytrade"}</span>}</div></div>
     {activeData.bars && !live && <div className="cx-banner" role="status">Showing fixed sample candles, not market data{activeData.note?" · "+activeData.note:""}</div>}
     <div className="cx-body"><div className="cx-rail" role="group" aria-label="Chart tools">
       {[["Crosshair",toolIcon.Crosshair],["Pan",toolIcon.Pan]].map(([name,icon])=><button key={name} title={name} aria-label={name} aria-pressed={tool===name} onClick={()=>chooseTool(name)}>{icon}</button>)}
@@ -292,7 +289,6 @@ export default function ChartWorkspace({account, accountError, onOpenBuilder}) {
         const updateSel = changes => saveDrawings(i, drawingsOf(p).map(d=>d.id===selected?{...d,...changes}:d));
         return <ChartPane key={i} index={i} pane={p} selected={s.active===i} tool={tool} positions={positions} settings={s.settings} onSettings={setSettings}
           alerts={alerts.filter(a=>a.symbol===p.symbol && (a.active || a.status==="Triggered"))} resetToken={resets[i]}
-          liveQuote={liveQuoteFor(p.symbol)}
           onActivate={()=>set(old=>old.active===i?old:{...old,active:i})} patch={changes=>patch(i,changes)}
           onSearch={()=>setSearch({target:i, query:""})} onEditStudy={id=>setEditStudy({pane:i,id})}
           onContextMenu={info=>setCtx({...info, pane:i})}
@@ -311,9 +307,10 @@ export default function ChartWorkspace({account, accountError, onOpenBuilder}) {
         alerts={alerts} onRearm={id=>setAlerts(list=>list.map(a=>a.id===id?rearm(a):a))}
         onRemoveAlert={id=>setAlerts(list=>list.filter(a=>a.id!==id))}/>}</div>
     {s.side && <SidePanel active={active} watchlist={s.watchlist} onPick={symbol=>pickSymbol(s.active, symbol)} onAdd={()=>setSearch({target:"watch", query:""})}
-      onRemove={symbol=>set(old=>({...old, watchlist:old.watchlist.filter(x=>x!==symbol)}))} quotes={quotes} bars={activeBars} live={live}/>}</div>
-    <footer className="cx-status">Eastern time · {live?"Candles from Tastytrade, refreshed automatically":"Sample market data"} · Alt T/H/F draw · Alt A alert · Alt R reset · type to search</footer>
+      onRemove={symbol=>set(old=>({...old, watchlist:old.watchlist.filter(x=>x!==symbol)}))} quotes={quotes} bars={activeData.bars} live={live} archived={activeData.archived}/>}</div>
+    <footer className="cx-status">Eastern time · {activeData.archived?"Saved regular-session minutes":live?(activeData.streaming?"Live trades from Tastytrade":"Candle history from Tastytrade"):"Sample market data"} · Alt T/H/F draw · Alt A alert · Alt R reset · type to search</footer>
 
+    {open==="saved-minutes" && <SavedMinutesDialog key={active.symbol} symbol={active.symbol} onClose={()=>setOpen(null)}/>}
     <SymbolSearch open={!!search} onClose={()=>setSearch(null)} initialQuery={search?.query || ""} recent={s.recent}
       target={search?.target==="watch" ? "the watchlist" : "chart "+((search?.target ?? 0)+1)}
       onPick={symbol=>search?.target==="watch" ? addWatch(symbol) : pickSymbol(search.target, symbol)} onAddWatch={addWatch}/>

@@ -6,7 +6,7 @@
 // served by the backend itself (packaged desktop app), so it's same-origin ("").
 // `import.meta.env.DEV` is statically replaced at build time, so the dev URL is
 // dead-code-eliminated from the bundle.
-const API_BASE = import.meta.env.DEV ? "http://localhost:8000" : "";
+const API_BASE = import.meta.env?.DEV ? "http://localhost:8000" : "";
 
 // Shared caller token for the dangerous mutating routes (arm live orders, kill,
 // activate, resume, credential-write). Stored locally and sent as X-App-Token; the
@@ -67,8 +67,10 @@ export const api = {
   account: () => request("/api/account"),
   marketStatus: () => request("/api/market/status"),
   marketOverview: () => request("/api/market/overview"),
-  marketBars: (symbol, interval) =>
-    request(`/api/market/bars?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}`),
+  marketBars: (symbol, interval, recover = false) =>
+    request(`/api/market/bars?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}${recover ? "&recover=true" : ""}`),
+  savedMinutes: (symbol, day) =>
+    request(`/api/market/minutes?${new URLSearchParams(day ? { symbol, day } : { symbol })}`),
   marketQuotes: (symbols) =>
     request(`/api/market/quotes?symbols=${encodeURIComponent(symbols.join(","))}`),
   positions: () => request("/api/positions"),

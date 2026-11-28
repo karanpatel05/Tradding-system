@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from sqlalchemy import (JSON, Boolean, Date, DateTime, Float, Integer, String, Text,
+from sqlalchemy import (JSON, BigInteger, Boolean, Date, DateTime, Float, Integer, String, Text,
                         UniqueConstraint, event)
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -17,6 +17,28 @@ from app.db.base import Base
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class MinuteArchiveSymbol(Base):
+    """First eligible and last fully archived New York session for one symbol."""
+
+    __tablename__ = "minute_archive_symbols"
+    symbol: Mapped[str] = mapped_column(String(10), primary_key=True)
+    first_day: Mapped[date | None] = mapped_column(Date)
+    completed_day: Mapped[date | None] = mapped_column(Date)
+
+
+class MinuteBar(Base):
+    """Provider OHLCV for one exchange minute, keyed by UTC start in milliseconds."""
+
+    __tablename__ = "market_bars_1m"
+    symbol: Mapped[str] = mapped_column(String(10), primary_key=True)
+    time: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    open: Mapped[float] = mapped_column(Float)
+    high: Mapped[float] = mapped_column(Float)
+    low: Mapped[float] = mapped_column(Float)
+    close: Mapped[float] = mapped_column(Float)
+    volume: Mapped[float] = mapped_column(Float)
 
 
 class StrategyState(Base):

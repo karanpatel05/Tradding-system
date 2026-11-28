@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 // Price alerts for the chart. They live in this browser, are checked against fresh
 // live quotes while the chart is open, and only notify: nothing here places orders.
@@ -114,8 +114,23 @@ export function rearm(alert, now = Date.now()) {
   return {...alert, active: true, status: "Active", expires: alert.expiry === "never" ? null : sessionCloseAfter(now)};
 }
 
-export function useAlertEngine(alerts, setAlerts, quotes, notify) {
+export function stepAlertTicks(alerts, prev, ticks, now = Date.now()) {
+  const original = alerts;
+  const fired = [];
+  for (const { symbol, price, updatesPrice } of ticks) {
+    if (updatesPrice === false) continue;
+    const step = stepAlerts(alerts, prev, { live: true, quotes: { [symbol]: { price } } }, now);
+    if (step.changed) alerts = step.alerts;
+    prev = step.prev;
+    fired.push(...step.fired);
+  }
+  return { alerts, prev, fired, changed: original !== alerts };
+}
+
+export function useAlertEngine(alerts, setAlerts, notify) {
   const prev = useRef({});
+  const latest = useRef(null);
+  latest.current = { alerts, notify };
   // Browsers only allow audio after a user gesture. After a reload, unlock it on the
   // first click or key press while any sound alert is active.
   const wantsSound = alerts.some(a => a.active && a.sound);
@@ -126,14 +141,21 @@ export function useAlertEngine(alerts, setAlerts, quotes, notify) {
     window.addEventListener("keydown", unlock, {once: true, capture: true});
     return () => { window.removeEventListener("pointerdown", unlock, true); window.removeEventListener("keydown", unlock, true); };
   }, [wantsSound]);
-  useEffect(() => {
-    const step = stepAlerts(alerts, prev.current, quotes);
+  // Process the batch on delivery so even two crossings between React paints
+  // can fire. Keep the resulting alert state for another batch in the same turn.
+  return useCallback((quotes, ticks) => {
+    const step = ticks
+      ? stepAlertTicks(latest.current.alerts, prev.current, ticks)
+      : stepAlerts(latest.current.alerts, prev.current, quotes);
     prev.current = step.prev;
-    if (step.changed) setAlerts(step.alerts);
+    if (step.changed) {
+      latest.current.alerts = step.alerts;
+      setAlerts(step.alerts);
+    }
     step.fired.forEach(a => {
       const played = a.sound ? beep() : false;
       // A sound-only alert that cannot play (audio still locked) still shows a toast.
-      if (a.inApp || (a.sound && !played)) notify(a, a.sound && !played);
+      if (a.inApp || (a.sound && !played)) latest.current.notify(a, a.sound && !played);
     });
-  }, [quotes]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [setAlerts]);
 }

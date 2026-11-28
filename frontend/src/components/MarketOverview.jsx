@@ -1,5 +1,13 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
+import { subscribeMarketTicks } from "../hooks/marketTicks.js";
+
+const tradeTime = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York", hourCycle: "h23",
+  hour: "2-digit", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3,
+});
+const tradePrice = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+const tradeSize = new Intl.NumberFormat("en-US", { maximumFractionDigits: 8 });
 
 const fmt = (n, d = 2) =>
   n === null || n === undefined
@@ -30,12 +38,12 @@ function Ticker({ ix, featured }) {
       <div className="ticker-last">{fmt(ix.last)}</div>
       {hasData ? (
         <div className="ticker-changes">
-          <span className={`ticker-chg ${signClass(ix.change)}`}>
-            {ix.change >= 0 ? "▲" : "▼"} {fmt(Math.abs(ix.change ?? 0))}
+          {ix.change != null && <span className={`ticker-chg ${signClass(ix.change)}`}>
+            {ix.change >= 0 ? "▲" : "▼"} {fmt(Math.abs(ix.change))}
             {ix.change_pct !== null && ix.change_pct !== undefined && (
               <span className="ticker-chg-pct"> ({pct(ix.change_pct)})</span>
             )}
-          </span>
+          </span>}
           {ix.week_change_pct !== null && ix.week_change_pct !== undefined && (
             <span className={`ticker-week ${signClass(ix.week_change_pct)}`}>
               1W {pct(ix.week_change_pct)}
@@ -49,12 +57,8 @@ function Ticker({ ix, featured }) {
   );
 }
 
-// Market-overview hero: live index board shown front-and-centre once the session
-// is connected to the market. Prices arrive **streamed** via the WebSocket snapshot
-// (`snapshot.market_overview`), updated continuously server-side from a persistent
-// DXLink feed. Falls back to polling the REST endpoint only if the socket hasn't
-// delivered an overview yet (initial render, or a stream hiccup) — so the board
-// always shows something.
+// The overview supplies reference prices and weekly returns. While the tape
+// is connected, newer last sales take precedence over its periodic snapshots.
 export default function MarketOverview({ snapshot }) {
   const streamed = snapshot?.market_overview;
   const [polled, setPolled] = useState(null);
@@ -87,25 +91,50 @@ export default function MarketOverview({ snapshot }) {
 
   const overview = streamed || polled;
   const indices = overview?.indices || [];
-  const live = overview?.data_available;
+  const symbols = indices.map(ix => ix.symbol).join(",");
+  const [latest, setLatest] = useState({});
+  const [recent, setRecent] = useState([]);
+  const [tradeStatus, setTradeStatus] = useState("offline");
+  useEffect(() => {
+    if (!symbols) return;
+    let sequence = 0;
+    setLatest({});
+    setRecent([]);
+    return subscribeMarketTicks(symbols.split(","), ticks => {
+      setTradeStatus("streaming");
+      setLatest(previous => {
+        const next = { ...previous };
+        for (const tick of ticks) {
+          if (tick.updatesPrice === false) continue;
+          if (!next[tick.symbol] || tick.time >= next[tick.symbol].time) next[tick.symbol] = tick;
+        }
+        return next;
+      });
+      const rows = ticks.slice(-10).map(tick => ({ ...tick, id: ++sequence })).reverse();
+      setRecent(previous => [...rows, ...previous].slice(0, 10));
+    }, ready => {
+      setTradeStatus(ready ? "waiting" : "offline");
+      if (!ready) setLatest({});
+    });
+  }, [symbols]);
+  const hasTicks = tradeStatus === "streaming";
+  const regularSession = overview?.status?.session === "regular";
+  const feedLabel = hasTicks && regularSession ? "Live trades"
+    : tradeStatus === "waiting" && regularSession ? "Waiting for trades"
+    : overview?.data_available || hasTicks ? "Last prices"
+    : loading ? "Connecting…" : "Unavailable";
 
   return (
     <section className="overview card">
       <div className="overview-head">
         <h2>Market Overview</h2>
-        <span className={`feed-badge ${live ? "live" : ""}`}>
+        <span className={`feed-badge ${hasTicks && regularSession ? "live" : ""}`}>
           <span className="dot" />{" "}
-          {live
-            ? overview?.streaming
-              ? "Live · streaming"
-              : "Market data"
-            : loading
-              ? "Connecting…"
-              : "Unavailable"}
+          {feedLabel}
         </span>
       </div>
 
-      {overview?.note && (
+      {overview?.note && !hasTicks && (
         <div className="muted small overview-note">{overview.note}</div>
       )}
 
@@ -114,15 +143,29 @@ export default function MarketOverview({ snapshot }) {
       ) : (
         <div className="ticker-board">
           <div className="ticker-row">
-            {indices.map((ix) => (
-              <Ticker key={ix.symbol} ix={ix} />
-            ))}
+            {indices.map(ix => {
+              const print = hasTicks && latest[ix.symbol];
+              const change = print && ix.prev_close > 0 ? print.price - ix.prev_close : null;
+              const row = print ? { ...ix, last: print.price, change,
+                change_pct: change === null ? null : change / ix.prev_close } : ix;
+              return <Ticker key={ix.symbol} ix={row} />;
+            })}
             {indices.length === 0 && (
               <p className="muted small">
                 Market quotes are unavailable. Check the market data connection.
               </p>
             )}
           </div>
+          {indices.length > 0 && <details className="overview-trades">
+            <summary>Recent trades</summary>
+            {recent.length ? <table>
+              <thead><tr><th>Time (ET)</th><th>Symbol</th><th>Price</th><th>Shares</th></tr></thead>
+              <tbody>{recent.map(tick => <tr key={tick.id}>
+                <td>{tradeTime.format(tick.time)}</td><td>{tick.symbol}</td>
+                <td>{tradePrice.format(tick.price)}</td><td>{tradeSize.format(tick.size)}</td>
+              </tr>)}</tbody>
+            </table> : <p className="muted small">Regular-session trades appear here as they arrive.</p>}
+          </details>}
         </div>
       )}
     </section>

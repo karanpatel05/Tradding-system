@@ -637,6 +637,26 @@ select:focus {
 .overview-note {
   font-size: 11px;
 }
+.overview-trades {
+  margin-top: 8px;
+  border-top: 1px solid #cedae8;
+  padding-top: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.overview-trades summary {
+  width: fit-content;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+.overview-trades table {
+  margin-top: 8px;
+  width: 100%;
+}
+.overview-trades td:nth-last-child(-n+2),
+.overview-trades th:nth-last-child(-n+2) {
+  text-align: right;
+}
 .connections-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

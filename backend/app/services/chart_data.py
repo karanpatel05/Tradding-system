@@ -13,10 +13,11 @@ import asyncio
 import logging
 import re
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time as daytime, timedelta, timezone
 
 from app.marketdata.facade import bars as facade_bars, stock_quotes as facade_stock_quotes
-from app.services.market import get_market_status
+from app.services import minute_store
+from app.services.market import ET, REGULAR_OPEN, get_market_status, regular_session_close
 
 logger = logging.getLogger("trading.chart_data")
 
@@ -25,6 +26,7 @@ BAR_LOOKBACK_DAYS = {"1m": 3, "5m": 10, "15m": 30, "1d": 400}
 # Live strategies fetch their bars through the same one-at-a-time candle collector,
 # so chart requests are cached long enough that several panes and tabs share one fetch.
 BARS_TTL_SECONDS = 45.0
+RECOVERY_TTL_SECONDS = 2.0
 MAX_QUOTE_SYMBOLS = 20
 
 _SYMBOL = re.compile(r"^[A-Z][A-Z0-9.]{0,9}$")
@@ -41,6 +43,49 @@ def normalize_symbol(raw: str) -> str:
     if not _SYMBOL.match(symbol):
         raise ChartDataError(f"Invalid symbol: {raw!r}")
     return symbol
+
+
+def _ms(local: datetime) -> int:
+    return int(local.timestamp() * 1000)
+
+
+def _regular_bounds(day: date) -> tuple[int | None, int | None]:
+    close = regular_session_close(day)
+    if close is None:
+        return None, None
+    return _ms(datetime.combine(day, REGULAR_OPEN, ET)), _ms(close)
+
+
+async def saved_minutes(symbol: str, day: date | None = None) -> dict:
+    """One archived New York date, including extended hours. Reads never subscribe."""
+    symbol = normalize_symbol(symbol)
+    if day is None:
+        latest = await minute_store.latest_minute(symbol)
+        if latest is not None:
+            day = datetime.fromtimestamp(latest / 1000, ET).date()
+    result = {"symbol": symbol, "day": day.isoformat() if day else None, "interval": "1m",
+              "source": "archive", "bars": [], "regular_open_ms": None, "regular_close_ms": None}
+    if day is None:
+        return result
+    if day == date.max:
+        raise ChartDataError("Session date is out of range")
+    start = datetime.combine(day, daytime.min, ET)
+    result["bars"] = await minute_store.read_minutes(symbol, _ms(start), _ms(start + timedelta(days=1)))
+    result["regular_open_ms"], result["regular_close_ms"] = _regular_bounds(day)
+    return result
+
+
+async def _saved_regular_bars(symbol: str) -> list[dict]:
+    latest = await minute_store.latest_minute(symbol)
+    if latest is None:
+        return []
+    last_day = datetime.fromtimestamp(latest / 1000, ET).date()
+    # Look behind a weekend, holiday or pre-market-only session when the feed is down.
+    first_day = last_day - timedelta(days=7)
+    start = datetime.combine(first_day, daytime.min, ET)
+    rows = await minute_store.read_minutes(symbol, _ms(start), latest + 1)
+    windows = [_regular_bounds(first_day + timedelta(days=i)) for i in range(8)]
+    return [bar for bar in rows if any(lo is not None and lo <= bar["time"] < hi for lo, hi in windows)]
 
 
 def _clean_bar(bar: dict) -> dict | None:
@@ -60,22 +105,25 @@ def _clean_bar(bar: dict) -> dict | None:
     return out
 
 
-async def get_bars(symbol: str, interval: str, now: float | None = None) -> dict:
+async def get_bars(symbol: str, interval: str, now: float | None = None,
+                   *, recover: bool = False) -> dict:
     """Candle history for one symbol, oldest first. Never raises for feed problems."""
     symbol = normalize_symbol(symbol)
     if interval not in BAR_LOOKBACK_DAYS:
         raise ChartDataError(f"Unsupported interval: {interval!r}")
     key = (symbol, interval)
     clock = time.monotonic if now is None else (lambda: now)
+    # Refill a gap promptly. Tabs recovering together can share the same fetch.
+    ttl = RECOVERY_TTL_SECONDS if recover else BARS_TTL_SECONDS
 
     cached = _bars_cache.get(key)
-    if cached and clock() - cached[0] < BARS_TTL_SECONDS:
+    if cached and clock() - cached[0] < ttl:
         return cached[1]
 
     lock = _bars_locks.setdefault(key, asyncio.Lock())
     async with lock:
         cached = _bars_cache.get(key)  # another request may have filled it meanwhile
-        if cached and clock() - cached[0] < BARS_TTL_SECONDS:
+        if cached and clock() - cached[0] < ttl:
             return cached[1]
         start = datetime.now(timezone.utc) - timedelta(days=BAR_LOOKBACK_DAYS[interval])
         result = {"symbol": symbol, "interval": interval, "bars": [], "source": None, "note": None}
@@ -84,22 +132,31 @@ async def get_bars(symbol: str, interval: str, now: float | None = None) -> dict
         except Exception as exc:  # noqa: BLE001 - feed problems degrade, never 500
             logger.warning("Bar fetch failed for %s %s: %s", symbol, interval, exc)
             result["note"] = "Market data feed temporarily unavailable."
-            return result  # failures are not cached, so the next poll retries
+            raw = []
         bars = [b for b in (_clean_bar(x) for x in raw or []) if b]
         bars.sort(key=lambda b: b["time"])
         result["bars"] = bars
         if not bars:
+            if interval == "1m":
+                try:
+                    saved = await _saved_regular_bars(symbol)
+                except Exception as exc:  # noqa: BLE001 - archive failure should not disable chart fallback
+                    logger.warning("Saved minutes unavailable for %s: %s", symbol, exc)
+                    saved = []
+                if saved:
+                    result.update(bars=saved, source="archive", note="Showing saved regular-session minutes.")
+                    return result
             # Not cached: an empty answer usually means the feed is still (re)connecting,
             # and caching it would pin every chart pane to sample data for the TTL.
-            result["note"] = "No candle data returned (feed not connected or market closed)."
+            result["note"] = result["note"] or "No candle data returned (feed not connected or market closed)."
             return result
         result["source"] = "tastytrade"
         _bars_cache[key] = (clock(), result)
         return result
 
 
-async def get_quotes(raw_symbols: str) -> dict:
-    """Last price and change from previous close for a short watchlist."""
+def parse_symbols(raw_symbols: str) -> list[str]:
+    """Validate and deduplicate the symbols in a market-data request."""
     symbols: list[str] = []
     for part in (raw_symbols or "").split(","):
         if part.strip():
@@ -110,6 +167,12 @@ async def get_quotes(raw_symbols: str) -> dict:
         raise ChartDataError("No symbols given")
     if len(symbols) > MAX_QUOTE_SYMBOLS:
         raise ChartDataError(f"At most {MAX_QUOTE_SYMBOLS} symbols")
+    return symbols
+
+
+async def get_quotes(raw_symbols: str) -> dict:
+    """Last price and change from previous close for a short watchlist."""
+    symbols = parse_symbols(raw_symbols)
     try:
         quotes = await facade_stock_quotes(symbols, timeout=2.5)
     except Exception as exc:  # noqa: BLE001

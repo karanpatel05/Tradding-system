@@ -1,11 +1,5 @@
-"""Realtime WebSocket push channel.
-
-The push channel is gated exactly like REST: the session cookie is validated on
-connect and the socket is rejected (1008) when it's missing/invalid. This closes
-the easy mistake of gating HTTP but leaving the WS feed open.
-
-Pushes a dashboard snapshot — market status, active strategies, positions — on a
-fixed cadence.
+"""The dashboard WebSocket sends account and strategy snapshots on a fixed cadence.
+The public market WebSocket streams only the requested symbols' time-and-sales data.
 """
 
 from __future__ import annotations
@@ -13,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import anyio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from sqlalchemy import select
@@ -21,19 +16,59 @@ from app.auth.gate import APP_SESSION_COOKIE, is_authenticated
 from app.config import get_settings
 from app.engine.manager import engine_manager
 from app.services.alpaca_status import alpaca_ready_cached
+from app.services.chart_data import ChartDataError, parse_symbols
 from app.services.market import get_market_status
 from app.services.market_stream import market_stream
 from app.strategies.registry import list_strategies
 from app.db.base import session_scope
 from app.db.models import StrategyState, TradeRecord
 from app.broker.account import balances as get_account_summary, positions as get_positions
+from app.tastytrade.streamer import get_streamer, TickSubscription
 
 logger = logging.getLogger("trading.ws")
 
 router = APIRouter()
 
-PUSH_INTERVAL = 2       # seconds between snapshots (prices stream at this cadence)
+PUSH_INTERVAL = 2       # seconds between portfolio snapshots
 POSITIONS_EVERY = 5     # refresh positions every Nth tick (they hit the API)
+
+
+async def _send_market_ticks(websocket: WebSocket, subscription: TickSubscription) -> None:
+    if not subscription.gapped:
+        await websocket.send_json({"type": "status", "connected": True})
+        while batch := await subscription.next_batch():
+            await websocket.send_json({"type": "ticks", "ticks": batch})
+    await websocket.send_json({"type": "status", "connected": False})
+    await websocket.close(code=1013, reason="Market tick stream interrupted")
+
+
+@router.websocket("/ws/market")
+async def market_ticks(websocket: WebSocket, symbols: str = "") -> None:
+    """Public time-and-sales stream for the chart and market overview."""
+    try:
+        requested = parse_symbols(symbols)
+    except ChartDataError:
+        await websocket.close(code=1008, reason="Invalid market symbol list")
+        return
+
+    await websocket.accept()
+    async with get_streamer().listen_ticks(requested) as subscription:
+        async with anyio.create_task_group() as group:
+            async def publish():
+                try:
+                    await _send_market_ticks(websocket, subscription)
+                except WebSocketDisconnect:
+                    pass
+                finally:
+                    group.cancel_scope.cancel()
+
+            group.start_soon(publish)
+            # The browser can leave long before a quiet symbol trades again.
+            try:
+                while (await websocket.receive())["type"] != "websocket.disconnect":
+                    pass
+            finally:
+                group.cancel_scope.cancel()
 
 
 async def _strategies_snapshot() -> list[dict]:

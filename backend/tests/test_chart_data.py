@@ -1,11 +1,22 @@
 """Chart screen data: candle history and watchlist quotes degrade, validate and cache."""
-import pytest
+from contextlib import asynccontextmanager
+from datetime import datetime
+from types import SimpleNamespace
 
-from app.services import chart_data
+import httpx
+import pytest
+from fastapi import FastAPI
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from app.services import chart_data, minute_store
 
 
 @pytest.fixture(autouse=True)
-def _clear_cache():
+def _clear_cache(monkeypatch):
+    async def no_saved_minute(symbol):
+        return None
+
+    monkeypatch.setattr(chart_data, "minute_store", SimpleNamespace(latest_minute=no_saved_minute))
     chart_data._bars_cache.clear()
     chart_data._bars_locks.clear()
     yield
@@ -43,8 +54,11 @@ async def test_bars_are_cached_briefly(monkeypatch):
     await chart_data.get_bars("SPY", "1m", now=100.0)
     await chart_data.get_bars("SPY", "1m", now=110.0)
     assert len(calls) == 1
-    await chart_data.get_bars("SPY", "1m", now=100.0 + chart_data.BARS_TTL_SECONDS + 1)
+    await chart_data.get_bars("SPY", "1m", now=110.0, recover=True)
+    await chart_data.get_bars("SPY", "1m", now=110.5, recover=True)
     assert len(calls) == 2
+    await chart_data.get_bars("SPY", "1m", now=110.0 + chart_data.BARS_TTL_SECONDS + 1)
+    assert len(calls) == 3
 
 
 @pytest.mark.asyncio
@@ -125,6 +139,63 @@ async def test_empty_result_is_not_cached(monkeypatch):
     first = await chart_data.get_bars("QQQ", "5m", now=100.0)
     second = await chart_data.get_bars("QQQ", "5m", now=101.0)
     assert first["bars"] == [] and len(second["bars"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_public_minutes_after_restart_and_regular_only_chart_fallback(tmp_path, monkeypatch):
+    from app.routers.dashboard import router
+
+    url = f"sqlite+aiosqlite:///{tmp_path / 'saved.db'}"
+
+    def open_store():
+        engine = create_async_engine(url)
+        sessions = async_sessionmaker(engine)
+
+        @asynccontextmanager
+        async def scope():
+            async with sessions.begin() as session:
+                yield session
+
+        monkeypatch.setattr(minute_store, "engine", engine)
+        monkeypatch.setattr(minute_store, "session_scope", scope)
+        return engine
+
+    def row(day, hour, close):
+        t = datetime.fromisoformat(f"2026-11-{day}T{hour}:00-05:00")
+        return _bar(int(t.timestamp() * 1000), close, volume=10.5)
+
+    # The final two prints on November 27 are after the 13:00 early close.
+    previous = row(25, "19:59", 100)
+    today = [row(27, hm, 101 + i) for i, hm in enumerate(["04:15", "12:59", "13:00", "19:59"])]
+    writer = open_store()
+    await minute_store.init_archive()
+    await minute_store.save_minutes("SPY", [previous, *today])
+    await writer.dispose()
+
+    reader = open_store()
+    monkeypatch.setattr(chart_data, "minute_store", minute_store)
+
+    async def offline(*args):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(chart_data, "facade_bars", offline)
+    app = FastAPI()
+    app.include_router(router)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            latest = (await client.get("/api/market/minutes", params={"symbol": "spy"})).json()
+            assert (latest["day"], latest["source"], latest["bars"]) == ("2026-11-27", "archive", today)
+            assert latest["regular_close_ms"] == today[2]["time"]
+            earlier = await client.get("/api/market/minutes", params={"symbol": "SPY", "day": "2026-11-25"})
+            assert earlier.json()["bars"] == [previous]
+            missing = await client.get("/api/market/minutes", params={"symbol": "ABC"})
+            assert missing.json()["bars"] == [] and missing.json()["day"] is None
+            fallback = (await client.get("/api/market/bars", params={"symbol": "SPY", "interval": "1m"})).json()
+            assert fallback["source"] == "archive" and fallback["bars"] == [today[1]]
+            assert (await client.get("/api/market/minutes", params={"symbol": "../bad"})).status_code == 400
+            assert (await client.get("/api/market/minutes", params={"symbol": "SPY", "day": "bad"})).status_code == 422
+    finally:
+        await reader.dispose()
 
 
 @pytest.mark.asyncio
