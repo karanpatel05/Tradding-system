@@ -185,6 +185,15 @@ Unlike the runner it has **no ML model**: every spread is held to the 15:50 flat
   positions Alpaca reports. The daemon may keep trading real money on Tastytrade.
 - Sessions: `GET /api/strategies/qqq_credit_spread/sessions`. Settings: `QQQ_SPREAD_*` in
   `backend/app/config.py` (grace, re-price cadence, close times, sizing).
+- Open **Strategies → QQQ First-Hour Credit Spread → Backtest results** for the daily
+  replay from February 1, 2024. It prices one spread with historical Alpaca minute bars,
+  a $0.01 full bid–ask spread per leg and zero commission. The CSV identifies modeled
+  intrinsic exits, rule skips, missing entry data and unresolved exits.
+- The trading system writes `backend/data_cache/qqq_credit_spread/daily_backtest.csv`
+  through the previous New York trading day. From `backend/`, run
+  `../.venv/bin/python -m scripts.refresh_qqq_backtest` to update it. On the installed
+  Mac, `python3 scripts/install_spy_backtest_refresh.py --strategy qqq` schedules a
+  daily 06:15 local refresh and catches up at login or wake.
 
 **SPY 0DTE Iron Fly** (`spy_iron_fly`) trades standard, physically delivered SPY ETF
 options on the tagged Alpaca paper account. Tastytrade supplies SPY trades and option quotes.

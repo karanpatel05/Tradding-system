@@ -97,10 +97,6 @@ def read() -> dict | None:
         return None
 
 
-def metadata(report: dict) -> dict:
-    return {k: report[k] for k in ("id", "kind", "label", "start", "end")}
-
-
 def downloads() -> list[dict]:
     base = f"/api/strategies/{KEY}/backtest/reports/{REPORT_ID}/files"
     return [{"filename": name, "label": label, "url": f"{base}/{name}"}

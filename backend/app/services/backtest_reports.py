@@ -1,4 +1,4 @@
-"""Read saved iron fly research and completed replays from the historical data cache."""
+"""Read saved options backtests and completed replays from the historical data cache."""
 
 from datetime import date
 from functools import lru_cache
@@ -9,6 +9,7 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.config import get_settings
+from app.services import qqq_backtest_report as qqq
 from app.services import spy_research_report as research
 
 logger = logging.getLogger("trading.backtest_reports")
@@ -107,18 +108,27 @@ def _metadata(report_id: str, label: str, report: _Report) -> dict:
             "end": max(report.days).isoformat(), "bars_minutes": report.bars_minutes}
 
 
+def _daily_metadata(report: dict) -> dict:
+    return {k: report[k] for k in ("id", "kind", "label", "start", "end")}
+
+
 def has_reports(key: str) -> bool:
+    if key == qqq.KEY:
+        return qqq.read() is not None
     if key == research.KEY and (research.read_period() or research.read()):
         return True
     return any(_read(key, path) is not None for _, path in _CATALOG.get(key, {}).values())
 
 
 def list_reports(key: str) -> list[dict]:
+    if key == qqq.KEY:
+        source = qqq.read()
+        return [_daily_metadata(source)] if source is not None else []
     reports = []
     if key == research.KEY:
         for source in (research.read_period(), research.read()):
             if source is not None:
-                reports.append(research.metadata(source))
+                reports.append(_daily_metadata(source))
     for report_id, (label, path) in _CATALOG.get(key, {}).items():
         report = _read(key, path)
         if report is not None:
@@ -127,6 +137,8 @@ def list_reports(key: str) -> list[dict]:
 
 
 def get_report(key: str, report_id: str) -> dict | None:
+    if key == qqq.KEY and report_id == qqq.REPORT_ID:
+        return qqq.read()
     if key == research.KEY and report_id == research.PERIOD_ID:
         return research.read_period()
     if key == research.KEY and report_id == research.REPORT_ID:
@@ -143,6 +155,8 @@ def get_report(key: str, report_id: str) -> dict | None:
 
 
 def report_file(key: str, report_id: str, filename: str) -> Path | None:
+    if key == qqq.KEY and report_id == qqq.REPORT_ID and filename == qqq.FILENAME:
+        return qqq.daily_csv_path() if qqq.read() is not None else None
     if key == research.KEY and report_id == research.PERIOD_ID and filename == research.PERIOD_CSV:
         return research.period_csv() if research.read_period() is not None else None
     if key == research.KEY and report_id == research.REPORT_ID and research.read() is not None:
