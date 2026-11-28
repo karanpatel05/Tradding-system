@@ -3,8 +3,8 @@
 # server — API + built UI on http://127.0.0.1:8765 — on login (quietly, no browser) and
 # restarts it if it exits. Re-running it replaces the agent (e.g. after moving the repo).
 #
-# It ALWAYS serves the `main` branch: scripts/run_live.sh keeps a service-owned worktree
-# (<repo>-live, detached at main) and refreshes it on every start, so switching branches
+# It ALWAYS serves GitHub's `main`: scripts/run_live.sh keeps a service-owned worktree
+# (<repo>-live, detached at origin/main) and pulls it from GitHub on every start, so switching branches
 # in the dev checkout never changes what the server runs. Data (.env, trading.db,
 # data_cache) stays in the repo's backend/.
 #
@@ -81,8 +81,8 @@ launchctl bootstrap "$GUI" "$PLIST"
 launchctl enable "$GUI/$LABEL" 2>/dev/null || true
 
 echo "==> Loaded LaunchAgent '$LABEL' (starts on login, restarts on exit)."
-echo "    Serves branch 'main' from $LIVE (refreshed on every restart)."
-echo "    After merging to main: launchctl kickstart -k $GUI/$LABEL"
+echo "    Serves GitHub's 'main' (origin/main, pulled on every restart) from $LIVE."
+echo "    After merging on GitHub: launchctl kickstart -k $GUI/$LABEL"
 echo "    Logs: $LOGDIR/trading-system.{out,err}.log"
 echo "    Status: launchctl print $GUI/$LABEL | head"
 echo "    Server: http://127.0.0.1:8765  (give it a few seconds to boot)"
