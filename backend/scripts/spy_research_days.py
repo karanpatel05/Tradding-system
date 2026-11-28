@@ -7,6 +7,7 @@ import httpx
 
 from app.options.blackscholes import bs_price, implied_vol
 from app.strategies.qqq_credit_spread.logic import occ_symbol
+from scripts.daily_backtest import historical_bars
 
 
 ET = ZoneInfo("America/New_York")
@@ -16,35 +17,16 @@ HALF_SPREAD = 0.005
 FEE = 0.035
 
 
-def _bars(client, path, **params):
-    """Alpaca pages across all requested symbols; only a successful final page completes the query."""
-    result = {}
-    seen = set()
-    while True:
-        response = client.get(path, params=params)
-        response.raise_for_status()
-        page = response.json()
-        for symbol, bars in (page["bars"] or {}).items():
-            result.setdefault(symbol, []).extend(bars)
-        token = page.get("next_page_token")
-        if not token:
-            return result
-        if token in seen:
-            raise ValueError("Repeated Alpaca bar pagination token")
-        seen.add(token)
-        params["page_token"] = token
-
-
 def _stock_bars(client, timeframe, span):
     query = dict(span, timeframe=timeframe, symbols="SPY", adjustment="raw", feed="sip")
     try:
-        data = _bars(client, "/v2/stocks/bars", **query)
+        data = historical_bars(client, "/v2/stocks/bars", **query)
     except httpx.HTTPStatusError as exc:
         # The Research study uses IEX when the account lacks SIP entitlement.
         if exc.response.status_code != 403:
             raise
         query["feed"] = "iex"
-        data = _bars(client, "/v2/stocks/bars", **query)
+        data = historical_bars(client, "/v2/stocks/bars", **query)
     return data.get("SPY", [])
 
 
@@ -103,13 +85,13 @@ def price_session(client: httpx.Client, session: dict) -> tuple[str | None, str 
     short_symbols = {k: occ_symbol(day, k, body, "SPY") for k in strikes}
     wing_symbols = {k: occ_symbol(day, k, strike, "SPY") for k, strike in strikes.items()}
     symbols = sorted([*short_symbols.values(), *wing_symbols.values()])
-    options = _bars(client, "/v1beta1/options/bars", timeframe="1Min", symbols=",".join(symbols), **span)
+    options = historical_bars(client, "/v1beta1/options/bars", timeframe="1Min", symbols=",".join(symbols), **span)
     if not any(_has_closing_bars(bars, close) for bars in options.values()):
         # An opening ATM fly can be far from the money by the close. Check the
         # closing ATM contracts before accepting a quiet wing or a missing entry
         # as genuine, in case the provider has only published part of the day.
         closing_atm = sorted(occ_symbol(day, k, round(spot_close), "SPY") for k in strikes)
-        check = _bars(client, "/v1beta1/options/bars", timeframe="1Min",
+        check = historical_bars(client, "/v1beta1/options/bars", timeframe="1Min",
                       symbols=",".join(closing_atm), **dict(span, start=(close - timedelta(minutes=5)).isoformat()))
         if not any(_has_closing_bars(bars, close) for bars in check.values()):
             raise ValueError(f"Incomplete SPY option closing data for {day}")

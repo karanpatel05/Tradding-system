@@ -20,6 +20,7 @@ const signedMoney = new Intl.NumberFormat("en-US", {
   style: "currency", currency: "USD", minimumFractionDigits: 0, maximumFractionDigits: 2, signDisplay: "exceptZero",
 });
 const sessionDate = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+const displayDate = (date) => sessionDate.format(new Date(date + "T12:00:00Z"));
 
 function ResearchFiles({ files, title }) {
   if (!files.length) return null;
@@ -35,8 +36,20 @@ function ResearchFiles({ files, title }) {
   );
 }
 
-export function ResearchPeriodReport({ report }) {
-  const { summary, sessions, missing_dates: missingDates } = report;
+function SessionDates({ dates, description }) {
+  if (!dates.length) return null;
+  return (
+    <details className="research-method">
+      <summary>{dates.length} {dates.length === 1 ? "session" : "sessions"} {description}</summary>
+      <p>{dates.map(displayDate).join(", ")}</p>
+    </details>
+  );
+}
+
+export function DailyBacktestReport({ report }) {
+  const { summary, sessions, missing_dates: missingDates, skipped_dates: skippedDates = [],
+    unresolved_dates: unresolvedDates = [], intrinsic_exits: intrinsicExits = 0 } = report;
+  const partial = unresolvedDates.length > 0;
   const curve = useMemo(() => {
     // The daily export records six decimals. Sum at its precision for the equity curve.
     let total = 0;
@@ -48,28 +61,37 @@ export function ResearchPeriodReport({ report }) {
   return (
     <div className="replay-report research-report">
       <p className="sd-card-meta">
-        From <time dateTime={report.start}>{sessionDate.format(new Date(report.start + "T12:00:00Z"))}</time> through{" "}
-        <time dateTime={report.end}>{sessionDate.format(new Date(report.end + "T12:00:00Z"))}</time>.
+        From <time dateTime={report.start}>{displayDate(report.start)}</time> through{" "}
+        <time dateTime={report.end}>{displayDate(report.end)}</time>.
         {" "}Updates daily through the previous trading day.
       </p>
-      <p className="research-method">
+      {report.kind === "research-period" ? <p className="research-method">
         The strategy opens one SPY iron fly with $10 wings and a 1.5× stop per short leg.
         Fills use a $0.01 full bid–ask spread ($0.005 per side) and a $0.035 fee per contract.
         Open legs are valued at intrinsic value at expiration.
-      </p>
+      </p> : <p className="research-method">{report.method}</p>}
       <dl className="replay-metrics">
-        <div><dt>Net P&amp;L</dt><dd className={tone(summary.total_pnl)}>{signedUsd(summary.total_pnl)}</dd></div>
-        <div><dt>Win rate</dt><dd>{summary.win_rate_pct == null ? "—" : `${summary.win_rate_pct.toFixed(2)}%`}</dd></div>
-        <div><dt>Max drawdown</dt><dd className={tone(summary.max_drawdown)}>{signedUsd(summary.max_drawdown)}</dd></div>
+        <div><dt>{partial ? "Net P&L on closed trades" : "Net P&L"}</dt><dd className={tone(summary.total_pnl)}>{signedUsd(summary.total_pnl)}</dd></div>
+        <div><dt>{partial ? "Win rate on closed trades" : "Win rate"}</dt><dd>{summary.win_rate_pct == null ? "—" : `${summary.win_rate_pct.toFixed(2)}%`}</dd></div>
+        <div><dt>Max drawdown</dt><dd className={tone(partial ? null : summary.max_drawdown)}>{signedUsd(partial ? null : summary.max_drawdown)}</dd></div>
         <div><dt>Winning trades</dt><dd>{summary.wins} <small>of {summary.trades}</small></dd></div>
       </dl>
-      {missingDates.length > 0 && (
+      {report.kind === "research-period" && missingDates.length > 0 && (
         <p className="research-method">
           {missingDates.length} {missingDates.length === 1 ? "session lacked" : "sessions lacked"} entry data
-          {" ("}{missingDates.map((d) => sessionDate.format(new Date(d + "T12:00:00Z"))).join(", ")}).
+          {" ("}{missingDates.map(displayDate).join(", ")}).
         </p>
       )}
-      <PerformanceCurve rows={curve} />
+      {report.kind === "daily-backtest" && <>
+        <SessionDates dates={missingDates} description="with missing data" />
+        <SessionDates dates={skippedDates} description="skipped under the trading rules" />
+        <SessionDates dates={unresolvedDates} description="with unresolved exits" />
+        {intrinsicExits > 0 && <p className="research-method">
+          {intrinsicExits} {intrinsicExits === 1 ? "spread used a modeled intrinsic-value exit" : "spreads used modeled intrinsic-value exits"}.
+        </p>}
+      </>}
+      {partial ? <p className="sd-outcome warn">Unresolved exits leave full-period P&amp;L and drawdown unknown.</p>
+        : <PerformanceCurve rows={curve} />}
       <ResearchFiles files={report.downloads} title="Daily results" />
     </div>
   );

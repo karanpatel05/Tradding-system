@@ -54,9 +54,8 @@ class QqqCreditSpreadStrategy(BaseStrategy):
         "No model and no earlier exit."
     )
     selection_criteria = "Fixed underlying: QQQ."
-    backtest_note = ("No in-app backtest: the app's backtester is equity-only. The strategy "
-                     "was validated by the external runner's backtester; review the in-app "
-                     "sessions (GET /api/strategies/qqq_credit_spread/sessions).")
+    backtest_note = ("Backtest results shows the daily QQQ first-hour spread replay with "
+                     "historical option prices and a modeled $0.01 full spread per leg.")
 
     daemon_label = "com.karan.spreadlive"
 

@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api.js";
 import ReplayReport from "./ReplayReport.jsx";
-import ResearchReport, { ResearchPeriodReport } from "./ResearchReport.jsx";
+import ResearchReport, { DailyBacktestReport } from "./ResearchReport.jsx";
 import SavedBacktest from "./SavedBacktest.jsx";
 
 const dateFormat = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
 const displayDate = (date) => dateFormat.format(new Date(date + "T12:00:00Z"));
 const DAILY_REPORT_POLL_MS = 15 * 60 * 1000;
-const reportTitles = { research: "Research backtest", "research-period": "SPY daily backtest" };
+const dailyTitles = { "research-period": "SPY daily backtest", "daily-backtest": "QQQ daily backtest" };
 
 function LoadError({ message, retry }) {
   return (
@@ -64,10 +64,10 @@ function Replay({ strategyKey, id, daily, onCatalogUpdate }) {
   const retry = () => { setError(""); setAttempt((n) => n + 1); };
   if (error && !report) return <LoadError message={error} retry={retry} />;
   if (!report) return <p className="bt-status" role="status">Loading saved report…</p>;
-  if (report.kind === "research-period") return <>
+  if (daily) return <>
     {error && <p role="status" className="bt-status">Could not refresh. Showing the last loaded report.{" "}
       <button className="btn tiny" onClick={retry}>Try again</button></p>}
-    <ResearchPeriodReport report={report} />
+    <DailyBacktestReport report={report} />
   </>;
   if (report.kind === "research") return <ResearchReport report={report} />;
   return <ReplayReport report={report} />;
@@ -77,12 +77,13 @@ function ReplayLibrary({ strategyKey, reports: initialReports }) {
   const [reports, setReports] = useState(initialReports);
   const [selectedId, setSelectedId] = useState(reports[0].id);
   const selected = reports.find((item) => item.id === selectedId);
+  const dailyTitle = dailyTitles[selected.kind];
   return (
     <>
       <div className="bt-report-head">
         <div>
-          <h2>{reportTitles[selected.kind] || "Historical replay"}</h2>
-          {selected.kind !== "research-period" && <p className="sd-card-meta">{displayDate(selected.start)} – {displayDate(selected.end)}</p>}
+          <h2>{dailyTitle || (selected.kind === "research" ? "Research backtest" : "Historical replay")}</h2>
+          {!dailyTitle && <p className="sd-card-meta">{displayDate(selected.start)} – {displayDate(selected.end)}</p>}
         </div>
         <label className="bt-report-select">
           Saved report
@@ -91,7 +92,7 @@ function ReplayLibrary({ strategyKey, reports: initialReports }) {
           </select>
         </label>
       </div>
-      <Replay key={selectedId} strategyKey={strategyKey} id={selectedId} daily={selected.kind === "research-period"} onCatalogUpdate={setReports} />
+      <Replay key={selectedId} strategyKey={strategyKey} id={selectedId} daily={Boolean(dailyTitle)} onCatalogUpdate={setReports} />
     </>
   );
 }

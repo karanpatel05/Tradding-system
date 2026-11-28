@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Install the SPY report's daily macOS user job with python3 scripts/install_spy_backtest_refresh.py."""
+"""Install a strategy's daily backtest refresh as a macOS user job."""
 
+import argparse
 import os
 import plistlib
 import subprocess
@@ -9,28 +10,27 @@ import time
 from pathlib import Path
 
 
-LABEL = "com.tradingsystem.spy-backtest-refresh"
-
-
-def job_config(library):
+def job_config(library, strategy="spy"):
+    label = f"com.tradingsystem.{strategy}-backtest-refresh"
+    module = f"refresh_{strategy}_backtest"
     with (library / "LaunchAgents/com.tradingsystem.web.plist").open("rb") as stream:
         web_env = plistlib.load(stream)["EnvironmentVariables"]
     repo = Path(web_env["TS_REPO"])
     backend = Path(web_env["TS_LIVE"]) / "backend"
     python = repo / ".venv/bin/python"
-    if not (backend / "scripts/refresh_spy_backtest.py").is_file() or not os.access(python, os.X_OK):
-        raise SystemExit(f"Install the release containing scripts.refresh_spy_backtest in {backend} first.")
+    if not (backend / f"scripts/{module}.py").is_file() or not os.access(python, os.X_OK):
+        raise SystemExit(f"Install the release containing scripts.{module} in {backend} first.")
     return {
-        "Label": LABEL,
-        "ProgramArguments": [str(python), "-u", "-m", "scripts.refresh_spy_backtest"],
+        "Label": label,
+        "ProgramArguments": [str(python), "-u", "-m", f"scripts.{module}"],
         "WorkingDirectory": str(backend),
         "EnvironmentVariables": {"HISTORY_CACHE_DIR": str(repo / "backend/data_cache")},
         "RunAtLoad": True,
         "StartCalendarInterval": {"Hour": 6, "Minute": 15},  # Mac's local timezone
         "KeepAlive": {"SuccessfulExit": False},
         "ThrottleInterval": 1800,
-        "StandardOutPath": str(library / f"Logs/{LABEL}.log"),
-        "StandardErrorPath": str(library / f"Logs/{LABEL}.err.log"),
+        "StandardOutPath": str(library / f"Logs/{label}.log"),
+        "StandardErrorPath": str(library / f"Logs/{label}.err.log"),
     }
 
 
@@ -53,16 +53,20 @@ def bootstrap(domain, path):
             return
         if attempt < 4:
             time.sleep(1)
-    raise RuntimeError(result.stderr.strip() or "Could not load the SPY report refresh job")
+    raise RuntimeError(result.stderr.strip() or "Could not load the daily report refresh job")
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--strategy", choices=("spy", "qqq"), default="spy")
+    args = parser.parse_args()
     library = Path.home() / "Library"
-    config = job_config(library)
-    path = library / f"LaunchAgents/{LABEL}.plist"
+    config = job_config(library, args.strategy)
+    label = config["Label"]
+    path = library / f"LaunchAgents/{label}.plist"
     (library / "Logs").mkdir(exist_ok=True)
     domain = f"gui/{os.getuid()}"
-    service = f"{domain}/{LABEL}"
+    service = f"{domain}/{label}"
     data = plistlib.dumps(config)
     previous = path.read_bytes() if path.exists() else None
     loaded = subprocess.run(["/bin/launchctl", "print", service], capture_output=True).returncode == 0
@@ -81,7 +85,7 @@ def main():
                 if loaded:
                     bootstrap(domain, path)
             raise
-    print(f"{LABEL} is installed. Refresh runs daily at 06:15 local time and catches up at login or wake.")
+    print(f"{label} is installed. Refresh runs daily at 06:15 local time and catches up at login or wake.")
     print(f"Refresh output goes to {config['StandardOutPath']}")
 
 
