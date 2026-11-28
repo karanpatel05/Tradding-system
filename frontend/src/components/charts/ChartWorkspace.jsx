@@ -29,6 +29,22 @@ const initialStudies = [
 const DRAWING_NAMES = DRAWING_GROUPS.flatMap(([,n])=>n);
 const toolIcon = Object.fromEntries(drawingTools);
 
+function RailGlyph({kind}) {
+  const common={viewBox:"0 0 24 24",width:22,height:22,fill:"none",stroke:"currentColor",strokeWidth:1.35,strokeLinecap:"round",strokeLinejoin:"round",ariaHidden:true};
+  const glyphs={
+    Crosshair:<><path d="M12 2v20M2 12h20"/><circle cx="12" cy="12" r="2.6"/></>,
+    Pan:<><path d="M5 19 19 5"/><circle cx="5" cy="19" r="1.8"/><circle cx="19" cy="5" r="1.8"/></>,
+    Draw:<><path d="M4 18 10 8l4 4 6-8"/><circle cx="4" cy="18" r="1.5"/><circle cx="20" cy="4" r="1.5"/></>,
+    Quick:<><path d="M4 18 10 8l4 4 6-8"/><path d="M4 20h16"/></>,
+    Snap:<><path d="M3 6h18M3 12h18M3 18h18"/><circle cx="18" cy="6" r="1.8"/><circle cx="8" cy="18" r="1.8"/></>,
+    Keep:<><path d="M4 5c5 0 5 14 10 14s5-14 6-14"/><circle cx="4" cy="5" r="1.5"/><circle cx="20" cy="5" r="1.5"/></>,
+    Lock:<><path d="M7 10V7a5 5 0 0 1 10 0v3"/><rect x="5" y="10" width="14" height="10" rx="1"/><path d="M12 14v3"/></>,
+    Hide:<><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2"/><path d="M6 18 18 6"/></>,
+    Delete:<><path d="M6 7h12M9 7V5h6v2M8 10v8M12 10v8M16 10v8"/><path d="M6 7l1 14h10l1-14"/></>,
+  };
+  return <svg {...common}>{glyphs[kind]||glyphs.Draw}</svg>;
+}
+
 // Saved layouts keep the v1 key; every newer field gets a default here.
 function load() {
   const defaults = {count:1, active:0, side:true, bottom:true, rsiAdded:true, settings:DEFAULT_SETTINGS,
@@ -277,12 +293,12 @@ export default function ChartWorkspace({account, accountError, onOpenBuilder}) {
       {activeData.bars && <span className={"cx-source "+(live&&!activeData.stale?"live":"sample")} title={activeData.note || undefined}>{activeData.archived?"Saved 1m history":!live?"Sample market data":activeData.stale?"Tastytrade · stale":activeData.streaming?"Tick by tick · Tastytrade":"Candle history · Tastytrade"}</span>}</div></div>
     {activeData.bars && !live && <div className="cx-banner" role="status">Showing fixed sample candles, not market data{activeData.note?" · "+activeData.note:""}</div>}
     <div className="cx-body"><div className="cx-rail" role="group" aria-label="Chart tools">
-      {[["Crosshair",toolIcon.Crosshair],["Pan",toolIcon.Pan]].map(([name,icon])=><button key={name} title={name} aria-label={name} aria-pressed={tool===name} onClick={()=>chooseTool(name)}>{icon}</button>)}
+      {[["Crosshair","Crosshair"],["Pan","Pan"]].map(([name,kind])=><button key={name} title={name} aria-label={name} aria-pressed={tool===name} onClick={()=>chooseTool(name)}><RailGlyph kind={kind}/></button>)}
       <button ref={refs.draw} className="cx-rail-draw" title={"Drawing tools ("+s.lastTool+")"} aria-label="Drawing tools" aria-pressed={DRAWING_NAMES.includes(tool)} aria-expanded={open==="draw"}
-        onClick={()=>setOpen(open==="draw"?null:"draw")}>{toolIcon[DRAWING_NAMES.includes(tool)?tool:s.lastTool]}<small>▸</small></button>
-      <button title={s.lastTool} aria-label={"Use "+s.lastTool} aria-pressed={tool===s.lastTool} onClick={()=>chooseTool(s.lastTool)}>✎</button>
-      <hr/>{[["Snap to OHLC","⌁",magnet,setMagnet],["Keep drawing","⟳",repeat,setRepeat],["Lock drawings","⚿",locked,setLocked],["Hide drawings","◉",hidden,setHidden]].map(([name,icon,on,toggle])=><button key={name} aria-label={name} title={name} aria-pressed={on} onClick={()=>toggle(!on)}>{icon}</button>)}
-      <button title="Delete selected drawing" aria-label="Delete selected drawing" disabled={locked||hidden||!drawingsOf(active).some(d=>d.id===selected)} onClick={()=>{saveDrawings(s.active, drawingsOf(active).filter(d=>d.id!==selected));setSelected(null);}}>⌫</button></div>
+        onClick={()=>setOpen(open==="draw"?null:"draw")}><RailGlyph kind="Draw"/><small>▸</small></button>
+      <button title={s.lastTool} aria-label={"Use "+s.lastTool} aria-pressed={tool===s.lastTool} onClick={()=>chooseTool(s.lastTool)}><RailGlyph kind="Quick"/></button>
+      <hr/>{[["Snap to OHLC","Snap",magnet,setMagnet],["Keep drawing","Keep",repeat,setRepeat],["Lock drawings","Lock",locked,setLocked],["Hide drawings","Hide",hidden,setHidden]].map(([name,kind,on,toggle])=><button key={name} aria-label={name} title={name} aria-pressed={on} onClick={()=>toggle(!on)}><RailGlyph kind={kind}/></button>)}
+      <button title="Delete selected drawing" aria-label="Delete selected drawing" disabled={locked||hidden||!drawingsOf(active).some(d=>d.id===selected)} onClick={()=>{saveDrawings(s.active, drawingsOf(active).filter(d=>d.id!==selected));setSelected(null);}}><RailGlyph kind="Delete"/></button></div>
       <div className="cx-center"><div key={s.count} className={"cx-grid cx-count-"+s.count}>{ids.map(i=>{
         const p=s.panes[i];
         const sel = s.active===i ? drawingsOf(p).find(d=>d.id===selected) : null;
